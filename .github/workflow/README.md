@@ -59,7 +59,7 @@ FSUB=false                        # Enable forced subscription (true/false)
 
 3. **Run the Bot**  
    ```bash
-   python3 ChatBot 
+   python3 DURGESH 
    ```
 
 ## Usage
