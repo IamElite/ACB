@@ -32,7 +32,7 @@ async def chatbot(_, message: Message):
         return
 
     await app.send_chat_action(chat_id, ChatAction.TYPING)
-    reply = await chatbot_api.ask_question(message.text)
+    reply = await durga_api.ask_question(message.text)
     await message.reply_text(reply or "❖ ChatBot Error. Contact @net_pro_max.")
 
 
