@@ -1,4 +1,4 @@
-import time 
+import time
 import logging
 import asyncio
 from pyrogram import Client, idle
@@ -41,20 +41,21 @@ class Bot(Client):
 
     @property
     def mention(self):
-        # Yeh property markdown format me bot ko mention karti hai.
+        # Bot ko markdown me mention karta hai
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
 
-# Main entry point: Bot start hone par owner ko message bhejega aur idle rahega
 if __name__ == "__main__":
     async def main():
         await app.start()
         try:
-            # OWNER_ID ko config file se lena hai. Ensure karein ki config.OWNER_ID sahi hai.
-            await app.send_message(int(config.OWNER_ID), f"{app.mention} has started")
+            owner_id = int(config.OWNER_ID)  # Ensure OWNER_ID sahi hai
+            LOGGER.info(f"Sending startup message to owner with ID: {owner_id}")
+            await app.send_message(owner_id, f"{app.mention} has started")
         except Exception as ex:
-            LOGGER.info(f"@{app.username} Started, please start the bot from owner id.")
+            LOGGER.exception("Error sending startup message")
+        # Idle mode me bot ko rakhe, jisse woh updates receive kare
         await idle()
         await app.stop()
 
