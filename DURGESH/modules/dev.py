@@ -22,21 +22,22 @@ async def aexec(code, client, message):
     exec_locals = {}
     try:
         exec(exec_code, globals(), exec_locals)
-    except Exception:
-        raise  # Exception propagate karo
+    except Exception as e:
+        # Simplified error: sirf error type aur message
+        raise Exception(''.join(traceback.format_exception_only(type(e), e)).strip())
     if "__aexec" not in exec_locals:
         raise KeyError("The '__aexec' function was not defined in the dynamic code.")
     func = exec_locals["__aexec"]
     return await func(client, message)
 
 async def edit_or_reply(msg: Message, **kwargs):
-    # Agar user ka message hai to edit karo, nahi to reply karo
+    # Agar user ka message ho to edit karo, nahi to reply karo
     func = msg.edit_text if msg.from_user.is_self else msg.reply
     spec = getfullargspec(func.__wrapped__).args
     await func(**{k: v for k, v in kwargs.items() if k in spec})
     await protect_message(msg.chat.id, msg.id)
 
-# For eval commands, define filter:
+# Eval commands ke liye filter: commands with prefixes aur plain text jo ev, eval ya dev se start ho
 eval_filter = (
     filters.command(["ev", "eval", "dev"], prefixes=["/", "!", "."]) |
     (filters.text & filters.regex(r"^(?i:(ev|eval|dev))(\s|$)"))
@@ -45,7 +46,6 @@ eval_filter = (
 @app.on_edited_message(eval_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 @app.on_message(eval_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 async def executor(client: app, message: Message):
-    # Sirf OWNER_ID allowed hai (extra check)
     if message.from_user.id != OWNER_ID:
         return
     cmd = ""
@@ -59,7 +59,6 @@ async def executor(client: app, message: Message):
     else:
         text = message.text.strip()
         parts = text.split(" ", maxsplit=1)
-        # Plain text fallback for eval commands using any of these keywords
         if parts[0].lower() in ["ev", "eval", "dev"]:
             if len(parts) < 2:
                 return await edit_or_reply(message, text="<b>What do you want to execute?</b>")
@@ -77,15 +76,16 @@ async def executor(client: app, message: Message):
     try:
         sys.stdout, sys.stderr = redirected_output, redirected_error
         result = await aexec(cmd, client, message)
-    except Exception:
-        exc = traceback.format_exc()
+    except Exception as e:
+        # Simplified error formatting: sirf error type aur message
+        exc = ''.join(traceback.format_exception_only(type(e), e)).strip()
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
     stdout = redirected_output.getvalue().strip()
     stderr = redirected_error.getvalue().strip()
     evaluation = ""
     if exc:
-        evaluation = exc.strip()
+        evaluation = exc
     else:
         parts = []
         if stderr:
@@ -145,7 +145,7 @@ async def forceclose_command(_, CallbackQuery):
     except:
         return
 
-# For shell commands, define filter:
+# Shell commands ke liye filter: commands with prefixes aur plain text jo sh ya de se start ho
 shell_filter = (
     filters.command(["sh", "de"], prefixes=["/", "!", "."]) |
     (filters.text & filters.regex(r"^(?i:(sh|de))(\s|$)"))
@@ -186,7 +186,7 @@ async def shellrunner(_, message: Message):
                     stderr=subprocess.PIPE,
                 )
             except Exception as err:
-                await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{err}</pre>")
+                await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{str(err)}</pre>")
                 continue
             output += f"<b>{x}</b>\n"
             output += process.stdout.read().decode("utf-8").strip()
@@ -202,9 +202,7 @@ async def shellrunner(_, message: Message):
                 stderr=subprocess.PIPE,
             )
         except Exception as err:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            errors = traceback.format_exception(etype=exc_type, value=exc_obj, tb=exc_tb)
-            return await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{''.join(errors)}</pre>")
+            return await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{str(err)}</pre>")
         output = process.stdout.read().decode("utf-8").strip()
         if not output:
             output = None
