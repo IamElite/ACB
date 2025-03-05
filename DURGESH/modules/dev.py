@@ -8,7 +8,7 @@ from inspect import getfullargspec
 from io import StringIO
 from time import time
 
-from pyrogram import Client, filters  
+from pyrogram import Client, filters  # pyrofork drop‑in replacement ke liye "from pyrogram" use kar rahe hain
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import OWNER_ID
@@ -23,8 +23,7 @@ async def aexec(code, client, message):
     try:
         exec(exec_code, globals(), exec_locals)
     except Exception as e:
-        # Simplified error: sirf error type aur message
-        raise Exception(''.join(traceback.format_exception_only(type(e), e)).strip())
+        raise Exception(f"Compilation Error: {e}")
     if "__aexec" not in exec_locals:
         raise KeyError("The '__aexec' function was not defined in the dynamic code.")
     func = exec_locals["__aexec"]
@@ -37,7 +36,7 @@ async def edit_or_reply(msg: Message, **kwargs):
     await func(**{k: v for k, v in kwargs.items() if k in spec})
     await protect_message(msg.chat.id, msg.id)
 
-# Eval commands ke liye filter: commands with prefixes aur plain text jo ev, eval ya dev se start ho
+# Eval filter: command with prefixes (/, !, .) OR plain text starting with ev, eval, or dev
 eval_filter = (
     filters.command(["ev", "eval", "dev"], prefixes=["/", "!", "."]) |
     (filters.text & filters.regex(r"^(?i:(ev|eval|dev))(\s|$)"))
@@ -77,8 +76,8 @@ async def executor(client: app, message: Message):
         sys.stdout, sys.stderr = redirected_output, redirected_error
         result = await aexec(cmd, client, message)
     except Exception as e:
-        # Simplified error formatting: sirf error type aur message
-        exc = ''.join(traceback.format_exception_only(type(e), e)).strip()
+        # Simple error message without full traceback
+        exc = f"Error: {str(e)}"
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
     stdout = redirected_output.getvalue().strip()
@@ -145,7 +144,7 @@ async def forceclose_command(_, CallbackQuery):
     except:
         return
 
-# Shell commands ke liye filter: commands with prefixes aur plain text jo sh ya de se start ho
+# Shell filter: command with prefixes (/, !, .) OR plain text starting with sh or de
 shell_filter = (
     filters.command(["sh", "de"], prefixes=["/", "!", "."]) |
     (filters.text & filters.regex(r"^(?i:(sh|de))(\s|$)"))
@@ -202,7 +201,9 @@ async def shellrunner(_, message: Message):
                 stderr=subprocess.PIPE,
             )
         except Exception as err:
-            return await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{str(err)}</pre>")
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            errors = f"Error: {str(err)}"
+            return await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{errors}</pre>")
         output = process.stdout.read().decode("utf-8").strip()
         if not output:
             output = None
