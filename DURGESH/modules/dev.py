@@ -8,12 +8,15 @@ from inspect import getfullargspec
 from io import StringIO
 from time import time
 
-from pyrogram import Client, filters  # pyrofork drop‑in replacement ke liye "from pyrogram" use kar rahe hain
+from pyrogram import Client, filters  
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import OWNER_ID
 from DURGESH import app
 from DURGESH.database.extra import protect_message
+
+# Snapshot of globals at startup for clearing dynamic changes later
+ORIGINAL_GLOBAL_KEYS = set(globals().keys())
 
 async def aexec(code, client, message):
     # Code ko async function ke andar execute karne ke liye sahi indentation set karte hain
@@ -30,13 +33,13 @@ async def aexec(code, client, message):
     return await func(client, message)
 
 async def edit_or_reply(msg: Message, **kwargs):
-    # Agar user ka message ho to edit karo, nahi to reply karo
+    # Agar user ka message hai to edit karo, warna reply karo
     func = msg.edit_text if msg.from_user.is_self else msg.reply
     spec = getfullargspec(func.__wrapped__).args
     await func(**{k: v for k, v in kwargs.items() if k in spec})
     await protect_message(msg.chat.id, msg.id)
 
-# Eval filter: command with prefixes (/, !, .) OR plain text starting with ev, eval, or dev
+# Eval filter: command with prefixes (/ ! .) OR plain text starting with ev, eval, dev (case-insensitive)
 eval_filter = (
     filters.command(["ev", "eval", "dev"], prefixes=["/", "!", "."]) |
     (filters.text & filters.regex(r"^(?i:(ev|eval|dev))(\s|$)"))
@@ -144,7 +147,7 @@ async def forceclose_command(_, CallbackQuery):
     except:
         return
 
-# Shell filter: command with prefixes (/, !, .) OR plain text starting with sh or de
+# Shell filter: command with prefixes (/ ! .) OR plain text starting with sh or de (case-insensitive)
 shell_filter = (
     filters.command(["sh", "de"], prefixes=["/", "!", "."]) |
     (filters.text & filters.regex(r"^(?i:(sh|de))(\s|$)"))
@@ -201,7 +204,6 @@ async def shellrunner(_, message: Message):
                 stderr=subprocess.PIPE,
             )
         except Exception as err:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
             errors = f"Error: {str(err)}"
             return await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{errors}</pre>")
         output = process.stdout.read().decode("utf-8").strip()
@@ -224,3 +226,24 @@ async def shellrunner(_, message: Message):
     else:
         await edit_or_reply(message, text="<b>Output:</b>\n<code>Nothing to show</code>")
     await message.stop_propagation()
+
+# Clear filter: command with prefixes (/ ! .) OR plain text starting with clear (case-insensitive)
+clear_filter = (
+    filters.command("clear", prefixes=["/", "!", "."]) |
+    (filters.text & filters.regex(r"^(?i:clear)(\s|$)"))
+)
+
+@app.on_edited_message(clear_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
+@app.on_message(clear_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
+async def clear_globals(_, message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    # List of keys to remove: those not in ORIGINAL_GLOBAL_KEYS and not starting with '__'
+    keys_to_remove = [key for key in list(globals().keys()) if key not in ORIGINAL_GLOBAL_KEYS and not key.startswith("__")]
+    for key in keys_to_remove:
+        try:
+            del globals()[key]
+        except Exception:
+            pass  # Agar koi key delete nahi hoti to ignore karo
+    await edit_or_reply(message, text="<b>Cleared:</b> Dynamic changes removed. Global state reset.")
+
