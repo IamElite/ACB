@@ -44,17 +44,3 @@ class Bot(Client):
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
-
-if __name__ == "__main__":
-    async def main():
-        await app.start()
-        try:
-            owner_id = int(config.OWNER_ID)
-            LOGGER.info(f"Sending startup message to owner with ID: {owner_id}")
-            await app.send_message(owner_id, f"{app.mention} has started")
-        except Exception as ex:
-            LOGGER.exception("Error sending startup message")
-        await idle()
-        await app.stop()
-
-    asyncio.run(main())
