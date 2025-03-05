@@ -2,7 +2,8 @@ import asyncio, random, logging
 
 from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
-from pyrogram.enums import ChatType, ChatAdminRequired
+from pyrogram.enums import ChatType
+from pyrogram.errors import ChatAdminRequired
 
 from config import STICKER, FSUB, IMG
 from DURGESH import app
