@@ -17,6 +17,7 @@ async def get_bot_id():
 
 @app.on_message(filters.new_chat_members)
 async def welcome_jej(client, message: Message):
+    logging.info("New chat member event triggered")
     try:
         await add_chat(message.chat.id)
         if message.from_user:
