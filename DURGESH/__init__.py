@@ -41,7 +41,6 @@ class Bot(Client):
 
     @property
     def mention(self):
-        # Bot ko markdown me mention karta hai
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
@@ -50,12 +49,11 @@ if __name__ == "__main__":
     async def main():
         await app.start()
         try:
-            owner_id = int(config.OWNER_ID)  # Ensure OWNER_ID sahi hai
+            owner_id = int(config.OWNER_ID)
             LOGGER.info(f"Sending startup message to owner with ID: {owner_id}")
             await app.send_message(owner_id, f"{app.mention} has started")
         except Exception as ex:
             LOGGER.exception("Error sending startup message")
-        # Idle mode me bot ko rakhe, jisse woh updates receive kare
         await idle()
         await app.stop()
 
