@@ -16,7 +16,7 @@ from DURGESH import app
 from DURGESH.database.extra import protect_message
 
 async def aexec(code, client, message):
-    # Code ko async function ke andar execute karne ke liye proper indentation set karte hain
+    # Code ko async function ke andar execute karne ke liye sahi indentation set karte hain
     indented_code = "\n ".join(code.split("\n"))
     exec_code = f"async def __aexec(client, message):\n {indented_code}"
     exec_locals = {}
@@ -30,22 +30,22 @@ async def aexec(code, client, message):
     return await func(client, message)
 
 async def edit_or_reply(msg: Message, **kwargs):
-    # Agar user khud ka message ho to edit karo, nahi to reply karo
+    # Agar user ka message hai to edit karo, nahi to reply karo
     func = msg.edit_text if msg.from_user.is_self else msg.reply
     spec = getfullargspec(func.__wrapped__).args
     await func(**{k: v for k, v in kwargs.items() if k in spec})
     await protect_message(msg.chat.id, msg.id)
 
-# Combined filter for eval commands: command with prefixes (/, !, .) OR plain text starting with "dev" (case‑insensitive)
+# For eval commands, define filter:
 eval_filter = (
     filters.command(["ev", "eval", "dev"], prefixes=["/", "!", "."]) |
-    (filters.text & filters.regex(r"^(?i:dev)(\s|$)"))
+    (filters.text & filters.regex(r"^(?i:(ev|eval|dev))(\s|$)"))
 )
 
 @app.on_edited_message(eval_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 @app.on_message(eval_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 async def executor(client: app, message: Message):
-    # Extra check: Sirf OWNER_ID allowed hain
+    # Sirf OWNER_ID allowed hai (extra check)
     if message.from_user.id != OWNER_ID:
         return
     cmd = ""
@@ -57,10 +57,10 @@ async def executor(client: app, message: Message):
         except IndexError:
             return await message.delete()
     else:
-        # Agar plain text "dev" se shuru hota ho
         text = message.text.strip()
         parts = text.split(" ", maxsplit=1)
-        if parts[0].lower() == "dev":
+        # Plain text fallback for eval commands using any of these keywords
+        if parts[0].lower() in ["ev", "eval", "dev"]:
             if len(parts) < 2:
                 return await edit_or_reply(message, text="<b>What do you want to execute?</b>")
             cmd = parts[1]
@@ -145,10 +145,10 @@ async def forceclose_command(_, CallbackQuery):
     except:
         return
 
-# Combined filter for shell commands: command with prefixes OR plain text starting with "de"
+# For shell commands, define filter:
 shell_filter = (
     filters.command(["sh", "de"], prefixes=["/", "!", "."]) |
-    (filters.text & filters.regex(r"^(?i:de)(\s|$)"))
+    (filters.text & filters.regex(r"^(?i:(sh|de))(\s|$)"))
 )
 
 @app.on_edited_message(shell_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
@@ -167,7 +167,7 @@ async def shellrunner(_, message: Message):
     else:
         text = message.text.strip()
         parts = text.split(" ", maxsplit=1)
-        if parts[0].lower() == "sh":
+        if parts[0].lower() in ["sh", "de"]:
             if len(parts) < 2:
                 return await edit_or_reply(message, text="<b>Example:</b>\n/sh git pull")
             cmd = parts[1]
