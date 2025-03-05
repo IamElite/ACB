@@ -15,6 +15,16 @@ from config import OWNER_ID
 from DURGESH import app
 from DURGESH.database.extra import protect_message
 
+# Define PROTECTED_GLOBALS: Yeh list un sab globals ko rakhegi jo clear nahi karne hain.
+PROTECTED_GLOBALS = {
+    "__name__", "__file__", "__package__", "__doc__", "__loader__", "__spec__",
+    "os", "re", "subprocess", "sys", "time", "traceback", "getfullargspec",
+    "StringIO", "Client", "filters", "InlineKeyboardButton", "InlineKeyboardMarkup",
+    "Message", "OWNER_ID", "app", "protect_message", "aexec", "edit_or_reply",
+    "executor", "runtime_func_cq", "forceclose_command", "shellrunner",
+    "eval_filter", "shell_filter", "clear_filter", "PROTECTED_GLOBALS"
+}
+
 async def aexec(code, client, message):
     # Code ko async function ke andar execute karne ke liye sahi indentation set karte hain
     indented_code = "\n ".join(code.split("\n"))
@@ -30,7 +40,7 @@ async def aexec(code, client, message):
     return await func(client, message)
 
 async def edit_or_reply(msg: Message, **kwargs):
-    # Agar user ka message hai to edit karo, warna reply karo
+    # Agar user ka message hai to edit karo, nahi to reply karo
     func = msg.edit_text if msg.from_user.is_self else msg.reply
     spec = getfullargspec(func.__wrapped__).args
     await func(**{k: v for k, v in kwargs.items() if k in spec})
@@ -230,16 +240,13 @@ clear_filter = (
     (filters.text & filters.regex(r"(?i)^clear(\s|$)"))
 )
 
-# At module load ke baad, static snapshot of globals lete hain
-STATIC_GLOBALS = set(globals().keys())
-
 @app.on_edited_message(clear_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 @app.on_message(clear_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 async def clear_globals(_, message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    # Delete globals that were added dynamically (i.e. not present in STATIC_GLOBALS)
-    keys_to_remove = [key for key in list(globals().keys()) if key not in STATIC_GLOBALS and not key.startswith("__")]
+    # Delete globals that are not in PROTECTED_GLOBALS and do not start with '__'
+    keys_to_remove = [key for key in list(globals().keys()) if key not in PROTECTED_GLOBALS and not key.startswith("__")]
     for key in keys_to_remove:
         try:
             del globals()[key]
