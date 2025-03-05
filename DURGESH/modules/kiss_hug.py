@@ -3,16 +3,17 @@ from pyrogram import Client, filters
 from DURGESH import app
 from DURGESH.database import CAPTIONS
 
-# Message filter: agar message text mein "hug" shabd ho (case-insensitive)
-@app.on_message(filters.regex(r"\b(hug)\b", flags=re.IGNORECASE))
+# Hug trigger: agar message text mein "hug" shabd (case-insensitive) aaye
+@app.on_message(filters.text & filters.regex(r"\b(hug)\b", flags=re.IGNORECASE))
 async def auto_hug(client, message):
     api_url = "https://myown.codesearch.workers.dev/hug"
     try:
-        response = await asyncio.to_thread(lambda: requests.get(api_url).json())
+        # Blocking HTTP request ko asynchronous tarike se run karne ke liye asyncio.to_thread use kar rahe hain
+        response = await asyncio.to_thread(lambda: __import__("requests").get(api_url).json())
         hug_url = response.get("data")
         if hug_url:
             reply_id = message.reply_to_message.id if message.reply_to_message else message.id
-            # CAPTIONS list se random caption select
+            # CAPTIONS list se random caption choose karein
             caption = random.choice(CAPTIONS)
             await client.send_animation(
                 chat_id=message.chat.id,
@@ -25,16 +26,15 @@ async def auto_hug(client, message):
     except Exception as e:
         await message.reply_text("Lɪғᴇ ɪs ᴀ ɢʀᴀɴᴅ ᴅᴇᴄᴇᴘᴛɪᴏɴ :)")
 
-# Message filter: agar message text mein "kiss" shabd ho (case-insensitive)
-@app.on_message(filters.regex(r"\b(kiss)\b", flags=re.IGNORECASE))
+# Kiss trigger: agar message text mein "kiss" shabd (case-insensitive) aaye
+@app.on_message(filters.text & filters.regex(r"\b(kiss)\b", flags=re.IGNORECASE))
 async def auto_kiss(client, message):
     api_url = "https://myown.codesearch.workers.dev/kiss"
     try:
-        response = await asyncio.to_thread(lambda: requests.get(api_url).json())
+        response = await asyncio.to_thread(lambda: __import__("requests").get(api_url).json())
         kiss_url = response.get("data")
         if kiss_url:
             reply_id = message.reply_to_message.id if message.reply_to_message else message.id
-            # Random caption select using CAPTIONS list
             caption = random.choice(CAPTIONS)
             await client.send_animation(
                 chat_id=message.chat.id,
