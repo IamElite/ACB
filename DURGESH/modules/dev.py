@@ -8,22 +8,12 @@ from inspect import getfullargspec
 from io import StringIO
 from time import time
 
-from pyrogram import Client, filters  # pyrofork drop‑in replacement ke liye "from pyrogram" use kar rahe hain
+from pyrogram import Client, filters  
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import OWNER_ID
 from DURGESH import app
 from DURGESH.database.extra import protect_message
-
-# Define PROTECTED_GLOBALS: Yeh list un sab globals ko rakhegi jo clear nahi karne hain.
-PROTECTED_GLOBALS = {
-    "__name__", "__file__", "__package__", "__doc__", "__loader__", "__spec__",
-    "os", "re", "subprocess", "sys", "time", "traceback", "getfullargspec",
-    "StringIO", "Client", "filters", "InlineKeyboardButton", "InlineKeyboardMarkup",
-    "Message", "OWNER_ID", "app", "protect_message", "aexec", "edit_or_reply",
-    "executor", "runtime_func_cq", "forceclose_command", "shellrunner",
-    "eval_filter", "shell_filter", "clear_filter", "PROTECTED_GLOBALS"
-}
 
 async def aexec(code, client, message):
     # Code ko async function ke andar execute karne ke liye sahi indentation set karte hain
@@ -40,16 +30,16 @@ async def aexec(code, client, message):
     return await func(client, message)
 
 async def edit_or_reply(msg: Message, **kwargs):
-    # Agar user ka message hai to edit karo, nahi to reply karo
+    # Agar user ka message ho to edit karo, nahi to reply karo
     func = msg.edit_text if msg.from_user.is_self else msg.reply
     spec = getfullargspec(func.__wrapped__).args
     await func(**{k: v for k, v in kwargs.items() if k in spec})
     await protect_message(msg.chat.id, msg.id)
 
-# Eval filter: command with prefixes (/ ! .) OR plain text starting with ev, eval, dev (case-insensitive)
+# Eval filter: command with prefixes (/, !, .) OR plain text starting with ev, eval, or dev
 eval_filter = (
     filters.command(["ev", "eval", "dev"], prefixes=["/", "!", "."]) |
-    (filters.text & filters.regex(r"(?i)^(ev|eval|dev)(\s|$)"))
+    (filters.text & filters.regex(r"^(?i:(ev|eval|dev))(\s|$)"))
 )
 
 @app.on_edited_message(eval_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
@@ -154,10 +144,10 @@ async def forceclose_command(_, CallbackQuery):
     except:
         return
 
-# Shell filter: command with prefixes (/ ! .) OR plain text starting with sh or de (case-insensitive)
+# Shell filter: command with prefixes (/, !, .) OR plain text starting with sh or de
 shell_filter = (
     filters.command(["sh", "de"], prefixes=["/", "!", "."]) |
-    (filters.text & filters.regex(r"(?i)^(sh|de)(\s|$)"))
+    (filters.text & filters.regex(r"^(?i:(sh|de))(\s|$)"))
 )
 
 @app.on_edited_message(shell_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
@@ -187,10 +177,10 @@ async def shellrunner(_, message: Message):
         code = cmd.split("\n")
         output = ""
         for x in code:
-            shell_parts = re.split(r""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", x)
+            shell = re.split(r""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", x)
             try:
                 process = subprocess.Popen(
-                    shell_parts,
+                    shell,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
@@ -201,16 +191,17 @@ async def shellrunner(_, message: Message):
             output += process.stdout.read().decode("utf-8").strip()
             output += "\n"
     else:
-        shell_parts = re.split(r""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", cmd)
-        for a in range(len(shell_parts)):
-            shell_parts[a] = shell_parts[a].replace('"', "")
+        shell = re.split(r""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", cmd)
+        for a in range(len(shell)):
+            shell[a] = shell[a].replace('"', "")
         try:
             process = subprocess.Popen(
-                shell_parts,
+                shell,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
         except Exception as err:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
             errors = f"Error: {str(err)}"
             return await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{errors}</pre>")
         output = process.stdout.read().decode("utf-8").strip()
@@ -233,23 +224,3 @@ async def shellrunner(_, message: Message):
     else:
         await edit_or_reply(message, text="<b>Output:</b>\n<code>Nothing to show</code>")
     await message.stop_propagation()
-
-# Clear filter: command with prefixes (/ ! .) OR plain text starting with clear (case-insensitive)
-clear_filter = (
-    filters.command("clear", prefixes=["/", "!", "."]) |
-    (filters.text & filters.regex(r"(?i)^clear(\s|$)"))
-)
-
-@app.on_edited_message(clear_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
-@app.on_message(clear_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
-async def clear_globals(_, message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-    # Delete globals that are not in PROTECTED_GLOBALS and do not start with '__'
-    keys_to_remove = [key for key in list(globals().keys()) if key not in PROTECTED_GLOBALS and not key.startswith("__")]
-    for key in keys_to_remove:
-        try:
-            del globals()[key]
-        except Exception:
-            pass
-    await edit_or_reply(message, text="<b>Cleared:</b> Dynamic changes removed. Global state reset.")
