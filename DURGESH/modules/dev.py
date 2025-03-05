@@ -8,59 +8,65 @@ from inspect import getfullargspec
 from io import StringIO
 from time import time
 
-from pyrogram import filters
+from pyrogram import Client, filters  
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import OWNER_ID
 from DURGESH import app
 from DURGESH.database.extra import protect_message
 
-
 async def aexec(code, client, message):
-    # Prepare the code with correct indentation inside an async function
-    indented_code = "\n    ".join(code.split("\n"))
-    exec_code = f"async def __aexec(client, message):\n    {indented_code}"
-    
-    # Dictionary to capture local variables from exec()
+    # Code ko async function ke andar execute karne ke liye proper indentation set karte hain
+    indented_code = "\n ".join(code.split("\n"))
+    exec_code = f"async def __aexec(client, message):\n {indented_code}"
     exec_locals = {}
-    
     try:
         exec(exec_code, globals(), exec_locals)
-    except:
-        raise  # Propagate the exception
-    
-    # Check if __aexec was defined
+    except Exception:
+        raise  # Exception propagate karo
     if "__aexec" not in exec_locals:
         raise KeyError("The '__aexec' function was not defined in the dynamic code.")
-    
-    # Execute the dynamic function and return its result
     func = exec_locals["__aexec"]
-    return await func(client, message)  # Return the function's return value
-
+    return await func(client, message)
 
 async def edit_or_reply(msg: Message, **kwargs):
+    # Agar user khud ka message ho to edit karo, nahi to reply karo
     func = msg.edit_text if msg.from_user.is_self else msg.reply
     spec = getfullargspec(func.__wrapped__).args
     await func(**{k: v for k, v in kwargs.items() if k in spec})
     await protect_message(msg.chat.id, msg.id)
 
+# Combined filter for eval commands: command with prefixes (/, !, .) OR plain text starting with "dev" (case‑insensitive)
+eval_filter = (
+    filters.command(["ev", "eval", "dev"], prefixes=["/", "!", "."]) |
+    (filters.text & filters.regex(r"^(?i:dev)(\s|$)"))
+)
 
-@app.on_edited_message(
-    filters.command(["ev", "eval"])
-    & filters.user(OWNER_ID)
-    & ~filters.forwarded
-    & ~filters.via_bot
-)
-@app.on_message(
-    filters.command(["ev", "eval", "dev"], prefixes=["/", "!", "", "."]) & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot
-)
+@app.on_edited_message(eval_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
+@app.on_message(eval_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 async def executor(client: app, message: Message):
-    if len(message.command) < 2:
-        return await edit_or_reply(message, text="<b>ᴡʜᴀᴛ ʏᴏᴜ ᴡᴀɴɴᴀ ᴇxᴇᴄᴜᴛᴇ ʙᴀʙʏ ?</b>")
-    try:
-        cmd = message.text.split(" ", maxsplit=1)[1]
-    except IndexError:
-        return await message.delete()
+    # Extra check: Sirf OWNER_ID allowed hain
+    if message.from_user.id != OWNER_ID:
+        return
+    cmd = ""
+    if hasattr(message, "command") and message.command:
+        if len(message.command) < 2:
+            return await edit_or_reply(message, text="<b>What do you want to execute?</b>")
+        try:
+            cmd = message.text.split(" ", maxsplit=1)[1]
+        except IndexError:
+            return await message.delete()
+    else:
+        # Agar plain text "dev" se shuru hota ho
+        text = message.text.strip()
+        parts = text.split(" ", maxsplit=1)
+        if parts[0].lower() == "dev":
+            if len(parts) < 2:
+                return await edit_or_reply(message, text="<b>What do you want to execute?</b>")
+            cmd = parts[1]
+        else:
+            return
+
     t1 = time()
     old_stderr = sys.stderr
     old_stdout = sys.stdout
@@ -68,7 +74,6 @@ async def executor(client: app, message: Message):
     redirected_error = StringIO()
     result = None
     exc = None
-    
     try:
         sys.stdout, sys.stderr = redirected_output, redirected_error
         result = await aexec(cmd, client, message)
@@ -76,43 +81,32 @@ async def executor(client: app, message: Message):
         exc = traceback.format_exc()
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
-    
     stdout = redirected_output.getvalue().strip()
     stderr = redirected_error.getvalue().strip()
-    
     evaluation = ""
     if exc:
         evaluation = exc.strip()
     else:
         parts = []
-        if stderr.strip():
-            parts.append(stderr.strip())
-        if stdout.strip():
-            parts.append(stdout.strip())
+        if stderr:
+            parts.append(stderr)
+        if stdout:
+            parts.append(stdout)
         if result is not None:
             parts.append(f"Return Value: {result!r}")
         evaluation = "\n\n".join(parts) if parts else "Success"
-    
-    final_output = f"<b>⥤ ʀᴇsᴜʟᴛ :</b>\n<pre language='python'>{evaluation}</pre>"
-    
+    final_output = f"<b>Result:</b>\n<pre language='python'>{evaluation}</pre>"
     if len(final_output) > 4096:
         filename = "output.txt"
         with open(filename, "w+", encoding="utf8") as out_file:
-            out_file.write(str(evaluation))
+            out_file.write(evaluation)
         t2 = time()
         keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="⏳",
-                        callback_data=f"runtime {t2-t1:.3f} Seconds",
-                    )
-                ]
-            ]
+            [[InlineKeyboardButton(text="⏳", callback_data=f"runtime {t2-t1:.3f} Seconds")]]
         )
         await message.reply_document(
             document=filename,
-            caption=f"<b>⥤ ᴇᴠᴀʟ :</b>\n<code>{cmd[:980]}</code>\n\n<b>⥤ ʀᴇsᴜʟᴛ :</b>\nAttached Document",
+            caption=f"<b>Eval:</b>\n<code>{cmd[:980]}</code>\n\n<b>Result:</b>\nAttached Document",
             quote=False,
             reply_markup=keyboard,
         )
@@ -121,27 +115,17 @@ async def executor(client: app, message: Message):
     else:
         t2 = time()
         keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        text="⏳",
-                        callback_data=f"runtime {t2-t1:.3f} Seconds",
-                    ),
-                    InlineKeyboardButton(
-                        text="🗑",
-                        callback_data=f"forceclose abc|{message.from_user.id}",
-                    ),
-                ]
-            ]
+            [[
+                InlineKeyboardButton(text="⏳", callback_data=f"runtime {t2-t1:.3f} Seconds"),
+                InlineKeyboardButton(text="", callback_data=f"forceclose abc|{message.from_user.id}")
+            ]]
         )
         await edit_or_reply(message, text=final_output, reply_markup=keyboard)
-
 
 @app.on_callback_query(filters.regex(r"runtime"))
 async def runtime_func_cq(_, cq):
     runtime = cq.data.split(None, 1)[1]
     await cq.answer(runtime, show_alert=True)
-
 
 @app.on_callback_query(filters.regex("forceclose"))
 async def forceclose_command(_, CallbackQuery):
@@ -151,7 +135,7 @@ async def forceclose_command(_, CallbackQuery):
     if CallbackQuery.from_user.id != int(user_id):
         try:
             return await CallbackQuery.answer(
-                "» ɪᴛ'ʟʟ ʙᴇ ʙᴇᴛᴛᴇʀ ɪғ ʏᴏᴜ sᴛᴀʏ ɪɴ ʏᴏᴜʀ ʟɪᴍɪᴛs ʙᴀʙʏ.", show_alert=True
+                "» It won't be better if you stay in your limits, baby.", show_alert=True
             )
         except:
             return
@@ -161,23 +145,40 @@ async def forceclose_command(_, CallbackQuery):
     except:
         return
 
-
-@app.on_edited_message(
-    filters.command("sh")
-    & filters.user(OWNER_ID)
-    & ~filters.forwarded
-    & ~filters.via_bot
+# Combined filter for shell commands: command with prefixes OR plain text starting with "de"
+shell_filter = (
+    filters.command(["sh", "de"], prefixes=["/", "!", "."]) |
+    (filters.text & filters.regex(r"^(?i:de)(\s|$)"))
 )
-@app.on_message(filters.command(["sh", "de"], prefixes=["/", "!", "", "."]) & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
+
+@app.on_edited_message(shell_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
+@app.on_message(shell_filter & filters.user(OWNER_ID) & ~filters.forwarded & ~filters.via_bot)
 async def shellrunner(_, message: Message):
-    if len(message.command) < 2:
-        return await edit_or_reply(message, text="<b>ᴇxᴀᴍᴩʟᴇ :</b>\n/sh git pull")
-    text = message.text.split(None, 1)[1]
-    if "\n" in text:
-        code = text.split("\n")
+    if message.from_user.id != OWNER_ID:
+        return
+    cmd = ""
+    if hasattr(message, "command") and message.command:
+        if len(message.command) < 2:
+            return await edit_or_reply(message, text="<b>Example:</b>\n/sh git pull")
+        try:
+            cmd = message.text.split(" ", maxsplit=1)[1]
+        except IndexError:
+            return await message.delete()
+    else:
+        text = message.text.strip()
+        parts = text.split(" ", maxsplit=1)
+        if parts[0].lower() == "sh":
+            if len(parts) < 2:
+                return await edit_or_reply(message, text="<b>Example:</b>\n/sh git pull")
+            cmd = parts[1]
+        else:
+            return
+
+    if "\n" in cmd:
+        code = cmd.split("\n")
         output = ""
         for x in code:
-            shell = re.split(""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", x)
+            shell = re.split(r""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", x)
             try:
                 process = subprocess.Popen(
                     shell,
@@ -185,13 +186,13 @@ async def shellrunner(_, message: Message):
                     stderr=subprocess.PIPE,
                 )
             except Exception as err:
-                await edit_or_reply(message, text=f"<b>ᴇʀʀᴏʀ :</b>\n<pre>{err}</pre>")
+                await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{err}</pre>")
                 continue
             output += f"<b>{x}</b>\n"
             output += process.stdout.read().decode("utf-8").strip()
             output += "\n"
     else:
-        shell = re.split(""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", text)
+        shell = re.split(r""" (?=(?:[^'"]|'[^']*'|"[^"]*")*$)""", cmd)
         for a in range(len(shell)):
             shell[a] = shell[a].replace('"', "")
         try:
@@ -202,17 +203,12 @@ async def shellrunner(_, message: Message):
             )
         except Exception as err:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            errors = traceback.format_exception(
-                etype=exc_type,
-                value=exc_obj,
-                tb=exc_tb,
-            )
-            return await edit_or_reply(
-                message, text=f"<b>ᴇʀʀᴏʀ :</b>\n<pre>{''.join(errors)}</pre>"
-            )
+            errors = traceback.format_exception(etype=exc_type, value=exc_obj, tb=exc_tb)
+            return await edit_or_reply(message, text=f"<b>Error:</b>\n<pre>{''.join(errors)}</pre>")
         output = process.stdout.read().decode("utf-8").strip()
-    if not output:
-        output = None
+        if not output:
+            output = None
+
     if output:
         if len(output) > 4096:
             with open("output.txt", "w+") as file:
@@ -221,10 +217,11 @@ async def shellrunner(_, message: Message):
                 message.chat.id,
                 "output.txt",
                 reply_to_message_id=message.id,
-                caption="<code>ᴏᴜᴛᴘᴜᴛ</code>",
+                caption="<code>Output</code>",
             )
-            return os.remove("output.txt")
-        await edit_or_reply(message, text=f"<b>ᴏᴜᴛᴘᴜᴛ :</b>\n<pre>{output}</pre>")
+            os.remove("output.txt")
+            return
+        await edit_or_reply(message, text=f"<b>Output:</b>\n<pre>{output}</pre>")
     else:
-        await edit_or_reply(message, text="<b>ᴏᴜᴛᴘᴜᴛ :</b>\n<code>ɴᴏᴛʜɪɴɢ ᴛᴏ sʜᴏᴡ</code>")
+        await edit_or_reply(message, text="<b>Output:</b>\n<code>Nothing to show</code>")
     await message.stop_propagation()
