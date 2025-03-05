@@ -1,5 +1,6 @@
 import time 
 import logging
+import asyncio
 from pyrogram import Client, idle
 from motor.motor_asyncio import AsyncIOMotorClient
 import config
@@ -38,15 +39,19 @@ class Bot(Client):
         await super().stop()
         LOGGER.info("Bot stopped.")
 
+    @property
+    def mention(self):
+        # Yeh property markdown format me bot ko mention karti hai.
+        return f"[{self.name}](tg://user?id={self.id})"
+
 app = Bot()
 
 # Main entry point: Bot start hone par owner ko message bhejega aur idle rahega
 if __name__ == "__main__":
-    import asyncio
     async def main():
         await app.start()
         try:
-            # OWNER_ID config file ya kisi aur source se lena hai
+            # OWNER_ID ko config file se lena hai. Ensure karein ki config.OWNER_ID sahi hai.
             await app.send_message(int(config.OWNER_ID), f"{app.mention} has started")
         except Exception as ex:
             LOGGER.info(f"@{app.username} Started, please start the bot from owner id.")
