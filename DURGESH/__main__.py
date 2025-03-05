@@ -11,7 +11,7 @@ async def boot():
     
     try:
         owner_id = int(config.OWNER_ID)
-        await app.send_message(owner_id, f"{app.mention} has started")
+        await app.send_message(owner_id, f"{app.mention} **ʜᴀs sᴛᴀʀᴛᴇᴅ 🥳**")
     except Exception as ex:
         print("Error sending startup message to owner:", ex)
     
