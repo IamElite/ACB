@@ -1,4 +1,4 @@
-import asyncio, random, re
+import asyncio, random, re, requests
 from pyrogram import Client, filters
 from DURGESH import app
 from DURGESH.database import CAPTIONS
