@@ -26,6 +26,7 @@ async def auto_hug(client, message):
     except Exception as e:
         await message.reply_text("Lɪғᴇ ɪs ᴀ ɢʀᴀɴᴅ ᴅᴇᴄᴇᴘᴛɪᴏɴ :)")
 
+
 # Kiss trigger: agar message text mein "kiss" shabd (case-insensitive) aaye
 @app.on_message(filters.text & filters.regex(r"\b(kiss)\b", flags=re.IGNORECASE))
 async def auto_kiss(client, message):
@@ -65,9 +66,9 @@ def get_waifu(tag):
     except requests.exceptions.RequestException:
         return None
     return None
-
-# Waifu trigger: message text mein "waifu" word detect hone par trigger ho (command remove)
-@app.on_message(filters.text & filters.regex(r"\bwaifu\b", flags=re.IGNORECASE))
+ 
+#@app.on_message((filters.command("waifu")  #for /waifu command 
+@app.on_message(filters.text & filters.regex(r"\bwaifu\b", flags=re.IGNORECASE)) # Waifu trigger: message text mein "waifu" word detect hone par trigger ho
 async def auto_waifu(client, message):
     selected_tag = random.choice(WAIFU_TAGS)
     image_url = await asyncio.to_thread(get_waifu, selected_tag)
