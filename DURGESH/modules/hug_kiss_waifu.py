@@ -67,8 +67,8 @@ def get_waifu(tag):
         return None
     return None
  
-#@app.on_message((filters.command("waifu")  #for /waifu command 
-@app.on_message(filters.text & filters.regex(r"\bwaifu\b", flags=re.IGNORECASE)) # Waifu trigger: message text mein "waifu" word detect hone par trigger ho
+# Waifu trigger: message text mein "waifu" word detect hone par trigger ho
+@app.on_message(filters.text & filters.regex(r"\bwaifu\b", flags=re.IGNORECASE)) 
 async def auto_waifu(client, message):
     selected_tag = random.choice(WAIFU_TAGS)
     image_url = await asyncio.to_thread(get_waifu, selected_tag)
