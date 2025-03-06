@@ -50,7 +50,7 @@ async def auto_kiss(client, message):
 
 # Available tags for waifu API
 WAIFU_TAGS = [
-    "maid", "waifu", "marin-kitagawa", "NSFW", "mori-calliope",
+    "maid", "waifu", "marin-kitagawa", "mori-calliope",
     "raiden-shogun", "oppai", "selfies", "uniform", "kamisato-ayaka",
     "ass", "hentai", "milf", "oral", "paizuri", "ecchi", "ero"
 ]
