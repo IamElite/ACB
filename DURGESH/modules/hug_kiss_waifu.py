@@ -46,3 +46,39 @@ async def auto_kiss(client, message):
             await message.reply_text("Tʜᴇ ᴜɴɪᴠᴇʀsᴇ ɪs ᴀ ᴄʜɪᴍᴇʀᴀ :)")
     except Exception as e:
         await message.reply_text("Exɪsᴛᴇɴᴄᴇ ɪs ᴀ ᴘʜᴀɴᴛᴀsᴍ :)")
+
+
+# Available tags for waifu API
+WAIFU_TAGS = [
+    "maid", "waifu", "marin-kitagawa", "NSFW", "mori-calliope",
+    "raiden-shogun", "oppai", "selfies", "uniform", "kamisato-ayaka",
+    "ass", "hentai", "milf", "oral", "paizuri", "ecchi", "ero"
+]
+
+# Function to fetch waifu image
+def get_waifu(tag):
+    api_url = f"https://waifu.codesearch.workers.dev/?tag={tag}"
+    try:
+        response = requests.get(api_url)
+        if response.status_code == 200:
+            return response.json().get("image_url")
+    except requests.exceptions.RequestException:
+        return None
+    return None
+
+# Waifu trigger: message text mein "waifu" word detect hone par trigger ho (command remove)
+@app.on_message(filters.text & filters.regex(r"\bwaifu\b", flags=re.IGNORECASE))
+async def auto_waifu(client, message):
+    selected_tag = random.choice(WAIFU_TAGS)
+    image_url = await asyncio.to_thread(get_waifu, selected_tag)
+    if image_url:
+        reply_id = message.reply_to_message.id if message.reply_to_message else message.id
+        caption = f"**Cᴀᴛᴇɢᴏʀʏ:** {selected_tag.capitalize()}\n\n{random.choice(CAPTIONS)}"
+        await client.send_photo(
+            chat_id=message.chat.id,
+            photo=image_url,
+            caption=caption,
+            reply_to_message_id=reply_id
+        )
+    else:
+        await message.reply_text("Exɪsᴛᴇɴᴄᴇ ɪs ᴀ ᴘʜᴀɴᴛᴀsᴍ :)")
