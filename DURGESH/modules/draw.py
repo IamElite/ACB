@@ -1,10 +1,9 @@
-import io
+import io, aiohttp
 import urllib.parse
-import aiohttp
 from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from DURGESH import app
-from config import IMG_GEN_API  
+from config import IMG_GEN_API
 
 # Global dictionary to store session data for each user
 draw_sessions = {}
@@ -17,6 +16,7 @@ MODELS = [
     ("flux-pixel", "Pixel art"),
     ("flux-anime", "Anime style"),
     ("flux-3d", "3D appearance"),
+    ("any-dark", "Dark theme")
 ]
 
 # /draw and /fastdraw command handler
@@ -52,8 +52,8 @@ async def model_callback(client, callback_query):
     if user_id not in draw_sessions:
         await callback_query.answer("Session expired. Please send the command again.", show_alert=True)
         return
-    model = callback_query.data.split(":", 1)[1]
-    draw_sessions[user_id]["model"] = model
+    selected_model = callback_query.data.split(":", 1)[1]
+    draw_sessions[user_id]["model"] = selected_model
     # Prepare inline keyboard for size selection arranged as required
     size_buttons = [
         [InlineKeyboardButton("9:16", callback_data="size:9:16"),
@@ -76,14 +76,14 @@ async def size_callback(client, callback_query):
         await callback_query.answer("Session expired. Please send the command again.", show_alert=True)
         return
 
-    size = callback_query.data.split(":", 1)[1]
-    draw_sessions[user_id]["size"] = size
+    selected_size = callback_query.data.split(":", 1)[1]
+    draw_sessions[user_id]["size"] = selected_size
 
     # Delete the size selection message (inline keyboard)
     try:
         await callback_query.message.delete()
-    except Exception as e:
-        pass  # Agar delete na ho paye toh ignore karo
+    except Exception:
+        pass
 
     # Send a waiting message to user
     waiting_msg = await callback_query.message.reply_text("Generating image, please wait...")
@@ -96,7 +96,7 @@ async def size_callback(client, callback_query):
     base_url = f"{IMG_GEN_API}/{endpoint}"
     params = {
         "prompt": prompt,
-        "size": size,
+        "size": selected_size,
         "model": model
     }
     query_string = urllib.parse.urlencode(params)
@@ -110,7 +110,7 @@ async def size_callback(client, callback_query):
                 image_stream = io.BytesIO(image_bytes)
                 image_stream.name = "generated_image.jpg"
                 
-                caption = f"Prompt: {prompt}\nSize: {size}\nModel: {model}"
+                caption = f"Prompt: {prompt}\nSize: {selected_size}\nModel: {model}"
                 await callback_query.message.reply_photo(photo=image_stream, caption=caption)
                 await waiting_msg.delete()  # Delete waiting message after sending image
                 await callback_query.answer("Image generated successfully!")
