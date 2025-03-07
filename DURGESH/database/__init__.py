@@ -15,3 +15,4 @@ from .durga import *
 from .chatbot import *
 from .extra import *
 from .read import *
+from .image_api import *
