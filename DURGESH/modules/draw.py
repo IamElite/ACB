@@ -88,8 +88,12 @@ async def size_callback(client, callback_query):
         async with session.get(url) as resp:
             if resp.status == 200:
                 image_bytes = await resp.read()
-                caption = f"Prompt: {prompt}\nSize: {size}\nModel: {model}"
-                await callback_query.message.reply_photo(photo=image_bytes, caption=caption)
-                await callback_query.answer("Image generated!")
+                image_stream = io.BytesIO(image_bytes)  # Convert bytes to BytesIO
+                image_stream.name = "generated_image.jpg"  # Set a filename
+                
+                caption = f"🖼 **Generated Image**\n🎨 **Model:** {model}\n📏 **Size:** {size}\n📝 **Prompt:** {prompt}"
+                
+                await callback_query.message.reply_photo(photo=image_stream, caption=caption)
+                await callback_query.answer("✅ Image generated successfully!")
             else:
-                await callback_query.answer(f"Error: API returned status {resp.status}", show_alert=True)
+                await callback_query.answer(f"❌ Error: API returned status {resp.status}", show_alert=True)
