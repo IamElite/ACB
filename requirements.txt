@@ -7,5 +7,6 @@ asyncio
 python-dotenv
 aiohttp
 aiofiles #add
+instaloader #add
 cloudscraper
 git+https://github.com/Mayuri-Chan/pyrofork
