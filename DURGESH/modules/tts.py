@@ -1,5 +1,7 @@
-import os, io, aiohttp
+import os
+import io
 import urllib.parse
+import aiohttp
 from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from DURGESH import app
@@ -8,11 +10,10 @@ from config import IMG_GEN_API
 # Global dict to store TTS requests by user id
 tts_requests = {}
 
-# List of available audio models with short captions
+# List of available audio models with simple names for buttons
 available_audio_models = [
-    {"id": "flux", "caption": "Flux Voice Fast"},
-    {"id": "stable", "caption": "Stable Tone Clear"},
-    {"id": "deep", "caption": "Deep Voice Realistic"}
+    {"id": "alex", "caption": "alex"},
+    {"id": "sophia", "caption": "sophia"}
 ]
 
 # TTS command handler: User sends /tts <text>
@@ -26,7 +27,7 @@ async def tts_command(client, message):
     # Store user text for later retrieval
     tts_requests[user_id] = text
 
-    # Create inline buttons for each available audio model
+    # Create inline buttons for each available audio model (sirf model ke naam show ho)
     buttons = []
     for model in available_audio_models:
         buttons.append(
@@ -36,6 +37,7 @@ async def tts_command(client, message):
             )
         )
     keyboard = InlineKeyboardMarkup([buttons])
+    # Message text mein hi "Select an audio model:" show hoga
     await message.reply("Select an audio model:", reply_markup=keyboard)
 
 # Callback query handler for audio model selection
