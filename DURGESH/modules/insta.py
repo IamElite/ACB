@@ -16,7 +16,7 @@ async def auto_download_instagram_media(client, message):
     url = message.text.strip()
     status_msg = await message.reply_text("ᴘʀᴏᴄᴇssɪɴɢ...")
     
-    # Shortcode extract karo using updated regex
+    # Extract shortcode using updated regex
     match = re.search(regex_pattern, url)
     if not match:
         await status_msg.edit("Invalid Instagram URL.")
@@ -30,7 +30,7 @@ async def auto_download_instagram_media(client, message):
         post = instaloader.Post.from_shortcode(L.context, shortcode)
         print(f"Post typename: {post.typename}")
         
-        # Download post media (sidecar, video, or image)
+        # Download the post media
         L.download_post(post, target="downloads")
         
         # List downloaded files for given shortcode
@@ -41,11 +41,10 @@ async def auto_download_instagram_media(client, message):
             await status_msg.edit("Download failed. No files found.")
             return
         
-        chat_id = message.chat.id
-        # For channels, reply_to_message_id set nahi karenge
-        reply_to = message.message_id if message.chat.type != "channel" else None
+        # Reply_to message: agar channel hai toh None, otherwise message.id
+        reply_to = message.id if message.chat.type != "channel" else None
         
-        # Prepare caption text (improved)
+        # Improved caption text based on post type
         if post.typename == "GraphVideo":
             caption = (
                 f"📹 *Instagram Video*\n"
@@ -54,7 +53,6 @@ async def auto_download_instagram_media(client, message):
                 f"🔗 *Shortcode:* {post.shortcode}\n\n"
                 f"📥 Downloaded using Instaloader"
             )
-            # Find video file
             video_file = None
             for file in downloaded_files:
                 if file.lower().endswith(".mp4"):
@@ -64,7 +62,7 @@ async def auto_download_instagram_media(client, message):
                 await status_msg.edit("Video file not found.")
                 return
             await status_msg.delete()
-            await app.send_video(chat_id, video_file, caption=caption, parse_mode="markdown", reply_to_message_id=reply_to)
+            await app.send_video(message.chat.id, video_file, caption=caption, parse_mode="markdown", reply_to_message_id=reply_to)
         
         elif post.typename == "GraphImage":
             caption = (
@@ -82,10 +80,10 @@ async def auto_download_instagram_media(client, message):
                 await status_msg.edit("Image file not found.")
                 return
             await status_msg.delete()
-            await app.send_photo(chat_id, image_file, caption=caption, parse_mode="markdown", reply_to_message_id=reply_to)
+            await app.send_photo(message.chat.id, image_file, caption=caption, parse_mode="markdown", reply_to_message_id=reply_to)
         
         elif post.typename == "GraphSidecar":
-            # Multiple media post: ek media group bhejte hain; caption pehle media item mein set karenge
+            # Multiple media post: prepare media group, caption on first media
             media_group = []
             for file in sorted(downloaded_files):
                 file_path = os.path.join("downloads", file)
@@ -103,7 +101,7 @@ async def auto_download_instagram_media(client, message):
                 )
                 media_group[0].parse_mode = "markdown"
                 await status_msg.delete()
-                await app.send_media_group(chat_id, media=media_group)
+                await app.send_media_group(message.chat.id, media=media_group)
             else:
                 await status_msg.edit("No media files found in the post.")
                 return
@@ -112,7 +110,7 @@ async def auto_download_instagram_media(client, message):
             await status_msg.edit("Unsupported media type.")
             return
         
-        # Cleanup: Delete downloaded files
+        # Cleanup: Delete all downloaded files starting with shortcode
         for file in downloaded_files:
             os.remove(os.path.join("downloads", file))
                 
