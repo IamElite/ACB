@@ -8,15 +8,15 @@ import instaloader
 # Ensure "downloads" folder exists
 os.makedirs("downloads", exist_ok=True)
 
-# Regex pattern jo posts, reels, aur IGTV URLs match kare
-regex_pattern = r"instagram\.com/(?:p|reel|tv)/([^/?#&]+)"
+# Improved regex pattern to extract shortcode from Instagram URL
+regex_pattern = r"instagram\.com/p/([^/?#&]+)"
 
 @app.on_message(filters.text & filters.regex(regex_pattern))
 async def auto_download_instagram_media(client, message):
     url = message.text.strip()
     status_msg = await message.reply_text("ᴘʀᴏᴄᴇssɪɴɢ...")
     
-    # Extract shortcode using updated regex
+    # Shortcode extract karo
     match = re.search(regex_pattern, url)
     if not match:
         await status_msg.edit("Invalid Instagram URL.")
@@ -24,95 +24,72 @@ async def auto_download_instagram_media(client, message):
     shortcode = match.group(1)
     
     try:
-        print(f"Extracted shortcode: {shortcode}")
-        # Initialize instaloader with downloads folder and filename pattern
+        # Instaloader object initialize karo with custom folder & filename pattern
         L = instaloader.Instaloader(dirname_pattern="downloads", filename_pattern="{shortcode}")
         post = instaloader.Post.from_shortcode(L.context, shortcode)
-        print(f"Post typename: {post.typename}")
         
-        # Download the post media
+        # Post download karo; agar sidecar hai toh sab media download honge
         L.download_post(post, target="downloads")
         
-        # List downloaded files for given shortcode
-        downloaded_files = [f for f in os.listdir("downloads") if f.startswith(shortcode)]
-        print("Downloaded files:", downloaded_files)
-        
-        if not downloaded_files:
-            await status_msg.edit("Download failed. No files found.")
-            return
-        
-        # Reply_to message: agar channel hai toh None, otherwise message.id
-        reply_to = message.id if message.chat.type != "channel" else None
-        
-        # Improved caption text based on post type
-        if post.typename == "GraphVideo":
-            caption = (
-                f"📹 *Instagram Video*\n"
-                f"👤 *User:* {post.owner_username}\n"
-                f"⏱ *Duration:* {post.video_duration} sec\n"
-                f"🔗 *Shortcode:* {post.shortcode}\n\n"
-                f"📥 Downloaded using Instaloader"
-            )
-            video_file = None
-            for file in downloaded_files:
-                if file.lower().endswith(".mp4"):
-                    video_file = os.path.join("downloads", file)
-                    break
-            if not video_file:
-                await status_msg.edit("Video file not found.")
-                return
-            await status_msg.delete()
-            await app.send_video(message.chat.id, video_file, caption=caption, parse_mode="markdown", reply_to_message_id=reply_to)
-        
-        elif post.typename == "GraphImage":
-            caption = (
-                f"📸 *Instagram Post*\n"
-                f"👤 *User:* {post.owner_username}\n"
-                f"🔗 *Shortcode:* {post.shortcode}\n\n"
-                f"📥 Downloaded using Instaloader"
-            )
-            image_file = None
-            for file in downloaded_files:
-                if file.lower().endswith((".jpg", ".jpeg", ".png")):
-                    image_file = os.path.join("downloads", file)
-                    break
-            if not image_file:
-                await status_msg.edit("Image file not found.")
-                return
-            await status_msg.delete()
-            await app.send_photo(message.chat.id, image_file, caption=caption, parse_mode="markdown", reply_to_message_id=reply_to)
-        
-        elif post.typename == "GraphSidecar":
-            # Multiple media post: prepare media group, caption on first media
+        if post.typename == "GraphSidecar":
+            # Multiple media: downloads folder se sab files gather karo jo shortcode se start hoti hain
+            files = []
+            for file in os.listdir("downloads"):
+                if file.startswith(shortcode):
+                    files.append(os.path.join("downloads", file))
+            files.sort()  # order maintain karne ke liye
+            
             media_group = []
-            for file in sorted(downloaded_files):
-                file_path = os.path.join("downloads", file)
-                ext = os.path.splitext(file)[1].lower()
+            for file_path in files:
+                ext = os.path.splitext(file_path)[1].lower()
                 if ext in [".mp4"]:
                     media_group.append(InputMediaVideo(media=file_path))
                 elif ext in [".jpg", ".jpeg", ".png"]:
                     media_group.append(InputMediaPhoto(media=file_path))
             if media_group:
-                media_group[0].caption = (
-                    f"📸 *Instagram Sidecar*\n"
-                    f"👤 *User:* {post.owner_username}\n"
-                    f"🔗 *Shortcode:* {post.shortcode}\n\n"
-                    f"📥 Downloaded using Instaloader"
-                )
-                media_group[0].parse_mode = "markdown"
                 await status_msg.delete()
-                await app.send_media_group(message.chat.id, media=media_group)
+                await message.reply_media_group(media=media_group)
             else:
-                await status_msg.edit("No media files found in the post.")
-                return
-        
+                await status_msg.edit("No media files found.")
+                
+        elif post.typename == "GraphVideo":
+            # Single video post
+            video_path = os.path.join("downloads", f"{shortcode}.mp4")
+            if not os.path.exists(video_path):
+                for file in os.listdir("downloads"):
+                    if file.startswith(shortcode) and file.endswith(".mp4"):
+                        video_path = os.path.join("downloads", file)
+                        break
+            caption = (
+                f"User: {post.owner_username}\n"
+                f"Shortcode: {post.shortcode}\n"
+                f"Duration: {post.video_duration} sec"
+            )
+            await status_msg.delete()
+            await message.reply_video(video_path, caption=caption)
+            
+        elif post.typename == "GraphImage":
+            # Single image post
+            image_path = os.path.join("downloads", f"{shortcode}.jpg")
+            if not os.path.exists(image_path):
+                for file in os.listdir("downloads"):
+                    if file.startswith(shortcode) and file.lower().endswith((".jpg", ".jpeg", ".png")):
+                        image_path = os.path.join("downloads", file)
+                        break
+            caption = (
+                f"User: {post.owner_username}\n"
+                f"Shortcode: {post.shortcode}"
+            )
+            await status_msg.delete()
+            await message.reply_photo(image_path, caption=caption)
         else:
             await status_msg.edit("Unsupported media type.")
-            return
         
-        # Cleanup: Delete all downloaded files starting with shortcode
-        for file in downloaded_files:
-            os.remove(os.path.join("downloads", file))
+        # Cleanup: downloads folder se sab files jo shortcode se start hote hain, remove karo
+        for file in os.listdir("downloads"):
+            if file.startswith(shortcode):
+                os.remove(os.path.join("downloads", file))
                 
     except Exception as e:
         await status_msg.edit(f"Error: {str(e)}")
+
