@@ -5,12 +5,23 @@ from pyrogram import Client, filters
 from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from pyrogram.enums import ChatType
 
-from config import STICKER, FSUB, IMG
-from ChatBot import app
-from ChatBot.database import add_user, add_chat, get_fsub
+from config import STICKER, FSUB, IMG, OWNER_ID
+from DURGESH import app
+from DURGESH.database import add_user, add_chat, get_fsub
 
-# **Logger Group ID (Set your log group ID here)**
-LOGGER_ID = -100XXXXXXXXXX  # Replace with your actual log group ID
+# OWNER_ID ke DM mein log bhejne ke liye function
+async def log_start(message: Message):
+    text = f"""
+❖ {message.from_user.mention} just started the bot.
+    
+<b>● User ID ➥</b> <code>{message.from_user.id}</code>
+<b>● Username ➥</b> @{message.from_user.username if message.from_user.username else 'No Username'}
+    """
+    try:
+        # OWNER_ID ke DM mein message send hoga
+        await app.send_message(OWNER_ID, text)
+    except Exception as e:
+        print(f"Logging Error: {e}")
 
 
 @app.on_message(filters.command(["start", "aistart"]) & ~filters.bot)
@@ -30,7 +41,7 @@ async def start(client, m: Message):
             await asyncio.sleep(2)
             await umm.delete()
 
-        # **Send log message to the logging group**
+        # OWNER_ID ke DM mein log message bhejne ke liye call
         await log_start(m)
 
         await m.reply_photo(
@@ -46,8 +57,8 @@ I'm here to chat, vibe, and bring some fun to your day.
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(text="ᴀᴅᴅ ᴍᴇ ʙᴀʙʏ", url=f"https://t.me/{app.username}?startgroup=true")],
                 [
-                    InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ", url="https://t.me/C0DE_SEARCH"),
-                    InlineKeyboardButton(text="sᴜᴘᴘᴏʀᴛ", url="https://t.me/AsuraaSupports")
+                    InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ", url="https://t.me/net_pro_max"),
+                    InlineKeyboardButton(text="sᴜᴘᴘᴏʀᴛ", url="https://t.me/+cXIPgHSuJnxiNjU1")
                 ],
                 [InlineKeyboardButton(text="ᴍʏ ᴄᴏᴍᴍᴀɴᴅs", callback_data="help")]
             ])
@@ -58,26 +69,12 @@ I'm here to chat, vibe, and bring some fun to your day.
         await m.reply_text(f"Hey {m.from_user.mention}, I’m {bot_name}, here to keep the energy high. Use /help to see what I can do!")
 
 
-async def log_start(message: Message):
-    text = f"""
-❖ {message.from_user.mention} ᴊᴜsᴛ sᴛᴀʀᴛᴇᴅ ᴛʜᴇ ʙᴏᴛ.
-    
-<b>● ᴜsᴇʀ ɪᴅ ➥</b> <code>{message.from_user.id}</code>
-<b>● ᴜsᴇʀɴᴀᴍᴇ ➥</b> @{message.from_user.username if message.from_user.username else 'No Username'}
-    """
-    
-    try:
-        await app.send_message(LOGGER_ID, text)
-    except Exception as e:
-        print(f"Logging Error: {e}")
-
-
 @app.on_message(filters.command("help") & filters.group)
 async def help(client, m: Message):
     await m.reply(
         "Need help? Click below to see all my commands.",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📜 ᴄᴏᴍᴍᴀɴᴅs ᴀɴᴅ ɢᴜɪᴅᴇ", url="http://t.me/MissAaru_Robot?start=help")]
+            [InlineKeyboardButton("📜 ᴄᴏᴍᴍᴀɴᴅs ᴀɴᴅ ɢᴜɪᴅᴇ", url="http://t.me/Era_Roxbot?start=help")]
         ])
     )
 
@@ -96,15 +93,14 @@ I'm here to chat, vibe, and bring some fun to your day.
 
 💌 Add me to your group for even more excitement.  
 """
-
             if query.message.text != new_text:
                 await query.message.edit_text(
                     new_text,
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton(text="ᴀᴅᴅ ᴍᴇ ʙᴀʙʏ", url="https://t.me/MissAaru_Robot?startgroup=true")],
+                        [InlineKeyboardButton(text="ᴀᴅᴅ ᴍᴇ ʙᴀʙʏ", url="https://t.me/Era_Roxbot?startgroup=true")],
                         [
-                            InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ", url="https://t.me/C0DE_SEARCH"),
-                            InlineKeyboardButton(text="sᴜᴘᴘᴏʀᴛ", url="https://t.me/AsuraaSupports")
+                            InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ", url="https://t.me/net_pro_max"),
+                            InlineKeyboardButton(text="sᴜᴘᴘᴏʀᴛ", url="https://t.me/+cXIPgHSuJnxiNjU1")
                         ],
                         [InlineKeyboardButton(text="ᴍʏ ᴄᴏᴍᴍᴀɴᴅs", callback_data="help")]
                     ])
@@ -119,20 +115,34 @@ I'm here to chat, vibe, and bring some fun to your day.
 ⬤ /ping ➥ Check if I'm online.  
 ⬤ /stats ➥ Get chat stats.  
 ⬤ /chatbot ➥ Toggle AI replies (only works in groups).  
-⬤ /kiss ➥ Get a virtual kiss from me. 😘  
-⬤ /hug ➥ Let me wrap you in a warm hug. 🤗 
-⬤ /waifu ➥ Want a cute waifu image? Just drop a tag, and I'll fetch one for you. 💕
 
 Stay sharp, stay awesome. ✨  
 """
-
             if query.message.text != help_message:
                 await query.message.edit_text(
                     help_message,
                     reply_markup=InlineKeyboardMarkup([
                         [
                             InlineKeyboardButton(text="ʙᴀᴄᴋ", callback_data="start"),
-                            InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ", url="https://t.me/C0DE_SEARCH")
+                            InlineKeyboardButton(text="ᴄʜᴀɴɴᴇʟ", url="https://t.me/net_pro_max")
                         ]
                     ])
                 )
+
+# Naya handler: Jab bot kisi group ya channel mein add ho jaye, OWNER_ID ko DM bhejega
+@app.on_message(filters.new_chat_members)
+async def new_chat_member_handler(client, m: Message):
+    for member in m.new_chat_members:
+        if member.is_self:
+            chat_title = m.chat.title if m.chat.title else "Private Chat"
+            text = f"""
+❖ Bot added to a new chat.
+    
+<b>Chat Title ➥</b> {chat_title}
+<b>Chat ID ➥</b> <code>{m.chat.id}</code>
+            """
+            try:
+                await app.send_message(OWNER_ID, text)
+            except Exception as e:
+                print(f"Error sending new chat member log: {e}")
+            break
