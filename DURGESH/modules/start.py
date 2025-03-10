@@ -129,20 +129,68 @@ Stay sharp, stay awesome. ✨
                     ])
                 )
 
-# Naya handler: Jab bot kisi group ya channel mein add ho jaye, OWNER_ID ko DM bhejega
+
+
+async def set_default_status(chat_id):
+    try:
+        if not await status_db.find_one({"chat_id": chat_id}):
+            await status_db.insert_one({"chat_id": chat_id, "status": "enabled"})
+    except Exception as e:
+        print(f"Error setting default status for chat {chat_id}: {e}")
+
 @app.on_message(filters.new_chat_members)
-async def new_chat_member_handler(client, m: Message):
-    for member in m.new_chat_members:
-        if member.is_self:
-            chat_title = m.chat.title if m.chat.title else "Private Chat"
-            text = f"""
-❖ Bot added to a new chat.
-    
-<b>Chat Title ➥</b> {chat_title}
-<b>Chat ID ➥</b> <code>{m.chat.id}</code>
-            """
-            try:
-                await app.send_message(OWNER_ID, text)
-            except Exception as e:
-                print(f"Error sending new chat member log: {e}")
-            break
+async def welcome_in_new_chat(client, message: Message):
+    chat_id = message.chat.id
+    await add_chat(chat_id, message.chat.title)
+    await set_default_status(chat_id)
+    chats = len(await get_chats())
+    try:
+        for member in message.new_chat_members:
+            if member.id == app.id:
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("sᴇʟᴇᴄᴛ ʟᴀɴɢᴜᴀɢᴇ", callback_data="choose_lang")]]
+                )
+                await message.reply_photo(
+                    photo=random.choice(IMG),
+                    caption=START.format(app.mention or "can't mention", chats),
+                    reply_markup=reply_markup
+                )
+                chat = message.chat
+                try:
+                    invitelink = await app.export_chat_invite_link(chat_id)
+                    link = f"[ɢᴇᴛ ʟɪɴᴋ]({invitelink})"
+                except ChatAdminRequired:
+                    link = "No Link"
+                try:
+                    groups_photo = await app.download_media(
+                        chat.photo.big_file_id, file_name=f"chatpp{chat_id}.png"
+                    )
+                    chat_photo = groups_photo if groups_photo else "https://envs.sh/_2L.png"
+                except Exception:
+                    chat_photo = "https://envs.sh/_2L.png"
+                count = await app.get_chat_members_count(chat_id)
+                username = chat.username if chat.username else "𝐏ʀɪᴠᴀᴛᴇ 𝐆ʀᴏᴜᴘ"
+                msg = (
+                    f"**📝 𝐌ᴜsɪᴄ 𝐁ᴏᴛ 𝐀ᴅᴅᴇᴅ 𝐈ɴ 𝐀 #𝐍ᴇᴡ_𝐆ʀᴏᴜᴘ**\n\n"
+                    f"**📌 𝐂ʜᴀᴛ 𝐍ᴀᴍᴇ:** {chat.title}\n"
+                    f"**🍂 𝐂ʜᴀᴛ 𝐈ᴅ:** `{chat_id}`\n"
+                    f"**🔐 𝐂ʜᴀᴛ 𝐔sᴇʀɴᴀᴍᴇ:** @{username}\n"
+                    f"**🖇️ 𝐆ʀᴏᴜᴘ 𝐋ɪɴᴋ:** {link}\n"
+                    f"**📈 𝐆ʀᴏᴜᴘ 𝐌ᴇᴍʙᴇʀs:** {count}\n"
+                    f"**🤔 𝐀ᴅᴅᴇᴅ 𝐁ʏ:** {message.from_user.mention}\n\n"
+                    f"**ᴛᴏᴛᴀʟ ᴄʜᴀᴛs:** {chats}"
+                )
+                try:
+                    await app.send_photo(
+                        int(OWNER_ID),
+                        photo=chat_photo,
+                        caption=msg,
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton(f"{message.from_user.first_name}", user_id=message.from_user.id)]
+                        ])
+                    )
+                except Exception as e:
+                    logging.info(f"Error sending photo to owner: {e}")
+                break
+    except Exception as e:
+        logging.info(f"Error in welcome_in_new_chat: {e}")
