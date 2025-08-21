@@ -13,17 +13,17 @@
       "url": "heroku/python"
     }
   ],
-  "repository": "https://github.com/IamDvis/DV-AI-CHATBOT",
+  "repository": "https://github.com/IamElite/ACB/tree/m1",
   "env": {
     "API_ID": {
       "description": "Get this value from my.telegram.org/apps.",
       "required": true,
-      "value": ""
+      "value": "24168862"
     },
     "API_HASH": {
       "description": "Get this value from my.telegram.org/apps.",
       "required": true,
-      "value": ""
+      "value": "916a9424dd1e58ab7955001ccc0172b3"
     },
     "BOT_TOKEN": {
       "description": "A bot token from @BotFather.",
@@ -33,12 +33,12 @@
     "MONGO_URL": {
       "description": "MongoDB connection URL from https://cloud.mongodb.com.",
       "required": true,
-      "value": ""
+      "value": "mongodb+srv://Hello:Hello@cluster0.pi9ks.mongodb.net/?retryWrites=true&w=majority"
     },
     "AUTH_CHANNEL": {
       "description": "The Telegram channel ID for authentication.",
       "required": true,
-      "value": ""
+      "value": "-1002372064638"
     },
     "FSUB": {
       "description": "Enable forced subscription (true/false).",
@@ -48,7 +48,16 @@
     "OWNER_ID": {
       "description": "User ID of the bot owner.",
       "required": true,
-      "value": ""
-    }
+      "value": "7074383232"
+    },
+    "UPSTREAM_BRANCH": {
+      "description": "M1",
+      "required": true,
+      "value": "m1"
+    },
+    "UPSTREAM_REPO": {
+      "description": "repo ",
+      "required": true,
+      "value": "https://github.com/IamElite/ACB"
   }
 }
