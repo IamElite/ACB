@@ -11,9 +11,18 @@
   "buildpacks": [
     {
       "url": "heroku/python"
+    },
+    {
+      "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest.git"
     }
   ],
   "repository": "https://github.com/IamElite/ACB/tree/m1",
+  "formation": {
+    "worker": {
+      "quantity": "1",
+      "size": "Standard-2X"
+    }
+  },
   "env": {
     "API_ID": {
       "description": "Get this value from my.telegram.org/apps.",
@@ -56,8 +65,9 @@
       "value": "m1"
     },
     "UPSTREAM_REPO": {
-      "description": "repo ",
+      "description": "repo",
       "required": true,
       "value": "https://github.com/IamElite/ACB"
+    }
   }
 }
