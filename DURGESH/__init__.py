@@ -2,7 +2,7 @@
 
 import time
 import logging
-from kurigram import Client
+from pyrogram import Client
 from motor.motor_asyncio import AsyncIOMotorClient
 import config
 
@@ -46,4 +46,5 @@ class Bot(Client):
 
 # Create app instance
 app = Bot()
+
 
