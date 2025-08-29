@@ -3,7 +3,7 @@
 import time
 import logging
 import asyncio
-from pyrogram import Client, idle
+from pyrogram import Client, idle # <-- Ye Pyrogram se import ho raha hai
 from motor.motor_asyncio import AsyncIOMotorClient
 import config
 
@@ -19,7 +19,7 @@ LOGGER = logging.getLogger("DURGESH")
 db = AsyncIOMotorClient(config.MONGO_URL).Anonymous 
 START_TIME = time.time()
 
-class Bot(Client):
+class Bot(Client): # <-- Pyrogram ka Client class inherit ho raha hai
     def __init__(self):
         super().__init__(
             name="DURGESH",
@@ -43,8 +43,4 @@ class Bot(Client):
     def mention(self):
         return f"[{self.name}](tg://user?id={self.id})"
 
-app = Bot()
-
-
-
-
+app = Bot() # <-- Bot ka instance ban raha hai
