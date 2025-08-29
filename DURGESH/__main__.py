@@ -1,33 +1,25 @@
-# __main__.py
+# DURGESH/__main__.py
 
-import importlib
-import asyncio
-from pyrogram import idle
 import config
 from DURGESH import app
-from DURGESH.modules import ALL_MODULES
+import logging
 
-async def boot():
-    await app.start()
+# Logger
+LOGGER = logging.getLogger("DURGESH")
 
-    # Load all modules
-    for module in ALL_MODULES:
-        importlib.import_module(f"DURGESH.modules.{module}")
-        print(f"Loaded module: {module}")
-
-    # Notify owner
+# Startup message
+@app.on_bot_startup
+async def bot_startup():
     try:
         owner_id = int(config.OWNER_ID)
         await app.send_message(owner_id, f"{app.mention} **has started! 🚀**")
-    except Exception as ex:
-        print("Error sending startup message:", ex)
-
-    # Keep the bot running
-    await idle()
-
-    # Graceful shutdown
-    await app.stop()
+        LOGGER.info("Startup message sent to owner.")
+    except Exception as e:
+        LOGGER.warning(f"Failed to send startup message: {e}")
 
 if __name__ == "__main__":
-    # This is the correct way to run an async main function
-    asyncio.run(boot())
+    try:
+        app.run()  
+    except Exception as e:
+        LOGGER.critical(f"Failed to start bot: {e}")
+        raise
