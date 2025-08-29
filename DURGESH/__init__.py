@@ -6,7 +6,7 @@ import asyncio
 from pyrogram import Client, idle 
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
-from config import * 
+from config import *
 
 # Logger Setup
 logging.basicConfig(
@@ -17,7 +17,7 @@ logging.basicConfig(
 LOGGER = logging.getLogger("DURGESH")
 
 # Database Connection
-db = AsyncIOMotorClient(config.MONGO_URL).Anonymous
+db = AsyncIOMotorClient(MONGO_URL).Durgesh
 START_TIME = time.time()
 
 # Web Server Setup
@@ -38,10 +38,10 @@ class Bot(Client): # <-- Pyrogram ka Client class inherit kiya gaya hai
     def __init__(self):
         super().__init__(
             name="DURGESH",
-            api_id=config.API_ID,
-            api_hash=config.API_HASH,
+            api_id=API_ID,
+            api_hash=API_HASH,
             workers=TG_BOT_WORKERS,
-            bot_token=config.BOT_TOKEN,
+            bot_token=BOT_TOKEN,
         )
 
     async def start(self, *args, **kwargs):
@@ -66,6 +66,7 @@ class Bot(Client): # <-- Pyrogram ka Client class inherit kiya gaya hai
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
+
 
 
 
