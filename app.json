@@ -44,16 +44,6 @@
       "required": true,
       "value": "mongodb+srv://Hello:Hello@cluster0.pi9ks.mongodb.net/?retryWrites=true&w=majority"
     },
-    "AUTH_CHANNEL": {
-      "description": "The Telegram channel ID for authentication.",
-      "required": true,
-      "value": "-1002372064638"
-    },
-    "FSUB": {
-      "description": "Enable forced subscription (true/false).",
-      "required": true,
-      "value": "false"
-    },
     "OWNER_ID": {
       "description": "User ID of the bot owner.",
       "required": true,
