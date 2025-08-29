@@ -10,7 +10,7 @@ from DURGESH.modules import ALL_MODULES
 
 async def boot():
     await app.start()
-   
+    
     for module in ALL_MODULES:
         importlib.import_module(f"DURGESH.modules.{module}")
     
@@ -25,3 +25,7 @@ async def boot():
 
 if __name__ == "__main__":
     app.run(boot())
+
+if __name__ == "__main__":
+    app.run(boot())
+
