@@ -22,7 +22,7 @@ START_TIME = time.time()
 
 # Web Server Setup
 routes = web.RouteTableDef()
-PORT = config.PORT
+#PORT = config.PORT
 
 @routes.get("/", allow_head=True)
 async def root_route_handler(request):
@@ -40,6 +40,7 @@ class Bot(Client): # <-- Pyrogram ka Client class inherit kiya gaya hai
             name="DURGESH",
             api_id=config.API_ID,
             api_hash=config.API_HASH,
+            workers=TG_BOT_WORKERS,
             bot_token=config.BOT_TOKEN,
         )
 
@@ -65,5 +66,6 @@ class Bot(Client): # <-- Pyrogram ka Client class inherit kiya gaya hai
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
+
 
 
