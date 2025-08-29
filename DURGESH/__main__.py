@@ -26,6 +26,4 @@ async def boot():
 if __name__ == "__main__":
     app.run(boot())
 
-if __name__ == "__main__":
-    app.run(boot())
 
