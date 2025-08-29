@@ -5,6 +5,7 @@ import config
 from DURGESH import app
 from DURGESH.modules import ALL_MODULES
 
+import signal
 
 async def boot():
     await app.start()
@@ -14,13 +15,14 @@ async def boot():
 
     try:
         owner_id = int(config.OWNER_ID)
-        await app.send_message(owner_id, f"{app.mention} **has started! 🎉**")
+        await app.send_message(owner_id, f"{app.mention} **started! 🚀**")
     except Exception as ex:
-        print("Error sending startup message to owner:", ex)
+        print("Startup message error:", ex)
 
-    await idle()  # Keeps the bot running
-    await app.stop()
-
-
-if __name__ == "__main__":
-    asyncio.run(boot())  # ✅ Proper way when .run() doesn't support coroutines
+    # Graceful shutdown on interrupt
+    try:
+        await idle()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        await app.stop()
