@@ -1,5 +1,6 @@
 from os import getenv
 
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -10,8 +11,8 @@ OWNER_ID = int(getenv("OWNER_ID", None))
 MONGO_URL = getenv("MONGO_URL", None)
 OWNER_ID = int(getenv("OWNER_ID", None))
 
-PORT = os.environ.get("PORT", "8080")
-TG_BOT_WORKERS = int(os.environ.get("TG_BOT_WORKERS", "4"))
+PORT = getenv("PORT", "8080")
+TG_BOT_WORKERS = int(getenv("TG_BOT_WORKERS", "4"))
 
 
 
@@ -66,4 +67,5 @@ CAPTIONS = [
 "Lɪғᴇ Is A Fʟᴇᴇᴛɪɴɢ Mᴏᴍᴇɴᴛ :)", "Tʜᴇ Tʀᴜᴛʜ Is Aɴ Iʟʟᴜsɪᴏɴ :)", 
 "Eᴠᴇʀʏᴛʜɪɴɢ Is Aɴ Iʟʟᴜsɪᴏɴ :)"
 ]
+
 
