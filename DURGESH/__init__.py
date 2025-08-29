@@ -36,7 +36,7 @@ class Bot(Client):
         self.username = self.me.username
         LOGGER.info(f"Bot started as {self.name} (@{self.username})")
 
-    async def stop(self):
+    async def stop(self, *args):
         await super().stop()
         LOGGER.info("Bot stopped.")
 
@@ -46,5 +46,6 @@ class Bot(Client):
 
 # Create app instance
 app = Bot()
+
 
 
