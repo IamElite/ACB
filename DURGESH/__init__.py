@@ -15,7 +15,7 @@ logging.basicConfig(
 LOGGER = logging.getLogger("DURGESH")
 
 # Database
-db = AsyncIOMotorClient(config.MONGO_URL).Anonymous
+db = AsyncIOMotorClient(config.MONGO_URL).Durgesh
 START_TIME = time.time()
 
 class Bot(Client):
@@ -46,3 +46,4 @@ class Bot(Client):
 
 # Create app instance
 app = Bot()
+
