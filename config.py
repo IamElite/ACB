@@ -8,14 +8,8 @@ API_HASH = getenv("API_HASH", None)
 BOT_TOKEN = getenv("BOT_TOKEN", None)
 OWNER_ID = int(getenv("OWNER_ID", None))
 MONGO_URL = getenv("MONGO_URL", None)
-AUTH_CHANNEL = int(getenv("AUTH_CHANNEL", None))
-FSUB = getenv("FSUB", False)
 OWNER_ID = int(getenv("OWNER_ID", None))
 
-IMG_GEN_API = getenv("IMG_GEN_API", None)
-
-UPSTREAM_REPO = getenv("UPSTREAM_REPO", "https://github.com/IamDvis/DV-AI-CHATBOT")
-UPSTREAM_BRANCH = getenv("UPSTREAM_BRANCH", "main")
 
 
 
