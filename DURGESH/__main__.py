@@ -1,5 +1,3 @@
-# DURGESH/__main__.py
-
 import importlib
 import asyncio
 from pyrogram import idle
@@ -24,7 +22,6 @@ async def boot():
     await app.stop()
 
 if __name__ == "__main__":
-    asyncio.run(boot())
-
-
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(boot())
 
