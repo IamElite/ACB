@@ -1,11 +1,12 @@
+# DURGESH/__init__.py
+
 import time
 import logging
-import asyncio
-from pyrogram import Client, idle
+from kurigram import Client
 from motor.motor_asyncio import AsyncIOMotorClient
 import config
 
-# Logger Setup 
+# Logger Setup
 logging.basicConfig(
     format="[%(asctime)s - %(levelname)s] - %(name)s - %(message)s",
     datefmt="%d-%b-%y %H:%M:%S",
@@ -13,8 +14,8 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("DURGESH")
 
-# Database Connection 
-db = AsyncIOMotorClient(config.MONGO_URL).Anonymous 
+# Database
+db = AsyncIOMotorClient(config.MONGO_URL).Anonymous
 START_TIME = time.time()
 
 class Bot(Client):
@@ -24,18 +25,18 @@ class Bot(Client):
             api_id=config.API_ID,
             api_hash=config.API_HASH,
             bot_token=config.BOT_TOKEN,
+            in_memory=True,
+            plugins=dict(root="DURGESH/modules")  # Auto-load modules
         )
 
     async def start(self, *args, **kwargs):
-        """Starts the bot and logs details"""
-        await super().start()
+        await super().start(*args, **kwargs)
         self.id = self.me.id
         self.name = self.me.first_name
         self.username = self.me.username
-        LOGGER.info(f"Bot started as {self.name} (@{self.username}). ")
+        LOGGER.info(f"Bot started as {self.name} (@{self.username})")
 
     async def stop(self):
-        """Stops the bot gracefully"""
         await super().stop()
         LOGGER.info("Bot stopped.")
 
@@ -43,4 +44,5 @@ class Bot(Client):
     def mention(self):
         return f"[{self.name}](tg://user?id={self.id})"
 
+# Create app instance
 app = Bot()
