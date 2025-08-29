@@ -1,4 +1,5 @@
 import importlib
+import asyncio
 from pyrogram import idle
 import config
 from DURGESH import app
@@ -13,13 +14,13 @@ async def boot():
 
     try:
         owner_id = int(config.OWNER_ID)
-        await app.send_message(owner_id, f"{app.mention} **ʜᴀs sᴛᴀʀᴛᴇᴅ 🥳**")
+        await app.send_message(owner_id, f"{app.mention} **has started! 🎉**")
     except Exception as ex:
-        print("Eʀʀᴏʀ sᴇɴᴅɪɴɢ sᴛᴀʀᴛᴜᴘ ᴍᴇssᴀɢᴇ ᴛᴏ ᴏᴡɴᴇʀ:", ex)
+        print("Error sending startup message to owner:", ex)
 
-    await idle()  # Keeps the client running
+    await idle()  # Keeps the bot running
     await app.stop()
 
 
 if __name__ == "__main__":
-    app.run(boot)  # ✅ Pass the function, don't call it
+    asyncio.run(boot())  # ✅ Proper way when .run() doesn't support coroutines
