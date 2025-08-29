@@ -6,7 +6,7 @@ import asyncio
 from pyrogram import Client, idle 
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
-import config
+from config import * 
 
 # Logger Setup
 logging.basicConfig(
@@ -66,6 +66,7 @@ class Bot(Client): # <-- Pyrogram ka Client class inherit kiya gaya hai
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
+
 
 
 
