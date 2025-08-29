@@ -1,5 +1,6 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from DURGESH import app
 
 @app.on_message(filters.command("start") & filters.private)
 async def start(client: Client, message: Message):
@@ -9,4 +10,5 @@ async def start(client: Client, message: Message):
             [InlineKeyboardButton("🛠 Help", callback_data="help")],
             [InlineKeyboardButton("➕ Add me to your group", url=f"https://t.me/{client.me.username}?startgroup=true")]
         ])
+
     )
