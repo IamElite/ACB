@@ -11,7 +11,7 @@ from pyrogram import filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from DURGESH import app
-from config import OWNER_ID
+from config import ADMINS
 #from ERAVIBES.misc import SUDOERS
 
 
@@ -36,13 +36,13 @@ async def edit_or_reply(msg: Message, **kwargs):
 
 @app.on_edited_message(
     filters.command("eval")
-    & filters.user(OWNER_ID)
+    & filters.user(ADMINS)
     & ~filters.forwarded
     & ~filters.via_bot
 )
 @app.on_message(
     filters.command(["eval", "ev"], prefixes=["/", "!", ".", ""])
-    & filters.user(OWNER_ID) #SUDOERS 
+    & filters.user(ADMINS) #SUDOERS 
     & ~filters.forwarded
     & ~filters.via_bot
 )
@@ -146,13 +146,13 @@ async def forceclose_command(_, CallbackQuery):
 
 @app.on_edited_message(
     filters.command("sh")
-    & filters.user(OWNER_ID)
+    & filters.user(ADMINS)
     & ~filters.forwarded
     & ~filters.via_bot
 )
 @app.on_message(
     filters.command(["sh"], prefixes=["/", "!", ".", ""])
-    & filters.user(OWNER_ID) #SUDOERS
+    & filters.user(ADMINS) #SUDOERS
     & ~filters.forwarded
     & ~filters.via_bot
 )
@@ -214,4 +214,5 @@ async def shellrunner(_, message: Message):
         await edit_or_reply(message, text=f"<b>OUTPUT :</b>\n<pre>{output}</pre>")
     else:
         await edit_or_reply(message, text="<b>OUTPUT :</b>\n<code>None</code>")
+
     await message.stop_propagation()
