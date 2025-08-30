@@ -4,7 +4,7 @@ from config import ADMINS
 
 
 @app.on_message(
-    filters.command(["eco", "e"], prefixes=["/", "!", ".", ""])
+    filters.command(["eco", "s"], prefixes=["/", "!", ".", ""])
     & filters.reply
     & filters.user(ADMINS)
 )
