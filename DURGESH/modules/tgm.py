@@ -4,8 +4,9 @@ from pyrogram import Client, filters
 from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ParseMode,
 )
+from pyrogram.enums import ParseMode
+
 from DURGESH import app
 from config import ADMINS      # adjust the import path to your project
 
