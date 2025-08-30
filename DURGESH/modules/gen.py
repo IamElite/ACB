@@ -3,13 +3,13 @@ from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 from DURGESH import app
-from config import ADMINS
-import requests, os, math
+from config import ADMINS          # <-- added
+import requests, os
 
 TG_TOKEN  = "d3b25feccb89e508a9114afb82aa421fe2a9712b963b387cc5ad71e58722"
 CATBOX_URL = "https://catbox.moe/user/api.php"
 
-@app.on_message(filters.command("gen") & filters.user(ADMINS))
+@app.on_message(filters.command("gen") & filters.user(ADMINS))   # <-- restricted
 async def gen_post(_, msg: Message):
     if not msg.reply_to_message or not msg.reply_to_message.photo:
         return await msg.reply("❗ Kisi photo pe reply karo `/gen` se.")
@@ -22,15 +22,13 @@ async def gen_post(_, msg: Message):
     temp_msg = await msg.reply("Pʀᴏᴄᴇssɪɴɢ... 0.0%")
 
     def progress(current, total):
-        percent = current * 100 / total
         try:
-            temp_msg.edit_text(f"Pʀᴏᴄᴇssɪɴɢ... {percent:.1f}%")
+            temp_msg.edit_text(f"Pʀᴏᴄᴇssɪɴɢ... {current*100/total:.1f}%")
         except Exception:
             pass
 
     try:
         tmp_path = await app.download_media(photo, progress=progress)
-        await temp_msg.edit_text("📤 Uploading to Catbox…")
 
         with open(tmp_path, "rb") as f:
             r = requests.post(
@@ -49,7 +47,7 @@ async def gen_post(_, msg: Message):
                 json={
                     "access_token": TG_TOKEN,
                     "title": title,
-                    "author_name": "@SyntaxRealm ON TG",   # fixed
+                    "author_name": "@SyntaxRealm ON TG",
                     "content": content
                 },
                 timeout=15
