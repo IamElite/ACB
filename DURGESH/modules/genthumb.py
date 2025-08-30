@@ -14,62 +14,72 @@ def create_thumbnail(background_path, season, episode, lang, output_path="thumbn
         return
 
     # === Load Fonts ===
-    montserrat_paths = [
+    font_paths = [
+        "fonts/Impact.ttf",   # Impact is bold style for episode text
         "fonts/Montserrat-Bold.ttf",
         "/app/fonts/Montserrat-Bold.ttf",
     ]
-    font_main = None
-    for path in montserrat_paths:
+    font_episode = None
+    font_season = None
+    font_lang = None
+
+    for path in font_paths:
         try:
-            font_main = ImageFont.truetype(path, size=int(height / 25))
+            font_episode = ImageFont.truetype(path, size=int(height / 6))   # bada for EPISODE
+            font_season = ImageFont.truetype(path, size=int(height / 18))   # chhota for SEASON
+            font_lang = ImageFont.truetype(path, size=int(height / 22))     # ribbon ke liye
             break
         except IOError:
             continue
-    if font_main is None:
-        font_main = ImageFont.load_default()
+
+    if font_episode is None:
+        font_episode = ImageFont.load_default()
+        font_season = ImageFont.load_default()
+        font_lang = ImageFont.load_default()
 
     # === Top Left: SEASON XX ===
     margin = int(width * 0.02)
     season_text = f"SEASON {season}"
-    draw.text((margin, margin), season_text, fill="white", font=font_main, stroke_width=1, stroke_fill="black")
+    draw.text(
+        (margin, margin),
+        season_text,
+        fill="white",
+        font=font_season,
+        stroke_width=2,
+        stroke_fill="black"
+    )
 
-    # === Top Right: Black Diagonal Triangle + HINDI ===
-    # Draw black diagonal triangle (from top-right to bottom-left)
-    triangle_points = [
-        (width, 0),
-        (width, int(height * 0.2)),
-        (int(width * 0.7), 0)
-    ]
-    draw.polygon(triangle_points, fill='black')
+    # === Top Right: White Ribbon + HINDI ===
+    ribbon_height = int(height * 0.12)
+    ribbon_width = int(width * 0.35)
+    ribbon_points = [(width, 0), (width - ribbon_width, 0), (width, ribbon_height)]
+    draw.polygon(ribbon_points, fill="white")
 
-    # Add "HINDI" inside triangle (white, small)
     lang_text = lang.upper()
-    try:
-        bbox = font_main.getbbox(lang_text)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-    except:
-        text_width, text_height = font_main.getsize(lang_text)
+    text_w, text_h = draw.textsize(lang_text, font=font_lang)
+    lang_x = width - ribbon_width + 20
+    lang_y = 10
+    draw.text(
+        (lang_x, lang_y),
+        lang_text,
+        font=font_lang,
+        fill="black"
+    )
 
-    # Position: center of triangle
-    x = width - int(text_width * 1.2)
-    y = int(text_height * 0.8)
-    draw.text((x, y), lang_text, fill="white", font=font_main)
-
-    # === Bottom Right: EPISODE XXX ===
+    # === Bottom Center: EPISODE XXX ===
     episode_text = f"EPISODE {episode}"
-    try:
-        epi_bbox = font_main.getbbox(episode_text)
-        epi_width = epi_bbox[2] - epi_bbox[0]
-        epi_height = epi_bbox[3] - epi_bbox[1]
-    except:
-        epi_width, epi_height = font_main.getsize(episode_text)
+    epi_w, epi_h = draw.textsize(episode_text, font=font_episode)
+    epi_x = (width - epi_w) // 2
+    epi_y = height - epi_h - int(height * 0.05)
 
-    x = width - epi_width - margin
-    y = height - epi_height - margin
-
-    # Yellow text (no shadow)
-    draw.text((x, y), episode_text, fill="#FFD700", font=font_main)
+    draw.text(
+        (epi_x, epi_y),
+        episode_text,
+        font=font_episode,
+        fill="#FFD700",  # Golden yellow
+        stroke_width=6,
+        stroke_fill="black"
+    )
 
     # Save
     try:
@@ -77,6 +87,7 @@ def create_thumbnail(background_path, season, episode, lang, output_path="thumbn
         print(f"Thumbnail saved: {output_path}")
     except Exception as e:
         print(f"Save error: {e}")
+
 
 # === Command Handler ===
 @app.on_message(filters.command("gt"))
@@ -144,3 +155,4 @@ async def generate_thumbnail_handler(client: Client, message: Message):
             os.remove(download_path)
         if os.path.exists(output_path):
             os.remove(output_path)
+
