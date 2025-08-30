@@ -7,3 +7,4 @@ Kurigram
 requests
 pillow
 
+aiofiles
