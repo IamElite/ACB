@@ -68,18 +68,21 @@ def create_thumbnail(background_path, season, episode, lang, output_path="thumbn
 
     # === Bottom Center: EPISODE XXX ===
     episode_text = f"EPISODE {episode}"
-    epi_w, epi_h = draw.textsize(episode_text, font=font_episode)
+    bbox = draw.textbbox((0, 0), episode_text, font=font_episode)
+    epi_w = bbox[2] - bbox[0]
+    epi_h = bbox[3] - bbox[1]
     epi_x = (width - epi_w) // 2
     epi_y = height - epi_h - int(height * 0.05)
-
+    
     draw.text(
         (epi_x, epi_y),
         episode_text,
         font=font_episode,
-        fill="#FFD700",  # Golden yellow
+        fill="#FFD700",
         stroke_width=6,
         stroke_fill="black"
     )
+
 
     # Save
     try:
