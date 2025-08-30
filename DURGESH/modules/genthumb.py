@@ -1,87 +1,146 @@
 # plugins/gt.py  (or wherever you keep handlers)
 
-import re
 import os
-import asyncio
-from io import BytesIO
-
+from pyrogram import Client, filters
+from pyrogram.types import Message
 from PIL import Image, ImageDraw, ImageFont
-from pyrogram import filters
-from DURGESH import app          # your bot instance
+from DURGESH import app
 
-DEFAULT_LANG = "Hindi"
-FONTS_DIR = "fonts"
+def create_thumbnail(background_path, season, episode, lang, output_path="thumbnail.png"):
+    try:
+        image = Image.open(background_path).convert("RGBA")
+        width, height = image.size
+        draw = ImageDraw.Draw(image)
+    except FileNotFoundError:
+        print(f"Error: Background image '{background_path}' nahi mili. Path check karein.")
+        return
 
-# ---------- helpers ----------
-def font_path(name: str, size: int):
-    path = os.path.join(FONTS_DIR, name)
-    return ImageFont.truetype(path, size) if os.path.isfile(path) else ImageFont.load_default()
+    try:
+        font_main = ImageFont.truetype("fonts/Montserrat-Bold.ttf", size=int(height / 18))
+        font_episode = ImageFont.truetype("fonts/Montserrat-SemiBold.ttf", size=int(height / 9))
+    except IOError:
+        print("Font files (Montserrat-Bold.ttf, Montserrat-SemiBold.ttf) fonts/ folder me nahi mili.")
+        font_main = ImageFont.load_default()
+        font_episode = ImageFont.load_default()
 
-def text_size(draw: ImageDraw.Draw, text: str, font: ImageFont.FreeTypeFont):
-    bbox = draw.textbbox((0, 0), text, font=font)
-    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+    margin = int(width * 0.03)
+    season_text = f"SEASON {season}"
+    draw.text((margin, margin), season_text, fill="white", font=font_main, stroke_width=2, stroke_fill="black")
 
-def add_shadow(draw: ImageDraw.Draw, x: int, y: int, text: str,
-               font: ImageFont.FreeTypeFont, fill: str,
-               shadow_color: str = "#000000", offset: tuple = (3, 3)):
-    draw.text((x + offset[0], y + offset[1]), text, font=font, fill=shadow_color)
-    draw.text((x, y), text, font=font, fill=fill)
+    ribbon_size = int(width * 0.35)
+    draw.polygon([(width - ribbon_size, 0), (width, 0), (width, ribbon_size)], fill='black')
 
-# ---------- thumbnail generator ----------
-def make_thumb(season: int, episode: int, lang: str) -> bytes:
-    W, H = 720, 1280
-    img = Image.new("RGB", (W, H), "#111111")
-    draw = ImageDraw.Draw(img)
+    lang_text = lang.upper()
+    
+    try:
+        lang_bbox = font_main.getbbox(lang_text)
+        lang_text_width = lang_bbox[2]
+        lang_text_height = lang_bbox[3]
+    except AttributeError:
+        lang_text_width, lang_text_height = font_main.getsize(lang_text)
+        
+    text_image = Image.new('RGBA', (lang_text_width, lang_text_height), (0, 0, 0, 0))
+    text_draw = ImageDraw.Draw(text_image)
+    text_draw.text((0, 0), lang_text, font=font_main, fill='white')
 
-    # fonts
-    font_se = font_path("Montserrat-Bold.ttf", 110)
-    font_ep = font_path("Montserrat-Bold.ttf", 100)
-    font_lg = font_path("Montserrat-SemiBold.ttf", 70)
+    rotated_text_image = text_image.rotate(45, expand=1, resample=Image.BICUBIC)
 
-    # colors
-    accent = "#00c3ff"
-    text_color = "#ffffff"
+    rt_width, rt_height = rotated_text_image.size
+    paste_pos_x = width - int(rt_width * 0.75)
+    paste_pos_y = int(rt_height * 0.1)
+    
+    image.paste(rotated_text_image, (paste_pos_x, paste_pos_y), rotated_text_image)
+    
+    episode_text = f"EPISODE {episode}"
+    
+    try:
+        epi_bbox = font_episode.getbbox(episode_text)
+        epi_text_width = epi_bbox[2]
+        epi_text_height = epi_bbox[3]
+    except AttributeError:
+        epi_text_width, epi_text_height = font_episode.getsize(episode_text)
 
-    se_txt = f"SEASON {season}"
-    ep_txt = f"EPISODE {episode}"
-    lg_txt = lang.upper()
+    x = width - epi_text_width - margin
+    y = height - epi_text_height - margin
 
-    # draw text with shadow
-    add_shadow(draw, 50, 150, se_txt, font_se, accent)
-    add_shadow(draw, 50, 150 + 120, ep_txt, font_ep, text_color)
+    shadow_offset = int(height * 0.008)
+    shadow_color = "black"
+    draw.text((x + shadow_offset, y + shadow_offset), episode_text, font=font_episode, fill=shadow_color)
 
-    lw, lh = text_size(draw, lg_txt, font_lg)
-    add_shadow(draw, W - lw - 50, H - lh - 100, lg_txt, font_lg, accent)
+    main_color = "#FFC300"
+    draw.text((x, y), episode_text, font=font_episode, fill=main_color)
 
-    # binary buffer
-    buf = BytesIO()
-    img.save(buf, format="JPEG", quality=95)
-    buf.seek(0)
-    return buf.getvalue()
+    image.save(output_path, "PNG")
+    print(f"Thumbnail successfully ban gaya hai: '{output_path}'")
 
-# ---------- /gt command ----------
-@app.on_message(filters.command("gt") & filters.reply)
-async def gt_handler(_, msg):
-    replied = msg.reply_to_message
-    if not replied or not replied.photo:
-        return await msg.reply("❗️Reply to a photo first.")
 
-    parts = (msg.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        return await msg.reply("❗️Usage: `/gt 11 221 [language]`")
+@app.on_message(filters.command("gt"))
+async def generate_thumbnail_handler(client: Client, message: Message):
+    if not message.reply_to_message:
+        await message.reply_text("Kripya ek photo (caption ke sath) ko reply karke yeh command use karein.")
+        return
 
-    match = re.match(r"^(\d+)\s+(\d+)(?:\s+(.+))?$", parts[1])
-    if not match:
-        return await msg.reply("❗️Bad format. Use: `/gt 11 221 Hindi`")
+    replied_msg = message.reply_to_message
 
-    season, episode, lang = match.groups()
-    season, episode = int(season), int(episode)
-    lang = lang.strip() if lang else DEFAULT_LANG
+    if not replied_msg.photo:
+        await message.reply_text("Aap sirf photo par hi reply kar sakte hain.")
+        return
 
-    # run blocking PIL code in thread
-    thumb_bytes = await asyncio.to_thread(make_thumb, season, episode, lang)
+    if not replied_msg.caption:
+        await message.reply_text(
+            "Is photo me caption nahi hai! Kripya caption me details daalein.\n"
+            "**Format:** `SEASON EPISODE LANGUAGE`\n\n"
+            "**Example:** `14 322 HINDI`"
+        )
+        return
 
-    await msg.reply_photo(
-        photo=thumb_bytes,
-        caption=f"✅ Thumbnail\nSeason: {season} | Episode: {episode} | Lang: {lang}"
-    )
+    try:
+        parts = replied_msg.caption.split()
+        
+        if len(parts) < 2 or len(parts) > 3:
+            await message.reply_text(
+                "Caption ka format galat hai!\n"
+                "**Sahi format:** `SEASON EPISODE LANGUAGE`\n\n"
+                "**Example:** `14 322 HINDI` (Language optional hai)."
+            )
+            return
+
+        season = parts[0]
+        episode = parts[1]
+        lang = parts[2].upper() if len(parts) == 3 else "HINDI"
+
+    except Exception as e:
+        await message.reply_text(f"Caption ko process karne me error aaya: {e}")
+        return
+
+    processing_msg = await message.reply_text("`Thumbnail ban raha hai, कृपया प्रतीक्षा करें...`")
+
+    download_path = await replied_msg.download(file_name=f"background_{message.id}.jpg")
+    output_path = f"final_{message.id}.png"
+
+    try:
+        create_thumbnail(
+            background_path=download_path,
+            season=season,
+            episode=episode,
+            lang=lang,
+            output_path=output_path
+        )
+        
+        await message.reply_photo(
+            photo=output_path,
+            caption=f"✅ Thumbnail Taiyar!\n\n**Season:** {season}\n**Episode:** {episode}\n**Language:** {lang}"
+        )
+        
+        await processing_msg.delete()
+
+    except Exception as e:
+        await processing_msg.edit_text(f"❌ Thumbnail banane me error aaya:\n`{e}`")
+    
+    finally:
+        if os.path.exists(download_path):
+            os.remove(download_path)
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+
