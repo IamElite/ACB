@@ -3,12 +3,13 @@ from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 from DURGESH import app
+from config import ADMINS
 import requests, os, math
 
 TG_TOKEN  = "d3b25feccb89e508a9114afb82aa421fe2a9712b963b387cc5ad71e58722"
 CATBOX_URL = "https://catbox.moe/user/api.php"
 
-@app.on_message(filters.command("gen"))
+@app.on_message(filters.command("gen") & filters.user(ADMINS))
 async def gen_post(_, msg: Message):
     if not msg.reply_to_message or not msg.reply_to_message.photo:
         return await msg.reply("❗ Kisi photo pe reply karo `/gen` se.")
