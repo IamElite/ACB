@@ -1,28 +1,22 @@
 # DURGESH/__init__.py
 
 import time
-import logging
 import asyncio
-from pyrogram import Client, idle 
+from pyrogram import Client, idle
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 from config import *
 
-# Logger Setup
-logging.basicConfig(
-    format="[%(asctime)s - %(levelname)s] - %(name)s - %(message)s",
-    datefmt="%d-%b-%y %H:%M:%S",
-    level=logging.INFO,
-)
-LOGGER = logging.getLogger("DURGESH")
+# Replace logger with print
+START_TIME = time.time()
+print(f"[{START_TIME:.0f}] - DURGESH - Initializing...")
 
 # Database Connection
 db = AsyncIOMotorClient(MONGO_URL).Durgesh
-START_TIME = time.time()
+print(f"[{time.time():.0f}] - DURGESH - MongoDB connected.")
 
 # Web Server Setup
 routes = web.RouteTableDef()
-#PORT = config.PORT
 
 @routes.get("/", allow_head=True)
 async def root_route_handler(request):
@@ -34,7 +28,7 @@ async def web_server():
     return web_app
 
 
-class Bot(Client): # <-- Pyrogram ka Client class inherit kiya gaya hai
+class Bot(Client):
     def __init__(self):
         super().__init__(
             name="DURGESH",
@@ -49,25 +43,21 @@ class Bot(Client): # <-- Pyrogram ka Client class inherit kiya gaya hai
         self.id = self.me.id
         self.name = self.me.first_name
         self.username = self.me.username
-        LOGGER.info(f"Bot started as {self.name} (@{self.username}). ")
+        print(f"[{time.time():.0f}] - DURGESH - Bot started as {self.name} (@{self.username}).")
+        
         # Start Web Server
         app = web.AppRunner(await web_server())
         await app.setup()
         site = web.TCPSite(app, "0.0.0.0", PORT)
         await site.start()
-        LOGGER.info(f"🌐 Web server started on port {PORT}")
+        print(f"[{time.time():.0f}] - DURGESH - 🌐 Web server started on port {PORT}")
 
     async def stop(self, *args):
         await super().stop()
-        LOGGER.info("🛑 Bot stopped.")
+        print(f"[{time.time():.0f}] - DURGESH - 🛑 Bot stopped.")
 
     @property
     def mention(self):
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
-
-
-
-
-
