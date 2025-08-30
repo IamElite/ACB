@@ -1,12 +1,13 @@
 import re, subprocess, os, asyncio, urllib.request
 from pyrogram import Client, filters
+from DURGESH import app
 from config import ADMINS
 
 def get_best_thumb(url):
     vid=re.search(r"(?:v=|\.be/)([a-zA-Z0-9_-]{11})",url)
     return f"https://i.ytimg.com/vi/{vid.group(1)}/maxresdefault.jpg"if vid else None
 
-@Client.on_message(filters.command(["thumbnail","thumb","t"], prefixes=["/","!",".", ""]) & filters.user(ADMINS))
+@app.on_message(filters.command(["thumbnail","thumb","t"], prefixes=["/","!",".", ""]) & filters.user(ADMINS))
 async def send_thumb(_,m):
     url=(m.reply_to_message.text.strip()if m.reply_to_message and m.reply_to_message.text else m.text.split(maxsplit=1)[1].strip()if len(m.command)>=2 else None)
     if not url:return await m.reply_text("ɢɪᴠᴇ ᴍᴇ ᴀ ʏᴛ ᴜʀʟ")
