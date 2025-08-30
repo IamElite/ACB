@@ -1,5 +1,6 @@
 from pyrogram import Client, filters
 from DURGESH import app
+from config import ADMINS
 
 
 @app.on_message(
