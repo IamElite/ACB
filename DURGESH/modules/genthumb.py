@@ -17,9 +17,9 @@ def create_thumbnail(background_path, season, episode, lang, output_path="thumbn
 
     try:
         font_main = ImageFont.truetype("fonts/Montserrat-Bold.ttf", size=int(height / 18))
-        font_episode = ImageFont.truetype("fonts/Montserrat-SemiBold.ttf", size=int(height / 9))
+        font_episode = ImageFont.truetype("impact.ttf", size=int(height / 9))
     except IOError:
-        print("Font files (Montserrat-Bold.ttf, Montserrat-SemiBold.ttf) fonts/ folder me nahi mili.")
+        print("Font files nahi mili. Kripya 'fonts/Montserrat-Bold.ttf' aur 'impact.ttf' check karein.")
         font_main = ImageFont.load_default()
         font_episode = ImageFont.load_default()
 
@@ -61,11 +61,19 @@ def create_thumbnail(background_path, season, episode, lang, output_path="thumbn
         epi_text_width, epi_text_height = font_episode.getsize(episode_text)
 
     x = width - epi_text_width - margin
-    y = height - epi_text_height - margin
+    y = height - epi_text_height - int(margin * 1.5)
 
-    shadow_offset = int(height * 0.008)
+    shadow_strength = int(height * 0.009)
     shadow_color = "black"
-    draw.text((x + shadow_offset, y + shadow_offset), episode_text, font=font_episode, fill=shadow_color)
+
+    draw.text((x - shadow_strength, y - shadow_strength), episode_text, font=font_episode, fill=shadow_color)
+    draw.text((x + shadow_strength, y - shadow_strength), episode_text, font=font_episode, fill=shadow_color)
+    draw.text((x - shadow_strength, y + shadow_strength), episode_text, font=font_episode, fill=shadow_color)
+    draw.text((x + shadow_strength, y + shadow_strength), episode_text, font=font_episode, fill=shadow_color)
+    draw.text((x - shadow_strength, y), episode_text, font=font_episode, fill=shadow_color)
+    draw.text((x + shadow_strength, y), episode_text, font=font_episode, fill=shadow_color)
+    draw.text((x, y - shadow_strength), episode_text, font=font_episode, fill=shadow_color)
+    draw.text((x, y + shadow_strength), episode_text, font=font_episode, fill=shadow_color)
 
     main_color = "#FFC300"
     draw.text((x, y), episode_text, font=font_episode, fill=main_color)
