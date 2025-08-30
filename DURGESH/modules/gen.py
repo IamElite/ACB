@@ -3,13 +3,13 @@ from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.enums import ParseMode
 from DURGESH import app
-from config import ADMINS          # <-- added
+from config import ADMINS
 import requests, os
 
 TG_TOKEN  = "d3b25feccb89e508a9114afb82aa421fe2a9712b963b387cc5ad71e58722"
 CATBOX_URL = "https://catbox.moe/user/api.php"
 
-@app.on_message(filters.command("gen") & filters.user(ADMINS))   # <-- restricted
+@app.on_message(filters.command("gen") & filters.user(ADMINS))
 async def gen_post(_, msg: Message):
     if not msg.reply_to_message or not msg.reply_to_message.photo:
         return await msg.reply("❗ Kisi photo pe reply karo `/gen` se.")
@@ -19,16 +19,10 @@ async def gen_post(_, msg: Message):
     title   = caption[:256] or "Untitled"
     tmp_path = None
 
-    temp_msg = await msg.reply("Pʀᴏᴄᴇssɪɴɢ... 0.0%")
-
-    def progress(current, total):
-        try:
-            temp_msg.edit_text(f"Pʀᴏᴄᴇssɪɴɢ... {current*100/total:.1f}%")
-        except Exception:
-            pass
+    temp_msg = await msg.reply("Pʀᴏᴄᴇssɪɴɢ...")
 
     try:
-        tmp_path = await app.download_media(photo, progress=progress)
+        tmp_path = await app.download_media(photo)   # no progress callback
 
         with open(tmp_path, "rb") as f:
             r = requests.post(
