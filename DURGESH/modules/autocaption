@@ -188,27 +188,18 @@ async def media_auto_caption(client, message: Message):
     if not tpl:
         return
 
-    # Only first item in media albums
     if message.media_group_id:
         mgid = message.media_group_id
         if mgid in media_group_first_seen:
             return
         media_group_first_seen[mgid] = message.id
 
-    filename = get_filename_from_msg(message)
-    old_caption = message.caption or ""
+    # Template render only — no filename or old caption concatenation
     rendered = render_template(tpl, message)
+    new_caption = (rendered or "").strip()
 
-    parts = []
-    if filename:
-        parts.append(filename)
-    if rendered:
-        parts.append(rendered)
-    if old_caption:
-        parts.append(old_caption)
-
-    new_caption = "\n\n".join(parts).strip()
-    if new_caption == old_caption:
+    # If nothing to set, skip
+    if not new_caption:
         return
 
     try:
@@ -222,4 +213,4 @@ async def media_auto_caption(client, message: Message):
                 parse_mode=enums.ParseMode.HTML,
             )
         except Exception as e2:
-            print(f"Edit caption failed: {e2}")  # [1][11][2]
+            print(f"Edit caption failed: {e2}")
