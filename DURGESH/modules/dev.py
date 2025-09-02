@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import traceback
+import importlib
 from inspect import signature
 from io import StringIO
 from time import time
@@ -33,6 +34,15 @@ async def aexec(code, client, message):
     # Get and call the function
     __aexec = exec_locals['__aexec']
     return await __aexec(client, message)
+
+
+def install_package(package_name):
+    """Install a package using pip"""
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        return True
+    except subprocess.CalledProcessError:
+        return False
 
 
 async def edit_or_reply(msg: Message, **kwargs):
@@ -89,10 +99,34 @@ async def execute_code(client, message: Message, cmd):
     redirected_error = sys.stderr = StringIO()
     stdout, stderr, exc = None, None, None
 
-    try:
-        await aexec(cmd, client, message)
-    except Exception:
-        exc = traceback.format_exc()
+    max_attempts = 3  # Prevent infinite loops
+    attempts = 0
+    
+    while attempts < max_attempts:
+        try:
+            await aexec(cmd, client, message)
+            break  # Success, exit loop
+        except ModuleNotFoundError as e:
+            # Extract module name from error
+            module_name = str(e).split("'")[1] if "'" in str(e) else str(e)
+            
+            # Try to install the missing module
+            await edit_or_reply(message, text=f"<b>Installing missing module:</b> <code>{module_name}</code>")
+            
+            if install_package(module_name):
+                # Try to import the module to make it available
+                try:
+                    importlib.import_module(module_name)
+                except:
+                    pass
+                attempts += 1
+                continue  # Retry execution
+            else:
+                exc = f"Failed to install module: {module_name}\n{str(e)}"
+                break
+        except Exception:
+            exc = traceback.format_exc()
+            break
 
     stdout = redirected_output.getvalue()
     stderr = redirected_error.getvalue()
