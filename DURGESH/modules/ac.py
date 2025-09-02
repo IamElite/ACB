@@ -1,27 +1,24 @@
-import os
-import json
+
+#   - /setcaption or /st <HTML template> per chat (safe parsing; no IndexError)
+#   - /getcaption or /gc shows current template (HTML rendered)
+#   - Auto-apply on media (groups/channels), album first item only
+#   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
+
+
 import re
 import html
+import asyncio
 from DURGESH import app
 from pyrogram import filters
 from pyrogram.types import Message
-from pyrogram.enums import MessageMediaType, ParseMode
+from pyrogram.enums import ParseMode
+from config import ADMINS
+from DURGESH.database import db
 
-# Captions store karne ke liye JSON file
-CAPTIONS_FILE = 'captions.json'
+# Get captions collection from your database
+captiondb = db.captions
 
-# JSON se data load/save karne ke functions
-def load_captions():
-    if os.path.exists(CAPTIONS_FILE):
-        with open(CAPTIONS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_captions(captions_data):
-    with open(CAPTIONS_FILE, 'w') as f:
-        json.dump(captions_data, f, indent=4)
-
-# Aapke diye gaye extraction functions
+# Extraction functions
 def extract_episode(fname: str) -> str:
     match0 = re.search(r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', fname, re.IGNORECASE)
     if match0:
@@ -89,13 +86,12 @@ def get_readable_file_size(size_in_bytes):
         index += 1
     return f"{size_in_bytes:.2f} {SIZE_UNITS[index]}"
 
-# Duration ko format karne ka function (error fix)
+# Duration ko format karne ka function
 def format_duration(duration):
     if duration is None:
         return "N/A"
     
     try:
-        # Float ko integer mein convert karna
         total_seconds = int(duration)
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -107,33 +103,109 @@ def format_duration(duration):
     except (ValueError, TypeError):
         return "N/A"
 
-# /setcaption command handler
-@app.on_message(filters.command("setcaption") & (filters.group | filters.channel))
+# Admin check karne ka function
+def is_admin(user_id):
+    return user_id in ADMINS
+
+# MongoDB se caption load/save karne ke functions
+async def load_caption(chat_id):
+    caption_data = await captiondb.find_one({"chat_id": chat_id})
+    return caption_data["caption"] if caption_data else None
+
+async def save_caption(chat_id, caption):
+    await captiondb.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"caption": caption}},
+        upsert=True
+    )
+
+# Message auto delete karne ka function
+async def auto_delete_message(message: Message, delay: int = 60):
+    await asyncio.sleep(delay)
+    try:
+        await message.delete()
+    except Exception as e:
+        print(f"Error deleting message: {e}")
+
+# /setcaption command handler - sirf admins ke liye
+@app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption(client, message: Message):
+    # Check if user is admin
+    if not is_admin(message.from_user.id):
+        await message.reply_text("❌ You are not authorized to use this command.")
+        return
+        
     chat_id = str(message.chat.id)
     
     # Check if caption is provided
     if len(message.text.split()) < 2:
-        await message.reply_text("❌ Please provide a caption after the command.\nExample: `/setcaption Your HTML Caption Here`")
+        reply_msg = await message.reply_text("❌ Please provide a caption after the command.\nExample: `/setcaption Your HTML Caption Here`")
+        # Auto delete both messages after 1 minute
+        asyncio.create_task(auto_delete_message(message))
+        asyncio.create_task(auto_delete_message(reply_msg))
         return
     
     # Puri caption text extract karna (HTML tags ke saath)
     user_caption = message.text.split("/setcaption", 1)[1].strip()
+    if message.text.startswith("/sc"):
+        user_caption = message.text.split("/sc", 1)[1].strip()
     
-    captions_data = load_captions()
-    captions_data[chat_id] = user_caption
-    save_captions(captions_data)
+    # MongoDB mein save karna
+    await save_caption(chat_id, user_caption)
     
-    await message.reply_text("✅ Caption successfully set!\nAb se yahan upload ki gayi media ka yehi caption hoga.")
+    reply_msg = await message.reply_text("✅ Caption successfully set!\nAb se yahan upload ki gayi media ka yehi caption hoga.")
+    
+    # Auto delete both messages after 1 minute
+    asyncio.create_task(auto_delete_message(message))
+    asyncio.create_task(auto_delete_message(reply_msg))
+
+# /getcaption command handler - sirf admins ke liye
+@app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
+async def get_caption(client, message: Message):
+    # Check if user is admin
+    if not is_admin(message.from_user.id):
+        await message.reply_text("❌ You are not authorized to use this command.")
+        return
+        
+    chat_id = str(message.chat.id)
+    
+    # MongoDB se caption load karna
+    custom_caption = await load_caption(chat_id)
+    
+    if not custom_caption:
+        reply_msg = await message.reply_text("❌ No caption set for this chat.\nUse /setcaption to set a caption.")
+        # Auto delete both messages after 1 minute
+        asyncio.create_task(auto_delete_message(message))
+        asyncio.create_task(auto_delete_message(reply_msg))
+        return
+    
+    # HTML rendered caption show karna
+    preview_caption = custom_caption.replace("{filename}", "Example_Filename")
+    preview_caption = preview_caption.replace("{filesize}", "1.23 GB")
+    preview_caption = preview_caption.replace("{duration}", "1:23:45")
+    preview_caption = preview_caption.replace("{quality}", "1080p")
+    preview_caption = preview_caption.replace("{season}", "1")
+    preview_caption = preview_caption.replace("{episode}", "01 (123)")
+    
+    reply_msg = await message.reply_text(
+        f"📝 Current caption template:\n\n{preview_caption}",
+        parse_mode=ParseMode.HTML
+    )
+    
+    # Auto delete both messages after 1 minute
+    asyncio.create_task(auto_delete_message(message))
+    asyncio.create_task(auto_delete_message(reply_msg))
 
 # Channel ke liye media handler - yahan bot khud message send karega
 @app.on_message(filters.channel & filters.media)
 async def handle_channel_media(client, message: Message):
     chat_id = str(message.chat.id)
-    captions_data = load_captions()
+    
+    # MongoDB se caption load karna
+    custom_caption = await load_caption(chat_id)
     
     # Agar caption set nahi hai to kuch nahi karna
-    if chat_id not in captions_data:
+    if not custom_caption:
         return
     
     # File details extract karna
@@ -168,11 +240,10 @@ async def handle_channel_media(client, message: Message):
     # File size ko readable format mein convert karna
     readable_size = get_readable_file_size(filesize)
     
-    # Duration ko format karna (fixed error)
+    # Duration ko format karna
     readable_duration = format_duration(duration)
     
     # Custom caption ko replace karna (HTML entities escape karna)
-    custom_caption = captions_data[chat_id]
     custom_caption = custom_caption.replace("{filename}", html.escape(filename.split('.')[0]))
     custom_caption = custom_caption.replace("{filesize}", html.escape(readable_size))
     custom_caption = custom_caption.replace("{duration}", html.escape(readable_duration))
@@ -187,67 +258,3 @@ async def handle_channel_media(client, message: Message):
         print(f"Caption updated for message in channel {chat_id}")
     except Exception as e:
         print(f"Error handling channel media: {e}")
-
-# Group ke liye media handler - yahan bot existing message edit karega
-@app.on_message(filters.group & filters.media)
-async def handle_group_media(client, message: Message):
-    chat_id = str(message.chat.id)
-    captions_data = load_captions()
-    
-    # Agar caption set nahi hai to kuch nahi karna
-    if chat_id not in captions_data:
-        return
-    
-    # File details extract karna
-    filename = None
-    filesize = None
-    duration = None
-    
-    if message.document:
-        filename = message.document.file_name
-        filesize = message.document.file_size
-    elif message.video:
-        filename = message.video.file_name if message.video.file_name else "Video"
-        filesize = message.video.file_size
-        duration = message.video.duration
-    elif message.audio:
-        filename = message.audio.file_name if message.audio.file_name else "Audio"
-        filesize = message.audio.file_size
-        duration = message.audio.duration
-    elif message.photo:
-        filename = "Photo"
-        filesize = None
-    
-    # Agar filename nahi hai to kuch nahi karna
-    if not filename:
-        return
-    
-    # Extract metadata from filename
-    episode = extract_episode(filename)
-    season = extract_season(filename)
-    quality = extract_quality(filename)
-    
-    # File size ko readable format mein convert karna
-    readable_size = get_readable_file_size(filesize)
-    
-    # Duration ko format karna (fixed error)
-    readable_duration = format_duration(duration)
-    
-    # Custom caption ko replace karna (HTML entities escape karna)
-    custom_caption = captions_data[chat_id]
-    custom_caption = custom_caption.replace("{filename}", html.escape(filename.split('.')[0]))
-    custom_caption = custom_caption.replace("{filesize}", html.escape(readable_size))
-    custom_caption = custom_caption.replace("{duration}", html.escape(readable_duration))
-    custom_caption = custom_caption.replace("{quality}", html.escape(quality))
-    custom_caption = custom_caption.replace("{season}", html.escape(season))
-    custom_caption = custom_caption.replace("{episode}", html.escape(episode))
-    
-    try:
-        # Group mein message edit karna
-        await message.edit_caption(
-            caption=custom_caption,
-            parse_mode=ParseMode.HTML
-        )
-        print(f"Caption updated for message in group {chat_id}")
-    except Exception as e:
-        print(f"Error editing caption in group: {e}")
