@@ -15,13 +15,20 @@ from config import ADMINS
 
 
 async def aexec(code, client, message):
-    # Create a temporary async function
-    exec(
-        "async def __aexec(client, message): "
-        + "".join(f"\n {line}" for line in code.split("\n"))
-    )
-    # Get the function from globals instead of locals
-    return await globals()["__aexec"](client, message)
+    # Define a local context dictionary
+    exec_locals = {}
+    
+    # Create the async function code
+    func_code = "async def __aexec(client, message):\n"
+    for line in code.split('\n'):
+        func_code += f"    {line}\n"
+    
+    # Execute the function definition
+    exec(func_code, globals(), exec_locals)
+    
+    # Get and call the function
+    __aexec = exec_locals['__aexec']
+    return await __aexec(client, message)
 
 
 async def edit_or_reply(msg: Message, **kwargs):
