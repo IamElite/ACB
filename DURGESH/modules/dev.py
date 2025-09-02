@@ -14,6 +14,10 @@ from DURGESH import app
 from config import ADMINS
 
 
+# Store original code for each message
+eval_cache = {}
+
+
 async def aexec(code, client, message):
     # Define a local context dictionary
     exec_locals = {}
@@ -58,6 +62,26 @@ async def executor(client, message: Message):
     except IndexError:
         return await message.delete()
 
+    # Store the original code for this message
+    eval_cache[message.id] = cmd
+    
+    await execute_code(client, message, cmd)
+
+
+@app.on_edited_message(
+    filters.create(lambda _, __, msg: msg.id in eval_cache)
+    & filters.user(ADMINS)
+    & ~filters.forwarded
+    & ~filters.via_bot
+)
+async def edit_executor(client, message: Message):
+    # Get the original code for this message
+    cmd = eval_cache.get(message.id)
+    if cmd:
+        await execute_code(client, message, cmd)
+
+
+async def execute_code(client, message: Message, cmd):
     t1 = time()
     old_stderr = sys.stderr
     old_stdout = sys.stdout
