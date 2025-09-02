@@ -7,6 +7,7 @@ import importlib
 from inspect import signature
 from io import StringIO
 from time import time
+import types
 
 from pyrogram import filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -15,24 +16,45 @@ from DURGESH import app
 from config import ADMINS
 
 
-# Store original code for each message
-eval_cache = {}
+# Store execution contexts
+eval_contexts = {}
 
 
 async def aexec(code, client, message):
-    # Define a local context dictionary
-    exec_locals = {}
+    # Create a unique module name for this execution
+    module_name = f"eval_module_{message.id}_{int(time())}"
     
-    # Create the async function code
+    # Create module namespace
+    module_globals = {
+        '__name__': module_name,
+        '__builtins__': __builtins__,
+        'client': client,
+        'message': message,
+        'app': app,
+    }
+    
+    # Add commonly used modules
+    import asyncio
+    import aiohttp
+    import json
+    import requests
+    module_globals.update({
+        'asyncio': asyncio,
+        'aiohttp': aiohttp,
+        'json': json,
+        'requests': requests,
+    })
+    
+    # Create the async function code with proper indentation
     func_code = "async def __aexec(client, message):\n"
     for line in code.split('\n'):
         func_code += f"    {line}\n"
     
-    # Execute the function definition
-    exec(func_code, globals(), exec_locals)
+    # Execute in the module namespace
+    exec(func_code, module_globals)
     
     # Get and call the function
-    __aexec = exec_locals['__aexec']
+    __aexec = module_globals['__aexec']
     return await __aexec(client, message)
 
 
@@ -73,21 +95,29 @@ async def executor(client, message: Message):
         return await message.delete()
 
     # Store the original code for this message
-    eval_cache[message.id] = cmd
+    eval_contexts[message.id] = {
+        'code': cmd,
+        'timestamp': time()
+    }
     
     await execute_code(client, message, cmd)
 
 
 @app.on_edited_message(
-    filters.create(lambda _, __, msg: msg.id in eval_cache)
+    filters.create(lambda _, __, msg: msg.id in eval_contexts)
     & filters.user(ADMINS)
     & ~filters.forwarded
     & ~filters.via_bot
 )
 async def edit_executor(client, message: Message):
-    # Get the original code for this message
-    cmd = eval_cache.get(message.id)
-    if cmd:
+    # Get the updated code from the edited message
+    if message.text and len(message.text.split(" ", 1)) > 1:
+        cmd = message.text.split(" ", maxsplit=1)[1]
+        # Update the stored code
+        eval_contexts[message.id] = {
+            'code': cmd,
+            'timestamp': time()
+        }
         await execute_code(client, message, cmd)
 
 
@@ -288,3 +318,15 @@ async def shellrunner(_, message: Message):
         await edit_or_reply(message, text="<b>OUTPUT :</b>\n<code>None</code>")
 
     await message.stop_propagation()
+
+
+# Cleanup old contexts periodically
+async def cleanup_old_contexts():
+    current_time = time()
+    expired_keys = []
+    for msg_id, context in eval_contexts.items():
+        if current_time - context['timestamp'] > 3600:  # 1 hour old
+            expired_keys.append(msg_id)
+    
+    for key in expired_keys:
+        eval_contexts.pop(key, None)
