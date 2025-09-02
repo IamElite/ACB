@@ -155,18 +155,22 @@ media_group_first_seen: Dict[str, int] = {}  # Album first-item tracking. [5]
 
 @app.on_message(filters.command("setcaption") & (filters.group | filters.channel))
 async def set_caption_handler(_, message: Message):
-    # Robust parsing: maxsplit=1; guard for missing args
+    # Robust parsing: never raises IndexError
     text = message.text or ""
-    parts = text.split(None, 1)  # ["cmd", "rest"] or ["cmd"] only
-    if len(parts) < 2 or not parts[10].strip():
+    # Remove the command token by splitting at the first space only
+    _, _, rest = text.partition(" ")
+    tpl = rest.strip()
+
+    if not tpl:
         await message.reply_text(
             "Usage:\n/setcaption Your HTML template\n\nPlaceholders: {filename} {filesize} {duration} {quality} {season} {episode}",
             quote=True,
         )
         return
-    tpl = parts[10].strip()
+
     caption_templates[message.chat.id] = tpl
-    await message.reply_text("Caption template set for this chat.", quote=True)  # [3][4]
+    await message.reply_text("Caption template set for this chat.", quote=True)
+
 
 @app.on_message(filters.command("getcaption") & (filters.group | filters.channel))
 async def get_caption_handler(_, message: Message):
