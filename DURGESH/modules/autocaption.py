@@ -1,220 +1,191 @@
-# autocaption.py
-# Requirements:
-#   pyrogram>=2.0 tgcrypto
-# Features:
-#   - /setcaption <HTML template> per chat
-#   - /getcaption shows current template (HTML rendered)
-#   - Auto-apply on media (groups/channels)
-#   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
-#   - Safe parsing fix for /setcaption (prevents IndexError)
-
+import os
+import json
 import re
-from typing import Dict, Optional, Tuple
-
-from DURGESH import app  # Pre-configured Pyrogram Client
-from pyrogram import filters, enums
+import html
+from DURGESH import app
+from pyrogram import filters
 from pyrogram.types import Message
+from pyrogram.enums import MessageMediaType, ParseMode
 
-# ------------------------- Regex helpers -------------------------
+# Captions store karne ke liye JSON file
+CAPTIONS_FILE = 'captions.json'
 
-def extract_episode(fname: str) -> Optional[str]:
-    m = re.search(r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', fname, re.IGNORECASE)
-    if m:
-        return f"{m.group(2)} ({m.group(3)})"
-    m = re.search(r'S(\d+)\s*(?:E|EP)\s*(\d+)\s*\((\d+)\)', fname, re.IGNORECASE)
-    if m:
-        return f"{m.group(2).zfill(2)} ({m.group(3)})"
-    m = re.search(r'S(\d+)\s*(?:E|EP)\s*(\d+)\b', fname, re.IGNORECASE)
-    if m:
-        return m.group(2).zfill(2)
-    m = re.search(r'(?:^|[\s._-])(?:E|EP)\s*\((\d+)\)', fname, re.IGNORECASE)
-    if m:
-        return f"({m.group(1)})"
-    m = re.search(r'[\s._-](\d{1,3})(?:\D|$)', fname)
-    if m:
-        return m.group(1).zfill(2)
-    return None  # [7][8]
+# JSON se data load/save karne ke functions
+def load_captions():
+    if os.path.exists(CAPTIONS_FILE):
+        with open(CAPTIONS_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-def extract_season(fname: str) -> Optional[str]:
+def save_captions(captions_data):
+    with open(CAPTIONS_FILE, 'w') as f:
+        json.dump(captions_data, f, indent=4)
+
+# Aapke diye gaye extraction functions
+def extract_episode(fname: str) -> str:
+    match0 = re.search(r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', fname, re.IGNORECASE)
+    if match0:
+        ep2 = match0.group(2)
+        ep3 = match0.group(3)
+        return f"{ep2} ({ep3})"
+    match1 = re.search(r'S(\d+)\s*(?:E|EP)(\d+)\s*\((\d+)\)', fname, re.IGNORECASE)
+    if match1:
+        seasonal_ep = match1.group(2).zfill(2)
+        overall_ep = match1.group(3)
+        return f"{seasonal_ep} ({overall_ep})"
+    match2 = re.search(r'S(\d+)\s*(?:E|EP)(\d+)', fname, re.IGNORECASE)
+    if match2:
+        episode = match2.group(2).zfill(2)
+        return episode
+    match3 = re.search(r'(?:E|EP)\s*\((\d+)\)', fname, re.IGNORECASE)
+    if match3:
+        overall_ep = match3.group(1)
+        return f"({overall_ep})"
+        
+    match4 = re.search(r'-\s*(\d+)', fname, re.IGNORECASE)
+    if match4:
+        episode = match4.group(1).zfill(2)
+        return f"{episode}"
+    return "N/A"
+
+def extract_season(fname: str) -> str:
     s_pats = [
-        r'\bS(\d+)\s*(?:E|EP)\s*\d+\b',
-        r'\bS(\d+)\b',
+        r'S(\d+)(?:E|EP)(\d+)',
+        r'S(\d+)\s*(?:E|EP|-\s*EP)(\d+)',
+        r'S(\d+)[^\d]*(\d+)',
         r'\bseason\s*(\d+)\b',
-        r'\bs(\d+)\b',
+        r'\bs(\d+)\b'
     ]
     for pat in s_pats:
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
             return m.group(1)
-    return None  # [7][8]
+    return "N/A"
 
 def extract_quality(text: str) -> str:
     qpats = [
-        (r'\b4k\s*x\s*265\b', "4kx265"),
-        (r'\b4k\s*x\s*264\b', "4kx264"),
-        (r'\b4k\b', "4k"),
-        (r'\b2k\b', "2k"),
-        (r'\bWEB[.\- ]*DL\b', "WEB-DL"),
-        (r'\bH[DR]Rip\b', "HdRip"),
-        (r'\b(\d{3,4})\s*p\b', None),  # 720p, 1080p, 2160p
+        (r'[([{<]?\s*4k\s*[)\]}>]?', lambda m: "4k"),
+        (r'[([{<]?\s*2k\s*[)\]}>]?', lambda m: "2k"),
+        (r'[([{<]?\s*4kX264\s*[)\]}>]?', lambda m: "4kX24"),
+        (r'[([{<]?\s*4kx265\s*[)\]}>]?', lambda m: "4kx265"),
+        (r'\bWEB[.\- ]*DL\b', lambda m: "WEB-DL"),
+        (r'[([{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', lambda m: "HdRip"),
+        (r'\b(?:.*?(\d{3,4}[^\dp]*p).*?|.*?(\d{3,4}p))\b', lambda m: m.group(1) or m.group(2)),
     ]
-    for pat, fixed in qpats:
+    for pat, func in qpats:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return fixed if fixed else f"{m.group(1)}p"
-    return "Unknown"  # [7][8]
+            return func(m)
+    return "Unknown"
 
-# ------------------------- Message adapters -------------------------
+# File size ko readable format mein convert karne ka function
+def get_readable_file_size(size_in_bytes):
+    if size_in_bytes is None:
+        return "0 B"
+    SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    index = 0
+    while size_in_bytes >= 1024 and index < len(SIZE_UNITS) - 1:
+        size_in_bytes /= 1024
+        index += 1
+    return f"{size_in_bytes:.2f} {SIZE_UNITS[index]}"
 
-def get_filename_from_msg(msg: Message) -> str:
-    if msg.document and msg.document.file_name:
-        return msg.document.file_name
-    if msg.video and msg.video.file_name:
-        return msg.video.file_name
-    if msg.audio and msg.audio.file_name:
-        return msg.audio.file_name
-    if msg.animation and msg.animation.file_name:
-        return msg.animation.file_name
-    if msg.photo:
-        return f"photo_{msg.id}.jpg"
-    if msg.voice:
-        return f"voice_{msg.id}.ogg"
-    return f"file_{msg.id}"  # [7]
-
-def get_filesize_from_msg(msg: Message) -> Optional[int]:
-    if msg.document:
-        return msg.document.file_size
-    if msg.video:
-        return msg.video.file_size
-    if msg.audio:
-        return msg.audio.file_size
-    if msg.animation:
-        return msg.animation.file_size
-    if msg.voice:
-        return msg.voice.file_size
-    return None  # [7]
-
-def human_size(num_bytes: Optional[int]) -> str:
-    if not num_bytes:
-        return ""
-    units = ["B", "KB", "MB", "GB", "TB"]
-    s = float(num_bytes)
-    idx = 0
-    while s >= 1024 and idx < len(units) - 1:
-        s /= 1024.0
-        idx += 1
-    return f"{s:.2f} {units[idx]}"  # [7]
-
-def get_duration_from_msg(msg: Message) -> Optional[int]:
-    if msg.video and msg.video.duration:
-        return msg.video.duration
-    if msg.audio and msg.audio.duration:
-        return msg.audio.duration
-    if msg.voice and msg.voice.duration:
-        return msg.voice.duration
-    return None  # [9]
-
-def fmt_duration(seconds: Optional[int]) -> str:
-    if seconds is None:
-        return ""
-    s = int(seconds)
-    h = s // 3600
-    m = (s % 3600) // 60
-    sec = s % 60
-    return f"{h:02d}:{m:02d}:{sec:02d}" if h > 0 else f"{m:02d}:{sec:02d}"  # [7]
-
-# ------------------------- Template rendering -------------------------
-
-def render_template(tpl: str, msg: Message) -> str:
-    fname = get_filename_from_msg(msg)
-    size_bytes = get_filesize_from_msg(msg)
-    dur = get_duration_from_msg(msg)
-
-    season = extract_season(fname) or ""
-    episode = extract_episode(fname) or ""
-    quality = extract_quality(fname) if fname else "Unknown"
-
-    safe = {
-        "filename": fname or "",
-        "filesize": human_size(size_bytes),
-        "duration": fmt_duration(dur),
-        "quality": quality,
-        "season": season,
-        "episode": episode,
-        "chat_id": str(msg.chat.id),
-        "user_id": str(msg.from_user.id if msg.from_user else ""),
-    }
-    return re.sub(r"\{(\w+)\}", lambda m: safe.get(m.group(1), ""), tpl)  # [7][10]
-
-# ------------------------- Bot state -------------------------
-
-caption_templates: Dict[int, str] = {}
-MEDIA_FILTER = (filters.photo | filters.video | filters.document | filters.audio | filters.voice | filters.animation)  # [11]
-media_group_first_seen: Dict[str, int] = {}
-
-# ------------------------- Commands -------------------------
-
-@app.on_message(filters.command("setcaption") & (filters.group | filters.channel))
-async def set_caption_handler(_, message: Message):
-    text = message.text or ""
-    parts = text.split(None, 1)  # maxsplit=1 => ["cmd", "rest"] or ["cmd"] only
-    if len(parts) < 2 or not parts[12].strip():
-        await message.reply_text(
-            "Usage:\n/setcaption Your HTML template\n\nPlaceholders: {filename} {filesize} {duration} {quality} {season} {episode}",
-            quote=True,
-        )
-        return
-    tpl = parts[12].strip()
-    caption_templates[message.chat.id] = tpl
-    await message.reply_text("Caption template set for this chat.", quote=True)  # [5][6]
-
-@app.on_message(filters.command("getcaption") & (filters.group | filters.channel))
-async def get_caption_handler(_, message: Message):
-    tpl = caption_templates.get(message.chat.id)
-    if tpl:
-        await message.reply_text(tpl, quote=True, parse_mode=enums.ParseMode.HTML)
-    else:
-        await message.reply_text("No template set. Use /setcaption to set one.", quote=True)  # [2]
-
-# ------------------------- Media handler -------------------------
-
-@app.on_message(MEDIA_FILTER & (filters.group | filters.channel))
-async def media_auto_caption(client, message: Message):
-    tpl = caption_templates.get(message.chat.id)
-    if not tpl:
-        return
-
-    if message.media_group_id:
-        mgid = message.media_group_id
-        if mgid in media_group_first_seen:
-            return
-        media_group_first_seen[mgid] = message.id
-
-    filename = get_filename_from_msg(message)
-    old_caption = message.caption or ""
-    rendered = render_template(tpl, message)
-
-    parts = []
-    if filename:
-        parts.append(filename)
-    if rendered:
-        parts.append(rendered)
-    if old_caption:
-        parts.append(old_caption)
-
-    new_caption = "\n\n".join(parts).strip()
-    if new_caption == old_caption:
-        return
-
+# Duration ko format karne ka function (error fix)
+def format_duration(duration):
+    if duration is None:
+        return "N/A"
+    
     try:
-        await message.edit_caption(new_caption, parse_mode=enums.ParseMode.HTML)
-    except Exception:
-        try:
-            await client.edit_message_caption(
-                chat_id=message.chat.id,
-                message_id=message.id,
-                caption=new_caption,
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except Exception as e2:
-            print(f"Edit caption failed: {e2}")  # [1][13][2]
+        # Float ko integer mein convert karna
+        total_seconds = int(duration)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        else:
+            return f"{minutes}:{seconds:02d}"
+    except (ValueError, TypeError):
+        return "N/A"
+
+# /setcaption command handler
+@app.on_message(filters.command("setcaption") & filters.group)
+async def set_caption(client, message: Message):
+    chat_id = str(message.chat.id)
+    
+    # Check if caption is provided
+    if len(message.text.split()) < 2:
+        await message.reply_text("❌ Please provide a caption after the command.\nExample: `/setcaption Your HTML Caption Here`")
+        return
+    
+    # Puri caption text extract karna (HTML tags ke saath)
+    user_caption = message.text.split("/setcaption", 1)[1].strip()
+    
+    captions_data = load_captions()
+    captions_data[chat_id] = user_caption
+    save_captions(captions_data)
+    
+    await message.reply_text("✅ Caption successfully set!\nAb se yahan upload ki gayi media ka yehi caption hoga.")
+
+# Media messages ko handle karna (photos, videos, documents)
+@app.on_message(filters.media & filters.group)
+async def handle_media(client, message: Message):
+    chat_id = str(message.chat.id)
+    captions_data = load_captions()
+    
+    # Agar caption set nahi hai to kuch nahi karna
+    if chat_id not in captions_data:
+        return
+    
+    # File details extract karna
+    filename = None
+    filesize = None
+    duration = None
+    
+    if message.document:
+        filename = message.document.file_name
+        filesize = message.document.file_size
+    elif message.video:
+        filename = message.video.file_name if message.video.file_name else "Video"
+        filesize = message.video.file_size
+        duration = message.video.duration
+    elif message.audio:
+        filename = message.audio.file_name if message.audio.file_name else "Audio"
+        filesize = message.audio.file_size
+        duration = message.audio.duration
+    elif message.photo:
+        filename = "Photo"
+        filesize = None  # Photos usually don't have file_size in Pyrogram
+    
+    # Agar filename nahi hai to kuch nahi karna
+    if not filename:
+        return
+    
+    # Extract metadata from filename
+    episode = extract_episode(filename)
+    season = extract_season(filename)
+    quality = extract_quality(filename)
+    
+    # File size ko readable format mein convert karna
+    readable_size = get_readable_file_size(filesize)
+    
+    # Duration ko format karna (fixed error)
+    readable_duration = format_duration(duration)
+    
+    # Custom caption ko replace karna (HTML entities escape karna)
+    custom_caption = captions_data[chat_id]
+    custom_caption = custom_caption.replace("{filename}", html.escape(filename.split('.')[0]))  # Remove extension and escape
+    custom_caption = custom_caption.replace("{filesize}", html.escape(readable_size))
+    custom_caption = custom_caption.replace("{duration}", html.escape(readable_duration))
+    custom_caption = custom_caption.replace("{quality}", html.escape(quality))
+    custom_caption = custom_caption.replace("{season}", html.escape(season))
+    custom_caption = custom_caption.replace("{episode}", html.escape(episode))
+    
+    try:
+        # Media message ka caption edit karna with HTML parsing
+        await message.edit_caption(
+            caption=custom_caption,
+            parse_mode=ParseMode.HTML
+        )
+        print(f"Caption updated for message in chat {chat_id}")
+    except Exception as e:
+        print(f"Error editing caption: {e}")
