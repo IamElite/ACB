@@ -4,12 +4,11 @@
 #   - Auto-apply on media (groups/channels), album first item only
 #   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
 
+
 import re
 import html
 import asyncio
-import time
 from collections import defaultdict
-from typing import List, Tuple
 from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
@@ -20,7 +19,7 @@ from DURGESH.database import db
 captiondb = db.captions
 
 # -------------------------------------------------
-# Regex helpers (same as earlier)
+# Regex helpers (unchanged)
 # -------------------------------------------------
 def extract_episode(fname: str) -> str:
     for pat, grp in (
@@ -87,9 +86,6 @@ def format_duration(duration) -> str:
     except (ValueError, TypeError):
         return "N/A"
 
-# -------------------------------------------------
-# DB layer
-# -------------------------------------------------
 async def load_caption(chat_id: str):
     data = await captiondb.find_one({"chat_id": chat_id})
     return data["caption"] if data else None
@@ -102,16 +98,17 @@ async def save_caption(chat_id: str, caption: str):
     )
 
 # -------------------------------------------------
-# Admin check
+# Admin check helper
 # -------------------------------------------------
 def is_admin(uid: int) -> bool:
     return uid in ADMINS
 
 # -------------------------------------------------
-# Commands
+# Command handlers
 # -------------------------------------------------
 @app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption(client, message: Message):
+    # Admin check
     if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
         await message.reply_text("F.ck you")
         return
@@ -178,20 +175,22 @@ async def get_caption(client, message: Message):
         pass
 
 # -------------------------------------------------
-# Episode-wise bulk handler
+# Episode-first, quality-second bulk handler
 # -------------------------------------------------
-from typing import List
+from typing import List, Tuple
 
+# chat_id -> {episode_int: [(msg, quality_int)]}
 bulk_bucket: dict[str, dict[int, List[Tuple[Message, int]]]] = defaultdict(dict)
-last_seen: dict[str, float] = {}
+BULK_WAIT = 10          # seconds to wait for bulk
 LOCK = asyncio.Lock()
-RESET_GAP = 5      # 5 s after last file
-MAX_WAIT = 15      # absolute limit
 
 def _int_episode(fname: str) -> int:
-    raw = extract_episode(fname)
-    digits = re.search(r'\d+', raw)
-    return int(digits.group()) if digits else 9999
+    try:
+        raw = extract_episode(fname)
+        digits = re.search(r'\d+', raw)
+        return int(digits.group()) if digits else 9999
+    except Exception:
+        return 9999
 
 
 def _quality_val(fname: str) -> int:
@@ -207,27 +206,46 @@ def _quality_val(fname: str) -> int:
     return 9999
 
 
-async def _flush_bulk(chat_k: str):
-    while True:
-        await asyncio.sleep(RESET_GAP)
-        async with LOCK:
-            if time.time() - last_seen.get(chat_k, 0) >= RESET_GAP:
-                bucket = bulk_bucket.pop(chat_k, {})
-                last_seen.pop(chat_k, None)
-                break
-            # still receiving, wait again
+@app.on_message(filters.channel & filters.media)
+async def handle_bulk(client, message: Message):
+    fname = (
+        message.document and message.document.file_name
+        or message.video and (message.video.file_name or "Video")
+        or message.audio and (message.audio.file_name or "Audio")
+        or "Photo"
+    )
+
+    ep_num = _int_episode(fname)
+    qual   = _quality_val(fname)
+    chat_k = str(message.chat.id)
+
+    async with LOCK:
+        bucket = bulk_bucket[chat_k]
+        bucket.setdefault(ep_num, []).append((message, qual))
+        if sum(len(lst) for lst in bucket.values()) == 1:
+            asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
+
+
+async def _flush_bulk(chat_k: str, delay: int):
+    await asyncio.sleep(delay)
+
+    async with LOCK:
+        bucket = bulk_bucket.pop(chat_k, {})
     if not bucket:
         return
 
+    # Sort: episode asc, then quality asc
     ordered: List[Message] = []
     for ep in sorted(bucket.keys()):
-        ordered.extend(msg for msg, _ in sorted(bucket[ep], key=lambda t: t[1]))
+        for msg, _ in sorted(bucket[ep], key=lambda t: t[1]):
+            ordered.append(msg)
 
+    # Post with 1-second gaps to avoid flood-wait
     for msg in ordered:
         custom = await load_caption(chat_k)
         if not custom:
             continue
-    
+
         filename = None
         filesize = None
         duration = None
@@ -244,9 +262,10 @@ async def _flush_bulk(chat_k: str):
             duration = msg.audio.duration
         elif msg.photo:
             filename = "Photo"
+
         if not filename:
             continue
-    
+
         cap = (
             custom
             .replace("{filename}", html.escape(filename.rsplit(".", 1)[0]))
@@ -256,6 +275,7 @@ async def _flush_bulk(chat_k: str):
             .replace("{season}", html.escape(extract_season(filename)))
             .replace("{episode}", html.escape(extract_episode(filename)))
         )
+
         try:
             await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML)
             await msg.delete()
@@ -265,4 +285,4 @@ async def _flush_bulk(chat_k: str):
                 await asyncio.sleep(wait)
             else:
                 print("Reorder failed:", e)
-        await asyncio.sleep(1)  # flood gap
+        await asyncio.sleep(1)  # 1-second gap between posts
