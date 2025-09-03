@@ -7,6 +7,7 @@
 import re
 import html
 import asyncio
+from collections import defaultdict
 from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
@@ -17,7 +18,7 @@ from DURGESH.database import db
 captiondb = db.captions
 
 # -------------------------------------------------
-# Helper regex utilities
+# Regex helpers (unchanged)
 # -------------------------------------------------
 def extract_episode(fname: str) -> str:
     for pat, grp in (
@@ -84,12 +85,6 @@ def format_duration(duration) -> str:
     except (ValueError, TypeError):
         return "N/A"
 
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMINS
-
-# -------------------------------------------------
-# DB layer
-# -------------------------------------------------
 async def load_caption(chat_id: str):
     data = await captiondb.find_one({"chat_id": chat_id})
     return data["caption"] if data else None
@@ -102,53 +97,61 @@ async def save_caption(chat_id: str, caption: str):
     )
 
 # -------------------------------------------------
-# Auto-delete utility
+# Admin check helper
 # -------------------------------------------------
-async def auto_delete_message(message: Message, delay: int = 60):
-    await asyncio.sleep(delay)
-    try:
-        await message.delete()
-    except Exception:
-        pass
+def is_admin(uid: int) -> bool:
+    return uid in ADMINS
 
 # -------------------------------------------------
 # Command handlers
 # -------------------------------------------------
 @app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption(client, message: Message):
-    # Skip admin check if sent by channel itself
+    # Admin check
     if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
-        await message.reply_text("❌ You are not authorized to use this command.")
+        await message.reply_text("F.ck you")
         return
 
     chat_id = str(message.chat.id)
     if len(message.command) < 2:
         reply = await message.reply_text(
-            "❌ Please provide a caption after the command.\nExample: `/setcaption <b>{filename}</b>`"
+            "❌ Provide caption after command.\nExample: `/setcaption <b>{filename}</b>`"
         )
-        asyncio.create_task(auto_delete_message(message))
-        asyncio.create_task(auto_delete_message(reply))
+        await asyncio.sleep(60)
+        try:
+            await message.delete()
+            await reply.delete()
+        except Exception:
+            pass
         return
 
     caption = message.text.split(None, 1)[1].strip()
     await save_caption(chat_id, caption)
-    reply = await message.reply_text("✅ Caption successfully set!")
-    asyncio.create_task(auto_delete_message(message))
-    asyncio.create_task(auto_delete_message(reply))
+    reply = await message.reply_text("✅ Caption saved!")
+    await asyncio.sleep(60)
+    try:
+        await message.delete()
+        await reply.delete()
+    except Exception:
+        pass
 
 
 @app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
 async def get_caption(client, message: Message):
     if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
-        await message.reply_text("❌ You are not authorized to use this command.")
+        await message.reply_text("F.ck you")
         return
 
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
     if not caption:
-        reply = await message.reply_text("❌ No caption set for this chat.")
-        asyncio.create_task(auto_delete_message(message))
-        asyncio.create_task(auto_delete_message(reply))
+        reply = await message.reply_text("❌ No caption set.")
+        await asyncio.sleep(60)
+        try:
+            await message.delete()
+            await reply.delete()
+        except Exception:
+            pass
         return
 
     preview = (
@@ -160,31 +163,29 @@ async def get_caption(client, message: Message):
         .replace("{season}", "1")
         .replace("{episode}", "01 (123)")
     )
-    reply = await message.reply_text(f"📝 Current caption template:\n\n{preview}", parse_mode=ParseMode.HTML)
-    asyncio.create_task(auto_delete_message(message))
-    asyncio.create_task(auto_delete_message(reply))
-
+    reply = await message.reply_text(
+        f"📝 Current template:\n\n{preview}", parse_mode=ParseMode.HTML
+    )
+    await asyncio.sleep(60)
+    try:
+        await message.delete()
+        await reply.delete()
+    except Exception:
+        pass
 
 # -------------------------------------------------
-# Bulk episode-first, quality-second ordering
+# Episode-first, quality-second bulk handler
 # -------------------------------------------------
-import asyncio
-from collections import defaultdict
 from typing import List, Tuple
 
-# chat_id -> {episode_number: [(msg, quality_int)]}
+# chat_id -> {episode_int: [(msg, quality_int)]}
 bulk_bucket: dict[str, dict[int, List[Tuple[Message, int]]]] = defaultdict(dict)
-BULK_WAIT = 5          # seconds to wait for the whole bulk
-SORT_LOCK = asyncio.Lock()
+BULK_WAIT = 10          # seconds to wait for bulk
+LOCK = asyncio.Lock()
 
 def _int_episode(fname: str) -> int:
-    """
-    Return the *integer* episode number from filename.
-    Fallback to 9999 if not found.
-    """
     try:
-        # reuse your existing extractor
-        raw = extract_episode(fname)   # e.g. "01 (123)" or "01"
+        raw = extract_episode(fname)
         digits = re.search(r'\d+', raw)
         return int(digits.group()) if digits else 9999
     except Exception:
@@ -192,15 +193,14 @@ def _int_episode(fname: str) -> int:
 
 
 def _quality_val(fname: str) -> int:
-    """480/720/1080/2160 priority."""
-    up = fname.upper()
-    if "480P" in up or "480" in up:
+    txt = fname.upper()
+    if "480P" in txt or "480" in txt:
         return 480
-    if "720P" in up or "720" in up:
+    if "720P" in txt or "720" in txt:
         return 720
-    if "1080P" in up or "1080" in up or "FHD" in up:
+    if "1080P" in txt or "1080" in txt or "FHD" in txt:
         return 1080
-    if "4K" in up or "2160P" in up or "UHD" in up:
+    if "4K" in txt or "2160P" in txt or "UHD" in txt:
         return 2160
     return 9999
 
@@ -218,30 +218,28 @@ async def handle_bulk(client, message: Message):
     qual   = _quality_val(fname)
     chat_k = str(message.chat.id)
 
-    async with SORT_LOCK:
+    async with LOCK:
         bucket = bulk_bucket[chat_k]
         bucket.setdefault(ep_num, []).append((message, qual))
-
-        # first episode seen → start timer once
         if sum(len(lst) for lst in bucket.values()) == 1:
-            asyncio.create_task(_flush_bulk(chat_k, delay=BULK_WAIT))
+            asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
 
 
 async def _flush_bulk(chat_k: str, delay: int):
     await asyncio.sleep(delay)
 
-    async with SORT_LOCK:
+    async with LOCK:
         bucket = bulk_bucket.pop(chat_k, {})
     if not bucket:
         return
 
-    # sort episodes ascending, then quality ascending
+    # Sort: episode asc, then quality asc
     ordered: List[Message] = []
     for ep in sorted(bucket.keys()):
         for msg, _ in sorted(bucket[ep], key=lambda t: t[1]):
             ordered.append(msg)
 
-    # post everything
+    # Post with 1-second gaps to avoid flood-wait
     for msg in ordered:
         custom = await load_caption(chat_k)
         if not custom:
@@ -281,4 +279,9 @@ async def _flush_bulk(chat_k: str, delay: int):
             await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML)
             await msg.delete()
         except Exception as e:
-            print("Reorder failed:", e)
+            if "FLOOD_WAIT" in str(e):
+                wait = int(str(e).split("wait ")[1].split()[0])
+                await asyncio.sleep(wait)
+            else:
+                print("Reorder failed:", e)
+        await asyncio.sleep(1)  # 1-second gap between posts
