@@ -4,13 +4,6 @@
 #   - Auto-apply on media (groups/channels), album first item only
 #   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
 
-"""
-Auto-Caption Bot – Episode-wise quality ordering
-- /setcaption | /sc   (ADMINS only)
-- /getcaption | /gc   (ADMINS only)
-- Non-admin → "F.ck you"
-"""
-
 import re
 import html
 import asyncio
@@ -193,7 +186,7 @@ bulk_bucket: dict[str, dict[int, List[Tuple[Message, int]]]] = defaultdict(dict)
 last_seen: dict[str, float] = {}
 LOCK = asyncio.Lock()
 RESET_GAP = 5      # 5 s after last file
-MAX_WAIT = 30      # absolute limit
+MAX_WAIT = 15      # absolute limit
 
 def _int_episode(fname: str) -> int:
     raw = extract_episode(fname)
