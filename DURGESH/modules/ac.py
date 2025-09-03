@@ -166,106 +166,104 @@ async def get_caption(client, message: Message):
 
 
 # -------------------------------------------------
-# Media handler that keeps user order
+# Media handler that waits & keeps user order
 # -------------------------------------------------
-from collections import defaultdict, deque
+from collections import defaultdict
 import asyncio
 
-# chat_id -> deque[(msg, quality_int)]
-pending_batches = defaultdict(deque)
-BATCH_WAIT = 5  # seconds
+pending: dict[str, list] = defaultdict(list)   # chat_id -> [ (msg, quality_int) ]
+LOCK = asyncio.Lock()
+BATCH_SEC = 5
 
 def _quality_key(text: str) -> int:
     """Return numeric quality for sorting."""
-    text = text.upper()
-    if "480P" in text or "480" in text:
+    txt = text.upper()
+    if "480P" in txt or "480" in txt:
         return 480
-    if "720P" in text or "720" in text:
+    if "720P" in txt or "720" in txt:
         return 720
-    if "1080P" in text or "1080" in text or "FHD" in text:
+    if "1080P" in txt or "1080" in txt or "FHD" in txt:
         return 1080
-    if "4K" in text or "2160P" in text or "UHD" in text:
+    if "4K" in txt or "2160P" in txt or "UHD" in txt:
         return 2160
-    return 9999   # unknown goes last
+    return 9999
 
 
-def _batch_id(msg: Message) -> str:
-    """Unique key for a series batch: chat_id + base filename without quality tag."""
-    fname = None
-    if msg.document:
-        fname = msg.document.file_name
-    elif msg.video:
-        fname = msg.video.file_name or "Video"
-    elif msg.audio:
-        fname = msg.audio.file_name or "Audio"
-    else:
-        fname = "Photo"
-
-    # remove quality tags to get a common base
+def _batch_key(msg: Message) -> str:
+    """Unique per-series key: chat_id + base filename without quality."""
+    fname = (
+        msg.document and msg.document.file_name
+        or msg.video and (msg.video.file_name or "Video")
+        or msg.audio and (msg.audio.file_name or "Audio")
+        or "Photo"
+    )
+    # strip quality tags
     base = re.sub(r'\b(480p|720p|1080p|4k|2160p|web-dl|hdrip|x264|x265)\b', '', fname, flags=re.I)
     return f"{msg.chat.id}_{base.strip().lower()}"
 
 
 @app.on_message(filters.channel & filters.media)
 async def handle_channel_media(client, message: Message):
-    bid = _batch_id(message)
+    key = _batch_key(message)
+    q   = _quality_key(message.caption or "")
 
-    # Append to pending list
-    quality = _quality_key(_batch_id(message))      # filename already inside _batch_id
-    pending_batches[bid].append((message, quality))
+    async with LOCK:
+        pending[key].append((message, q))
+        if len(pending[key]) == 1:               # first item → start timer
+            asyncio.create_task(_flush_batch_after(key, BATCH_SEC))
 
-    # If this is the first item of the batch, start the timer
-    if len(pending_batches[bid]) == 1:
-        await asyncio.sleep(BATCH_WAIT)
 
-        # After sleep, process the whole batch
-        items = pending_batches.pop(bid, [])
-        if not items:
-            return
+async def _flush_batch_after(key: str, delay: int):
+    await asyncio.sleep(delay)
 
-        # Sort by ascending quality
-        items = list(pending_batches.pop(bid, []))
-        items.sort(key=lambda t: t[1])
+    async with LOCK:
+        items = pending.pop(key, [])
+    if not items:
+        return
 
-        # Post in order
-        for msg, _ in items:
-            chat_id = str(msg.chat.id)
+    # Sort by quality (480→720→1080→…)
+    items.sort(key=lambda t: t[1])
 
-            # Re-use your existing caption logic
-            custom_caption = await load_caption(chat_id)
-            if not custom_caption:
-                continue
+    # Post messages in order
+    for msg, _ in items:
+        chat_id = str(msg.chat.id)
+        custom  = await load_caption(chat_id)
+        if not custom:
+            continue
 
-            filename, filesize, duration = None, None, None
-            if msg.document:
-                filename = msg.document.file_name
-                filesize = msg.document.file_size
-            elif msg.video:
-                filename = msg.video.file_name or "Video"
-                filesize = msg.video.file_size
-                duration = msg.video.duration
-            elif msg.audio:
-                filename = msg.audio.file_name or "Audio"
-                filesize = msg.audio.file_size
-                duration = msg.audio.duration
-            elif msg.photo:
-                filename = "Photo"
+        # --- build caption exactly like before ---
+        filename = None
+        filesize = None
+        duration = None
+        if msg.document:
+            filename = msg.document.file_name
+            filesize = msg.document.file_size
+        elif msg.video:
+            filename = msg.video.file_name or "Video"
+            filesize = msg.video.file_size
+            duration = msg.video.duration
+        elif msg.audio:
+            filename = msg.audio.file_name or "Audio"
+            filesize = msg.audio.file_size
+            duration = msg.audio.duration
+        elif msg.photo:
+            filename = "Photo"
 
-            if not filename:
-                continue
+        if not filename:
+            continue
 
-            cap = (
-                custom_caption
-                .replace("{filename}", html.escape(filename.rsplit(".", 1)[0]))
-                .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
-                .replace("{duration}", html.escape(format_duration(duration)))
-                .replace("{quality}", html.escape(extract_quality(filename)))
-                .replace("{season}", html.escape(extract_season(filename)))
-                .replace("{episode}", html.escape(extract_episode(filename)))
-            )
+        cap = (
+            custom
+            .replace("{filename}", html.escape(filename.rsplit(".", 1)[0]))
+            .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
+            .replace("{duration}", html.escape(format_duration(duration)))
+            .replace("{quality}", html.escape(extract_quality(filename)))
+            .replace("{season}", html.escape(extract_season(filename)))
+            .replace("{episode}", html.escape(extract_episode(filename)))
+        )
 
-            try:
-                await msg.copy(msg.chat.id, caption=cap, parse_mode=ParseMode.HTML)
-                await msg.delete()
-            except Exception as e:
-                print("Error while reposting sorted media:", e)
+        try:
+            await msg.copy(msg.chat.id, caption=cap, parse_mode=ParseMode.HTML)
+            await msg.delete()
+        except Exception as e:
+            print("Re-post failed:", e)
