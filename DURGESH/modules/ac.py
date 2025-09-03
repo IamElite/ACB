@@ -174,7 +174,7 @@ from typing import List, Tuple
 
 # chat_id -> {episode_number: [(msg, quality_int)]}
 bulk_bucket: dict[str, dict[int, List[Tuple[Message, int]]]] = defaultdict(dict)
-BULK_WAIT = 5          # seconds to wait for the whole bulk
+BULK_WAIT = 15          # seconds to wait for the whole bulk
 SORT_LOCK = asyncio.Lock()
 
 def _int_episode(fname: str) -> int:
