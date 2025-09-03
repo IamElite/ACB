@@ -204,47 +204,43 @@ def _quality_val(fname: str) -> int:
         return 2160
     return 9999
 
+# -------------------------------------------------
+# Dynamic last-file timer
+# -------------------------------------------------
+from collections import defaultdict
+from typing import List, Tuple
+import asyncio
+import time
 
-@app.on_message(filters.channel & filters.media)
-async def handle_bulk(client, message: Message):
-    fname = (
-        message.document and message.document.file_name
-        or message.video and (message.video.file_name or "Video")
-        or message.audio and (message.audio.file_name or "Audio")
-        or "Photo"
-    )
+bulk_bucket: dict[str, dict[int, List[Tuple[Message, int]]]] = defaultdict(dict)
+last_seen: dict[str, float] = {}   # chat_id -> last file epoch
+LOCK = asyncio.Lock()
+MAX_WAIT = 30                      # hard limit 30 s
+RESET_GAP = 5                      # 5 s after last file
 
-    ep_num = _int_episode(fname)
-    qual   = _quality_val(fname)
-    chat_k = str(message.chat.id)
-
-    async with LOCK:
-        bucket = bulk_bucket[chat_k]
-        bucket.setdefault(ep_num, []).append((message, qual))
-        if sum(len(lst) for lst in bucket.values()) == 1:
-            asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
-
-
-async def _flush_bulk(chat_k: str, delay: int):
-    await asyncio.sleep(delay)
-
-    async with LOCK:
-        bucket = bulk_bucket.pop(chat_k, {})
+async def _flush_bulk(chat_k: str):
+    while True:
+        await asyncio.sleep(RESET_GAP)
+        async with LOCK:
+            if time.time() - last_seen.get(chat_k, 0) >= RESET_GAP:
+                bucket = bulk_bucket.pop(chat_k, {})
+                last_seen.pop(chat_k, None)
+                break
+            # still receiving, loop again
     if not bucket:
         return
 
-    # Sort: episode asc, then quality asc
+    # sort & post same as before
     ordered: List[Message] = []
     for ep in sorted(bucket.keys()):
         for msg, _ in sorted(bucket[ep], key=lambda t: t[1]):
             ordered.append(msg)
 
-    # Post with 1-second gaps to avoid flood-wait
     for msg in ordered:
+        # --- same caption & post logic ---
         custom = await load_caption(chat_k)
         if not custom:
             continue
-
         filename = None
         filesize = None
         duration = None
@@ -261,10 +257,8 @@ async def _flush_bulk(chat_k: str, delay: int):
             duration = msg.audio.duration
         elif msg.photo:
             filename = "Photo"
-
         if not filename:
             continue
-
         cap = (
             custom
             .replace("{filename}", html.escape(filename.rsplit(".", 1)[0]))
@@ -274,7 +268,6 @@ async def _flush_bulk(chat_k: str, delay: int):
             .replace("{season}", html.escape(extract_season(filename)))
             .replace("{episode}", html.escape(extract_episode(filename)))
         )
-
         try:
             await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML)
             await msg.delete()
@@ -284,4 +277,24 @@ async def _flush_bulk(chat_k: str, delay: int):
                 await asyncio.sleep(wait)
             else:
                 print("Reorder failed:", e)
-        await asyncio.sleep(1)  # 1-second gap between posts
+        await asyncio.sleep(1)   # flood gap
+
+
+@app.on_message(filters.channel & filters.media)
+async def handle_bulk(client, message: Message):
+    fname = (
+        message.document and message.document.file_name
+        or message.video and (message.video.file_name or "Video")
+        or message.audio and (message.audio.file_name or "Audio")
+        or "Photo"
+    )
+    ep_num = _int_episode(fname)
+    qual   = _quality_val(fname)
+    chat_k = str(message.chat.id)
+
+    async with LOCK:
+        bulk_bucket[chat_k].setdefault(ep_num, []).append((message, qual))
+        last_seen[chat_k] = time.time()
+        # start/re-start timer only once
+        if len(bulk_bucket[chat_k]) == 1 and asyncio.current_task() is None:
+            asyncio.create_task(_flush_bulk(chat_k))
