@@ -224,6 +224,7 @@ async def handle_channel_media(client, message: Message):
             return
 
         # Sort by ascending quality
+        items = list(pending_batches.pop(bid, []))
         items.sort(key=lambda t: t[1])
 
         # Post in order
