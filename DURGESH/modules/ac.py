@@ -166,72 +166,87 @@ async def get_caption(client, message: Message):
 
 
 # -------------------------------------------------
-# Media handler that waits & keeps user order
+# Bulk episode-first, quality-second ordering
 # -------------------------------------------------
-from collections import defaultdict
 import asyncio
+from collections import defaultdict
+from typing import List, Tuple
 
-pending: dict[str, list] = defaultdict(list)   # chat_id -> [ (msg, quality_int) ]
-LOCK = asyncio.Lock()
-BATCH_SEC = 5
+# chat_id -> {episode_number: [(msg, quality_int)]}
+bulk_bucket: dict[str, dict[int, List[Tuple[Message, int]]]] = defaultdict(dict)
+BULK_WAIT = 5          # seconds to wait for the whole bulk
+SORT_LOCK = asyncio.Lock()
 
-def _quality_key(text: str) -> int:
-    """Return numeric quality for sorting."""
-    txt = text.upper()
-    if "480P" in txt or "480" in txt:
+def _int_episode(fname: str) -> int:
+    """
+    Return the *integer* episode number from filename.
+    Fallback to 9999 if not found.
+    """
+    try:
+        # reuse your existing extractor
+        raw = extract_episode(fname)   # e.g. "01 (123)" or "01"
+        digits = re.search(r'\d+', raw)
+        return int(digits.group()) if digits else 9999
+    except Exception:
+        return 9999
+
+
+def _quality_val(fname: str) -> int:
+    """480/720/1080/2160 priority."""
+    up = fname.upper()
+    if "480P" in up or "480" in up:
         return 480
-    if "720P" in txt or "720" in txt:
+    if "720P" in up or "720" in up:
         return 720
-    if "1080P" in txt or "1080" in txt or "FHD" in txt:
+    if "1080P" in up or "1080" in up or "FHD" in up:
         return 1080
-    if "4K" in txt or "2160P" in txt or "UHD" in txt:
+    if "4K" in up or "2160P" in up or "UHD" in up:
         return 2160
     return 9999
 
 
-def _batch_key(msg: Message) -> str:
-    """Unique per-series key: chat_id + base filename without quality."""
+@app.on_message(filters.channel & filters.media)
+async def handle_bulk(client, message: Message):
     fname = (
-        msg.document and msg.document.file_name
-        or msg.video and (msg.video.file_name or "Video")
-        or msg.audio and (msg.audio.file_name or "Audio")
+        message.document and message.document.file_name
+        or message.video and (message.video.file_name or "Video")
+        or message.audio and (message.audio.file_name or "Audio")
         or "Photo"
     )
-    # strip quality tags
-    base = re.sub(r'\b(480p|720p|1080p|4k|2160p|web-dl|hdrip|x264|x265)\b', '', fname, flags=re.I)
-    return f"{msg.chat.id}_{base.strip().lower()}"
+
+    ep_num = _int_episode(fname)
+    qual   = _quality_val(fname)
+    chat_k = str(message.chat.id)
+
+    async with SORT_LOCK:
+        bucket = bulk_bucket[chat_k]
+        bucket.setdefault(ep_num, []).append((message, qual))
+
+        # first episode seen → start timer once
+        if sum(len(lst) for lst in bucket.values()) == 1:
+            asyncio.create_task(_flush_bulk(chat_k, delay=BULK_WAIT))
 
 
-@app.on_message(filters.channel & filters.media)
-async def handle_channel_media(client, message: Message):
-    key = _batch_key(message)
-    q   = _quality_key(message.caption or "")
-
-    async with LOCK:
-        pending[key].append((message, q))
-        if len(pending[key]) == 1:               # first item → start timer
-            asyncio.create_task(_flush_batch_after(key, BATCH_SEC))
-
-
-async def _flush_batch_after(key: str, delay: int):
+async def _flush_bulk(chat_k: str, delay: int):
     await asyncio.sleep(delay)
 
-    async with LOCK:
-        items = pending.pop(key, [])
-    if not items:
+    async with SORT_LOCK:
+        bucket = bulk_bucket.pop(chat_k, {})
+    if not bucket:
         return
 
-    # Sort by quality (480→720→1080→…)
-    items.sort(key=lambda t: t[1])
+    # sort episodes ascending, then quality ascending
+    ordered: List[Message] = []
+    for ep in sorted(bucket.keys()):
+        for msg, _ in sorted(bucket[ep], key=lambda t: t[1]):
+            ordered.append(msg)
 
-    # Post messages in order
-    for msg, _ in items:
-        chat_id = str(msg.chat.id)
-        custom  = await load_caption(chat_id)
+    # post everything
+    for msg in ordered:
+        custom = await load_caption(chat_k)
         if not custom:
             continue
 
-        # --- build caption exactly like before ---
         filename = None
         filesize = None
         duration = None
@@ -263,7 +278,7 @@ async def _flush_batch_after(key: str, delay: int):
         )
 
         try:
-            await msg.copy(msg.chat.id, caption=cap, parse_mode=ParseMode.HTML)
+            await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML)
             await msg.delete()
         except Exception as e:
-            print("Re-post failed:", e)
+            print("Reorder failed:", e)
