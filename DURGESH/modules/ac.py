@@ -179,22 +179,18 @@ async def get_caption(client, message: Message):
 # -------------------------------------------------
 from typing import List, Tuple
 
-# chat_id -> {episode_int: [(msg, quality_int)]}
-bulk_bucket: dict[str, dict[int, List[Tuple[Message, int]]]] = defaultdict(dict)
-BULK_WAIT = 10          # seconds to wait for bulk
+# chat_id -> {(episode_int, quality_int): [Message, ...]}
+bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
+BULK_WAIT = 5
 LOCK = asyncio.Lock()
 
-def _int_episode(fname: str) -> int:
-    try:
-        raw = extract_episode(fname)
-        digits = re.search(r'\d+', raw)
-        return int(digits.group()) if digits else 9999
-    except Exception:
-        return 9999
-
-
+# ------------------------------------------------------------------
+# 2.  QUALITY VALUE MAPPER  (360→480→720→1080→4K)
+# ------------------------------------------------------------------
 def _quality_val(fname: str) -> int:
     txt = fname.upper()
+    if "360P" in txt or "360" in txt:
+        return 360
     if "480P" in txt or "480" in txt:
         return 480
     if "720P" in txt or "720" in txt:
@@ -205,7 +201,20 @@ def _quality_val(fname: str) -> int:
         return 2160
     return 9999
 
+# ------------------------------------------------------------------
+# 3.  EPISODE EXTRACTOR (unchanged)
+# ------------------------------------------------------------------
+def _int_episode(fname: str) -> int:
+    try:
+        raw = extract_episode(fname)
+        digits = re.search(r'\d+', raw)
+        return int(digits.group()) if digits else 9999
+    except Exception:
+        return 9999
 
+# ------------------------------------------------------------------
+# 4.  INCOMING MEDIA HANDLER
+# ------------------------------------------------------------------
 @app.on_message(filters.channel & filters.media)
 async def handle_bulk(client, message: Message):
     fname = (
@@ -221,11 +230,13 @@ async def handle_bulk(client, message: Message):
 
     async with LOCK:
         bucket = bulk_bucket[chat_k]
-        bucket.setdefault(ep_num, []).append((message, qual))
+        bucket.setdefault((ep_num, qual), []).append(message)
         if sum(len(lst) for lst in bucket.values()) == 1:
             asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
 
-
+# ------------------------------------------------------------------
+# 5.  FLUSH & REPOST
+# ------------------------------------------------------------------
 async def _flush_bulk(chat_k: str, delay: int):
     await asyncio.sleep(delay)
 
@@ -234,13 +245,12 @@ async def _flush_bulk(chat_k: str, delay: int):
     if not bucket:
         return
 
-    # Sort: episode asc, then quality asc
-    ordered: List[Message] = []
-    for ep in sorted(bucket.keys()):
-        for msg, _ in sorted(bucket[ep], key=lambda t: t[1]):
-            ordered.append(msg)
+    # sort: episode asc, then quality asc
+    ordered: list[Message] = []
+    for (ep, qual), msgs in sorted(bucket.items()):
+        ordered.extend(msgs)
 
-    # Post with 1-second gaps to avoid flood-wait
+    # post with 1-second gaps
     for msg in ordered:
         custom = await load_caption(chat_k)
         if not custom:
@@ -285,4 +295,4 @@ async def _flush_bulk(chat_k: str, delay: int):
                 await asyncio.sleep(wait)
             else:
                 print("Reorder failed:", e)
-        await asyncio.sleep(1)  # 1-second gap between posts
+        await asyncio.sleep(1)
