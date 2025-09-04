@@ -206,9 +206,8 @@ def _quality_val(fname: str) -> int:
 # ------------------------------------------------------------------
 def _int_episode(fname: str) -> int:
     try:
-        raw = extract_episode(fname)
-        digits = re.search(r'\d+', raw)
-        return int(digits.group()) if digits else 9999
+        raw = extract_episode(fname)          # e.g. "21 (456)"  or "03"
+        return int(re.search(r'\d+', raw).group())
     except Exception:
         return 9999
 
