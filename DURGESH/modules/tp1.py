@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from DURGESH import app
+from Durgesh import app
 import requests
 import json
 import os
@@ -87,9 +87,22 @@ async def download_youtube_video(client, message):
                 await processing_msg.edit_text("📥 **Downloading video...**")
                 video_path = os.path.join(temp_dir, "video.mp4")
                 
+                # Check if file size is valid
+                if video_size == 0:
+                    await processing_msg.edit_text("❌ **Error:** Video file not available for download")
+                    return
+                
                 with requests.get(video_url, stream=True) as r:
+                    r.raise_for_status()  # Check for HTTP errors
                     with open(video_path, 'wb') as f:
-                        shutil.copyfileobj(r.raw, f)
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                
+                # Check if file was actually downloaded
+                if os.path.getsize(video_path) == 0:
+                    await processing_msg.edit_text("❌ **Error:** Video download failed (empty file)")
+                    return
                 
                 # Send video file
                 await message.reply_video(
@@ -110,9 +123,22 @@ async def download_youtube_video(client, message):
                 await processing_msg.edit_text("🎵 **Downloading audio...**")
                 audio_path = os.path.join(temp_dir, "audio.mp3")
                 
+                # Check if file size is valid
+                if audio_size == 0:
+                    await processing_msg.edit_text("❌ **Error:** Audio file not available for download")
+                    return
+                
                 with requests.get(audio_url, stream=True) as r:
+                    r.raise_for_status()  # Check for HTTP errors
                     with open(audio_path, 'wb') as f:
-                        shutil.copyfileobj(r.raw, f)
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                
+                # Check if file was actually downloaded
+                if os.path.getsize(audio_path) == 0:
+                    await processing_msg.edit_text("❌ **Error:** Audio download failed (empty file)")
+                    return
                 
                 # Send audio file
                 await message.reply_audio(
@@ -127,8 +153,10 @@ async def download_youtube_video(client, message):
             # Delete processing message
             await processing_msg.delete()
 
+        except requests.exceptions.RequestException as e:
+            await processing_msg.edit_text(f"❌ **Download Error:** Network issue - {str(e)}")
         except Exception as e:
-            await message.reply_text(f"❌ **Download Error:** {str(e)}")
+            await processing_msg.edit_text(f"❌ **Download Error:** {str(e)}")
         finally:
             # Cleanup: Remove temporary directory
             shutil.rmtree(temp_dir, ignore_errors=True)
