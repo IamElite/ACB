@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from Durgesh import app
+from DURGESH import app
 import requests
 import json
 import os
