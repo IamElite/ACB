@@ -1,10 +1,11 @@
-from pyrogram import Client, filters
+from pyrogram import filters
 from DURGESH import app
 import requests
-import json
 import os
 import tempfile
 import shutil
+import yt_dlp
+import asyncio
 
 # Command handler for /d
 @app.on_message(filters.command("d"))
@@ -20,146 +21,127 @@ async def download_youtube_video(client, message):
         # Show processing message
         processing_msg = await message.reply_text("📥 **Processing your request...**")
 
-        # Tubepilot API request
-        api_url = "https://tubepilot.ai/wp-admin/admin-ajax.php"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:142.0) Gecko/20100101 Firefox/142.0",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest"
-        }
-        
-        data = {
-            "action": "youtube_video_info",
-            "nonce": "aaaa17a5df",
-            "video_url": youtube_url
-        }
-
-        # Send POST request
-        response = requests.post(api_url, headers=headers, data=data)
-        response_data = response.json()
-
-        # Check if request was successful
-        if not response_data.get("success"):
-            await processing_msg.edit_text("❌ **Error:** Could not fetch video details")
-            return
-
-        video_info = response_data["data"]["video_info"]
-        
-        # Get highest quality video and audio
-        formats = video_info["formats"]
-        best_video = None
-        best_audio = None
-        
-        # Find highest quality video
-        for fmt in formats:
-            if not fmt.get("audioOnly"):
-                if fmt.get("quality") == 1080:
-                    best_video = fmt
-                    break
-                elif fmt.get("quality") == 720 and not best_video:
-                    best_video = fmt
-                elif fmt.get("quality") == 480 and not best_video:
-                    best_video = fmt
-        
-        # Find best audio
-        for fmt in formats:
-            if fmt.get("audioOnly"):
-                best_audio = fmt
-                break
-
-        # Prepare response
-        title = video_info["title"]
-        duration = video_info["duration"]
-        
         # Create temporary directory
         temp_dir = tempfile.mkdtemp()
         
         try:
-            # Download and send video
-            if best_video:
-                video_url = best_video["url"]
-                video_size = best_video["filesize"]
-                video_quality = best_video.get("quality", "N/A")
+            # yt-dlp options for best quality
+            ydl_opts = {
+                'format': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+            }
+
+            await processing_msg.edit_text("🔍 **Fetching video info...**")
+            
+            # Get video info
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(youtube_url, download=False)
+                title = info.get('title', 'Unknown Title')
+                duration = info.get('duration', 0)
                 
-                # Download video to temp file
+                # Download video
                 await processing_msg.edit_text("📥 **Downloading video...**")
-                video_path = os.path.join(temp_dir, "video.mp4")
-                
-                # Check if file size is valid
-                if video_size == 0:
-                    await processing_msg.edit_text("❌ **Error:** Video file not available for download")
-                    return
-                
-                with requests.get(video_url, stream=True) as r:
-                    r.raise_for_status()  # Check for HTTP errors
-                    with open(video_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                
-                # Check if file was actually downloaded
-                if os.path.getsize(video_path) == 0:
-                    await processing_msg.edit_text("❌ **Error:** Video download failed (empty file)")
-                    return
-                
-                # Send video file
+                ydl.download([youtube_url])
+            
+            # Find downloaded file
+            downloaded_files = os.listdir(temp_dir)
+            if not downloaded_files:
+                await processing_msg.edit_text("❌ **Error:** Download failed")
+                return
+            
+            video_path = os.path.join(temp_dir, downloaded_files[0])
+            
+            # Check file size
+            if os.path.getsize(video_path) == 0:
+                await processing_msg.edit_text("❌ **Error:** Empty file downloaded")
+                return
+            
+            # Send video file
+            await processing_msg.edit_text("📤 **Uploading video...**")
+            
+            if video_path.endswith('.mp4') or video_path.endswith('.mkv') or video_path.endswith('.webm'):
                 await message.reply_video(
                     video=video_path,
-                    caption=f"🎬 **{title}**\n📹 Quality: {video_quality}p\n💾 Size: {video_size} bytes",
-                    duration=duration
+                    caption=f"🎬 **{title}**\n⏰ Duration: {duration}s",
+                    supports_streaming=True
                 )
-                
-                # Remove video temp file
-                os.remove(video_path)
-
-            # Download and send audio
-            if best_audio:
-                audio_url = best_audio["url"]
-                audio_size = best_audio["filesize"]
-                
-                # Download audio to temp file
-                await processing_msg.edit_text("🎵 **Downloading audio...**")
-                audio_path = os.path.join(temp_dir, "audio.mp3")
-                
-                # Check if file size is valid
-                if audio_size == 0:
-                    await processing_msg.edit_text("❌ **Error:** Audio file not available for download")
-                    return
-                
-                with requests.get(audio_url, stream=True) as r:
-                    r.raise_for_status()  # Check for HTTP errors
-                    with open(audio_path, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                
-                # Check if file was actually downloaded
-                if os.path.getsize(audio_path) == 0:
-                    await processing_msg.edit_text("❌ **Error:** Audio download failed (empty file)")
-                    return
-                
-                # Send audio file
-                await message.reply_audio(
-                    audio=audio_path,
-                    caption=f"🎵 **{title}**\n💾 Size: {audio_size} bytes",
-                    duration=duration
+            else:
+                await message.reply_document(
+                    document=video_path,
+                    caption=f"🎬 **{title}**\n⏰ Duration: {duration}s"
                 )
-                
-                # Remove audio temp file
-                os.remove(audio_path)
-
-            # Delete processing message
+            
             await processing_msg.delete()
 
-        except requests.exceptions.RequestException as e:
-            await processing_msg.edit_text(f"❌ **Download Error:** Network issue - {str(e)}")
-        except Exception as e:
+        except yt_dlp.utils.DownloadError as e:
             await processing_msg.edit_text(f"❌ **Download Error:** {str(e)}")
+        except Exception as e:
+            await processing_msg.edit_text(f"❌ **Error:** {str(e)}")
         finally:
-            # Cleanup: Remove temporary directory
+            # Cleanup temp directory
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
-        error_msg = await message.reply_text(f"❌ **Error:** {str(e)}")
+        await message.reply_text(f"❌ **Main Error:** {str(e)}")
+
+# Audio only download
+@app.on_message(filters.command("daudio"))
+async def download_youtube_audio(client, message):
+    try:
+        if len(message.command) < 2:
+            await message.reply_text("**Usage:** `/daudio youtube_link`")
+            return
+
+        youtube_url = message.command[1]
+        processing_msg = await message.reply_text("📥 **Processing audio...**")
+        temp_dir = tempfile.mkdtemp()
+        
+        try:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '320',
+                }],
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(youtube_url, download=False)
+                title = info.get('title', 'Unknown Title')
+                duration = info.get('duration', 0)
+                
+                await processing_msg.edit_text("🎵 **Downloading audio...**")
+                ydl.download([youtube_url])
+            
+            # Find MP3 file
+            mp3_files = [f for f in os.listdir(temp_dir) if f.endswith('.mp3')]
+            if not mp3_files:
+                await processing_msg.edit_text("❌ **Error:** Audio download failed")
+                return
+            
+            audio_path = os.path.join(temp_dir, mp3_files[0])
+            
+            await processing_msg.edit_text("📤 **Uploading audio...**")
+            await message.reply_audio(
+                audio=audio_path,
+                caption=f"🎵 **{title}**\n⏰ Duration: {duration}s",
+                title=title[:30]
+            )
+            
+            await processing_msg.delete()
+
+        except Exception as e:
+            await processing_msg.edit_text(f"❌ **Error:** {str(e)}")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:** {str(e)}")
