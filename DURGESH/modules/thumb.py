@@ -10,6 +10,7 @@ def extract_video_ids(url):
         ydl_opts = {
             'quiet': True,
             'extract_flat': True,
+            'force_json': True,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -27,6 +28,15 @@ def extract_video_ids(url):
 def get_best_thumb(video_id):
     """Get the best thumbnail for a YouTube video ID"""
     return f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+
+def is_valid_youtube_url(url):
+    """Check if the URL is a valid YouTube URL"""
+    youtube_regex = (
+        r'(https?://)?(www\.)?'
+        r'(youtube|youtu|youtube-nocookie)\.(com|be)/'
+        r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11}|playlist\?list=[^&=%\?]+)')
+    
+    return re.match(youtube_regex, url) is not None
 
 async def process_and_send_thumb(m, video_id, index=None):
     """Process a single thumbnail and send it"""
@@ -72,17 +82,33 @@ async def process_and_send_thumb(m, video_id, index=None):
 async def send_thumb(_, m):
     # Extract URL from message or reply
     if m.reply_to_message and m.reply_to_message.text:
-        url = m.reply_to_message.text.strip()
-        args = m.text.split()[1:] if len(m.text.split()) > 1 else []
+        # Extract URL from replied message text
+        text = m.reply_to_message.text.strip()
+        # Find YouTube URL in the text
+        url_match = re.search(r'(https?://[^\s]+)', text)
+        if url_match:
+            url = url_match.group(1)
+            # Extract arguments from command
+            args = m.text.split()[1:] if len(m.text.split()) > 1 else []
+        else:
+            return await m.reply_text("ɴᴏ ʏᴏᴜᴛᴜʙᴇ ʟɪɴᴋ ғᴏᴜɴᴅ ɪɴ ʀᴇᴘʟɪᴇᴅ ᴍᴇssᴀɢᴇ")
     else:
+        # Extract URL and arguments from command
         parts = m.text.split()
-        url = parts[1] if len(parts) > 1 else None
-        args = parts[2:] if len(parts) > 2 else []
+        url = None
+        args = []
+        
+        # Find the URL in the message parts
+        for part in parts[1:]:
+            if is_valid_youtube_url(part):
+                url = part
+            else:
+                args.append(part)
     
     if not url:
-        return await m.reply_text("ɢɪᴠᴇ ᴍᴇ ᴀ ʏᴛ ᴜʀʟ")
+        return await m.reply_text("ɢɪᴠᴇ ᴍᴇ ᴀ ᴠᴀʟɪᴅ ʏᴏᴜᴛᴜʙᴇ ᴜʀʟ")
     
-    if not re.search(r"(?:youtube\.com|youtu\.be)", url):
+    if not is_valid_youtube_url(url):
         return await m.reply_text("ɪɴᴠᴀʟɪᴅ ʏᴏᴜᴛᴜʙᴇ ʟɪɴᴋ")
     
     try:
@@ -118,6 +144,13 @@ async def send_thumb(_, m):
             except:
                 pass
     
+    # Limit the number of thumbnails to process at once
+    max_thumbnails = 20
+    if end_idx - start_idx > max_thumbnails:
+        end_idx = start_idx + max_thumbnails
+        await wait.edit_text(f"ʟɪᴍɪᴛɪɴɢ ᴛᴏ {max_thumbnails} ᴛʜᴜᴍʙɴᴀɪʟs. ᴜsᴇ sᴘᴇᴄɪғɪᴄ ʀᴀɴɢᴇ ғᴏʀ ᴍᴏʀᴇ.")
+        await asyncio.sleep(2)
+    
     # Process the requested videos
     success_count = 0
     for i in range(start_idx, end_idx):
@@ -125,6 +158,27 @@ async def send_thumb(_, m):
         status = await process_and_send_thumb(m, video_id, i)
         if status:
             success_count += 1
-        await asyncio.sleep(0.5)  # Small delay to avoid rate limiting
+        await asyncio.sleep(1)  # Delay to avoid rate limiting
     
     await wait.edit_text(f"✅ sᴜᴄᴄᴇssғᴜʟʟʏ sᴇɴᴛ {success_count} ᴛʜᴜᴍʙɴᴀɪʟs")
+
+# Add a help command
+@app.on_message(filters.command(["thelp", "thumbhelp"], prefixes=["/","!",".", ""]) & filters.user(ADMINS))
+async def thumb_help(_, m):
+    help_text = """
+**📸 YouTube Thumbnail Bot Help**
+
+**Commands:**
+- `/t [url]` - Get thumbnails from URL
+- `/t [range] [url]` - Get specific range of thumbnails
+- `/t [start] [end] [url]` - Get thumbnails from start to end
+- Reply to a message with `/t` - Get thumbnails from replied message
+
+**Examples:**
+- `/t https://youtube.com/playlist?list=...` - All thumbnails
+- `/t 5 https://youtube.com/playlist?list=...` - First 5 thumbnails
+- `/t 3 7 https://youtube.com/playlist?list=...` - Thumbnails 3 to 7
+
+**Note:** Limited to 20 thumbnails at once for performance.
+    """
+    await m.reply_text(help_text)
