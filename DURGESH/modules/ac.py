@@ -382,7 +382,6 @@ async def _flush_bulk(chat_k: str, delay: int):
                         parse_mode=ParseMode.HTML,
                         thumb=thumb_id
                     )
-                            )
             elif media_type == "audio":
                 await app.send_audio(
                     chat_id=int(chat_k),
