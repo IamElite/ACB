@@ -294,8 +294,7 @@ async def _flush_bulk(chat_k: str, delay: int):
     for (ep, qual), msgs in sorted(bucket.items()):
         ordered.extend(msgs)
 
-    # ab thumb check karenge
-    thumb_id = await load_thumb(chat_k)  # <-- YAHAN CHECK KIYA
+    thumb_id = await load_thumb(chat_k)  # Thumbnail load karo
 
     for msg in ordered:
         custom = await load_caption(chat_k)
@@ -305,21 +304,33 @@ async def _flush_bulk(chat_k: str, delay: int):
         filename = None
         filesize = None
         duration = None
+        media_type = None
+        media_obj = None
+
         if msg.document:
             filename = msg.document.file_name
             filesize = msg.document.file_size
+            media_type = "document"
+            media_obj = msg.document
         elif msg.video:
             filename = msg.video.file_name or "Video"
             filesize = msg.video.file_size
             duration = msg.video.duration
+            media_type = "video"
+            media_obj = msg.video
         elif msg.audio:
             filename = msg.audio.file_name or "Audio"
             filesize = msg.audio.file_size
             duration = msg.audio.duration
+            media_type = "audio"
+            media_obj = msg.audio
         elif msg.photo:
+            # Photo ka alag se handle — caption ke saath bhejna
             filename = "Photo"
+            media_type = "photo"
+            media_obj = msg.photo
 
-        if not filename:
+        if not filename or not media_obj:
             continue
 
         cap = (
@@ -333,13 +344,50 @@ async def _flush_bulk(chat_k: str, delay: int):
         )
 
         try:
-            # AGAR THUMB HAI TO LAGAYENGE ——————————————————————>
-            await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML, thumb=thumb_id)
+            # ———————————————————————————————————————————————————————————————
+            # AB HUM COPY() NAHI, TYPE KE HISAAB SE SEND KARENGE + THUMB DALENGE
+            # ———————————————————————————————————————————————————————————————
+            if media_type == "document":
+                await app.send_document(
+                    chat_id=int(chat_k),
+                    document=media_obj.file_id,
+                    caption=cap,
+                    parse_mode=ParseMode.HTML,
+                    thumb=thumb_id  # ✅ DOCUMENT ke saath THUMB kaam karta hai!
+                )
+            elif media_type == "video":
+                await app.send_video(
+                    chat_id=int(chat_k),
+                    video=media_obj.file_id,
+                    caption=cap,
+                    parse_mode=ParseMode.HTML,
+                    thumb=thumb_id  # ✅ VIDEO ke saath bhi THUMB daal sakte hain
+                )
+            elif media_type == "audio":
+                await app.send_audio(
+                    chat_id=int(chat_k),
+                    audio=media_obj.file_id,
+                    caption=cap,
+                    parse_mode=ParseMode.HTML,
+                    # ❗ Audio ke saath THUMB nahi lagta — ignore
+                )
+            elif media_type == "photo":
+                await app.send_photo(
+                    chat_id=int(chat_k),
+                    photo=media_obj.file_id,
+                    caption=cap,
+                    parse_mode=ParseMode.HTML,
+                    # Photo ke saath alag se thumb nahi daalte — khud photo hi thumb hai
+                )
+
+            # Original delete kardo
             await msg.delete()
+
         except Exception as e:
             if "FLOOD_WAIT" in str(e):
                 wait = int(str(e).split("wait ")[1].split()[0])
                 await asyncio.sleep(wait)
             else:
-                print("Reorder failed:", e)
+                print("Repost failed:", e)
+
         await asyncio.sleep(1)
