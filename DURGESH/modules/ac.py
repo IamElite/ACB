@@ -1,10 +1,3 @@
-
-#   - /setcaption or /st <HTML template> per chat (safe parsing; no IndexError)
-#   - /getcaption or /gc shows current template (HTML rendered)
-#   - Auto-apply on media (groups/channels), album first item only
-#   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
-
-
 import re
 import html
 import asyncio
@@ -17,6 +10,7 @@ from config import ADMINS
 from DURGESH.database import db
 
 captiondb = db.captions
+thumbdb = db.thumbs  # <-- NAYI COLLECTION FOR THUMBS
 
 # -------------------------------------------------
 # Regex helpers (unchanged)
@@ -98,6 +92,23 @@ async def save_caption(chat_id: str, caption: str):
     )
 
 # -------------------------------------------------
+# THUMB HELPERS (NEW)
+# -------------------------------------------------
+async def load_thumb(chat_id: str):
+    data = await thumbdb.find_one({"chat_id": chat_id})
+    return data.get("thumb_id") if data else None
+
+async def save_thumb(chat_id: str, thumb_id: str):
+    await thumbdb.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"thumb_id": thumb_id}},
+        upsert=True
+    )
+
+async def delete_thumb(chat_id: str):
+    await thumbdb.delete_one({"chat_id": chat_id})
+
+# -------------------------------------------------
 # Admin check helper
 # -------------------------------------------------
 def is_admin(uid: int) -> bool:
@@ -108,7 +119,6 @@ def is_admin(uid: int) -> bool:
 # -------------------------------------------------
 @app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption(client, message: Message):
-    # Admin check
     if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
         await message.reply_text("F.ck you")
         return
@@ -116,7 +126,7 @@ async def set_caption(client, message: Message):
     chat_id = str(message.chat.id)
     if len(message.command) < 2:
         reply = await message.reply_text(
-            "❌ Provide caption after command.\nExample: `/setcaption <b>{filename}</b>`"
+            "❌ Caption daal bhai.\nExample: `/setcaption <b>{filename}</b>`"
         )
         await asyncio.sleep(60)
         try:
@@ -128,14 +138,13 @@ async def set_caption(client, message: Message):
 
     caption = message.text.split(None, 1)[1].strip()
     await save_caption(chat_id, caption)
-    reply = await message.reply_text("✅ Caption saved!")
+    reply = await message.reply_text("✅ Caption set ho gaya!")
     await asyncio.sleep(60)
     try:
         await message.delete()
         await reply.delete()
     except Exception:
         pass
-
 
 @app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
 async def get_caption(client, message: Message):
@@ -146,7 +155,7 @@ async def get_caption(client, message: Message):
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
     if not caption:
-        reply = await message.reply_text("❌ No caption set.")
+        reply = await message.reply_text("❌ Caption set nahi hai.")
         await asyncio.sleep(60)
         try:
             await message.delete()
@@ -175,18 +184,64 @@ async def get_caption(client, message: Message):
         pass
 
 # -------------------------------------------------
+# THUMB COMMANDS (NEW)
+# -------------------------------------------------
+@app.on_message(filters.command(["setthumb", "st"]) & (filters.group | filters.channel))
+async def set_thumb(client, message: Message):
+    # sirf admin
+    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
+        await message.reply_text("F.ck you")
+        return
+
+    chat_id = str(message.chat.id)
+
+    # photo hona chahiye
+    if not message.photo:
+        reply = await message.reply_text("📸 Bhai photo bhej ke command use kar. Example:\nReply karke: `/setthumb`")
+        await asyncio.sleep(60)
+        try:
+            await message.delete()
+            await reply.delete()
+        except Exception:
+            pass
+        return
+
+    # photo ka file_id save karenge
+    thumb_id = message.photo.file_id
+    await save_thumb(chat_id, thumb_id)
+    reply = await message.reply_text("✅ Thumbnail set ho gaya! Ab har file ke saath ye cover lagega.")
+    await asyncio.sleep(60)
+    try:
+        await message.delete()
+        await reply.delete()
+    except Exception:
+        pass
+
+@app.on_message(filters.command(["delthumb", "dt"]) & (filters.group | filters.channel))
+async def del_thumb(client, message: Message):
+    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
+        await message.reply_text("F.ck you")
+        return
+
+    chat_id = str(message.chat.id)
+    await delete_thumb(chat_id)
+    reply = await message.reply_text("🗑️ Thumbnail delete ho gaya!")
+    await asyncio.sleep(60)
+    try:
+        await message.delete()
+        await reply.delete()
+    except Exception:
+        pass
+
+# -------------------------------------------------
 # Episode-first, quality-second bulk handler
 # -------------------------------------------------
 from typing import List, Tuple
 
-# chat_id -> {(episode_int, quality_int): [Message, ...]}
 bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
 BULK_WAIT = 5
 LOCK = asyncio.Lock()
 
-# ------------------------------------------------------------------
-# 2.  QUALITY VALUE MAPPER  (360→480→720→1080→4K)
-# ------------------------------------------------------------------
 def _quality_val(fname: str) -> int:
     txt = fname.upper()
     if "360P" in txt or "360" in txt:
@@ -201,19 +256,13 @@ def _quality_val(fname: str) -> int:
         return 2160
     return 9999
 
-# ------------------------------------------------------------------
-# 3.  EPISODE EXTRACTOR (unchanged)
-# ------------------------------------------------------------------
 def _int_episode(fname: str) -> int:
     try:
-        raw = extract_episode(fname)          # e.g. "21 (456)"  or "03"
+        raw = extract_episode(fname)
         return int(re.search(r'\d+', raw).group())
     except Exception:
         return 9999
 
-# ------------------------------------------------------------------
-# 4.  INCOMING MEDIA HANDLER
-# ------------------------------------------------------------------
 @app.on_message(filters.channel & filters.media)
 async def handle_bulk(client, message: Message):
     fname = (
@@ -233,9 +282,6 @@ async def handle_bulk(client, message: Message):
         if sum(len(lst) for lst in bucket.values()) == 1:
             asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
 
-# ------------------------------------------------------------------
-# 5.  FLUSH & REPOST
-# ------------------------------------------------------------------
 async def _flush_bulk(chat_k: str, delay: int):
     await asyncio.sleep(delay)
 
@@ -244,12 +290,13 @@ async def _flush_bulk(chat_k: str, delay: int):
     if not bucket:
         return
 
-    # sort: episode asc, then quality asc
     ordered: list[Message] = []
     for (ep, qual), msgs in sorted(bucket.items()):
         ordered.extend(msgs)
 
-    # post with 1-second gaps
+    # ab thumb check karenge
+    thumb_id = await load_thumb(chat_k)  # <-- YAHAN CHECK KIYA
+
     for msg in ordered:
         custom = await load_caption(chat_k)
         if not custom:
@@ -286,7 +333,8 @@ async def _flush_bulk(chat_k: str, delay: int):
         )
 
         try:
-            await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML)
+            # AGAR THUMB HAI TO LAGAYENGE ——————————————————————>
+            await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML, thumb=thumb_id)
             await msg.delete()
         except Exception as e:
             if "FLOOD_WAIT" in str(e):
