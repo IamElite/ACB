@@ -22,9 +22,15 @@ async def set_thumb(_, msg: Message):
         except UserNotParticipant:
             return await msg.reply_text("⚠️ Bot channel ka member nahi hai!")
     reply = msg.reply_to_message
-    if not reply or not reply.photo:
-        return await msg.reply_text("📸 Photo pe reply karke /st likho! (DM/Channel)")
-    file_id = reply.photo.file_id
+    if not reply:
+        return await msg.reply_text("📸 Kisi photo ya image file pe reply karke /st likho!")
+    file_id = None
+    if reply.photo:
+        file_id = reply.photo.file_id
+    elif reply.document and reply.document.mime_type in ["image/jpeg", "image/png", "image/webp"]:
+        file_id = reply.document.file_id
+    if not file_id:
+        return await msg.reply_text("❌ Sirf photo ya image file (jpg/png/webp) accept hoti hai!")
     await thumb_col.update_one(
         {"chat_id": chat_id},
         {"$set": {
