@@ -364,12 +364,11 @@ async def _flush_bulk(chat_k: str, delay: int):
                     parse_mode=ParseMode.HTML,
                     thumb=thumb_id  # ✅ DOCUMENT ke saath THUMB kaam karta hai!
                 )
-            elif media_type == "video":
-                # Bada video ke liye document use karo
-                if filesize and filesize > 50 * 1024 * 1024:  # 50 MB
-                    await app.send_document(
+             elif media_type == "video":
+                if filesize and filesize > 50 * 1024 * 1024:
+                    await app.send_video(
                         chat_id=int(chat_k),
-                        document=media_obj.file_id,
+                        video=media_obj.file_id,
                         caption=cap,
                         parse_mode=ParseMode.HTML,
                         thumb=thumb_id
