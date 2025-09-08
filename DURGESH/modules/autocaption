@@ -1,216 +1,297 @@
-# autocaption.py
-# Requirements:
-#   pyrogram>=2.0 tgcrypto
-# Features:
-#   - /setcaption <HTML template> per chat (safe parsing; no IndexError)
-#   - /getcaption shows current template (HTML rendered)
+
+#   - /setcaption or /st <HTML template> per chat (safe parsing; no IndexError)
+#   - /getcaption or /gc shows current template (HTML rendered)
 #   - Auto-apply on media (groups/channels), album first item only
 #   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
 
+
 import re
-from typing import Dict, Optional, Tuple
-
-from DURGESH import app  # Pre-configured Pyrogram Client
-from pyrogram import filters, enums
+import html
+import asyncio
+from collections import defaultdict
+from pyrogram import filters
 from pyrogram.types import Message
+from pyrogram.enums import ParseMode
+from DURGESH import app
+from config import ADMINS
+from DURGESH.database import db
 
-# ------------------------- Regex helpers -------------------------
+captiondb = db.captions
 
-def extract_episode(fname: str) -> Optional[str]:
-    m = re.search(r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', fname, re.IGNORECASE)
-    if m:
-        return f"{m.group(2)} ({m.group(3)})"
-    m = re.search(r'S(\d+)\s*(?:E|EP)\s*(\d+)\s*\((\d+)\)', fname, re.IGNORECASE)
-    if m:
-        return f"{m.group(2).zfill(2)} ({m.group(3)})"
-    m = re.search(r'S(\d+)\s*(?:E|EP)\s*(\d+)\b', fname, re.IGNORECASE)
-    if m:
-        return m.group(2).zfill(2)
-    m = re.search(r'(?:^|[\s._-])(?:E|EP)\s*\((\d+)\)', fname, re.IGNORECASE)
-    if m:
-        return f"({m.group(1)})"
-    m = re.search(r'[\s._-](\d{1,3})(?:\D|$)', fname)
-    if m:
-        return m.group(1).zfill(2)
-    return None  # [7][8]
+# -------------------------------------------------
+# Regex helpers (unchanged)
+# -------------------------------------------------
+def extract_episode(fname: str) -> str:
+    for pat, grp in (
+        (r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', (2, 3)),
+        (r'S(\d+)\s*(?:E|EP)(\d+)\s*\((\d+)\)', (2, 3)),
+        (r'S(\d+)\s*(?:E|EP)(\d+)', (2,)),
+        (r'(?:E|EP)\s*\((\d+)\)', (1,)),
+        (r'-\s*(\d+)', (1,))
+    ):
+        m = re.search(pat, fname, re.IGNORECASE)
+        if m:
+            if len(grp) == 2:
+                return f"{m.group(grp[0]).zfill(2)} ({m.group(grp[1])})"
+            return f"{m.group(grp[0]).zfill(2)}" if grp[0] == 2 else f"({m.group(grp[0])})"
+    return "N/A"
 
-def extract_season(fname: str) -> Optional[str]:
-    s_pats = [
-        r'\bS(\d+)\s*(?:E|EP)\s*\d+\b',
-        r'\bS(\d+)\b',
-        r'\bseason\s*(\d+)\b',
-        r'\bs(\d+)\b',
-    ]
-    for pat in s_pats:
+def extract_season(fname: str) -> str:
+    for pat in (
+        r'S(\d+)(?:E|EP)(\d+)', r'S(\d+)\s*(?:E|EP|-\s*EP)(\d+)',
+        r'S(\d+)[^\d]*(\d+)', r'\bseason\s*(\d+)\b', r'\bs(\d+)\b'
+    ):
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
             return m.group(1)
-    return None  # [7][8]
+    return "N/A"
 
 def extract_quality(text: str) -> str:
     qpats = [
-        (r'\b4k\s*x\s*265\b', "4kx265"),
-        (r'\b4k\s*x\s*264\b', "4kx264"),
-        (r'\b4k\b', "4k"),
-        (r'\b2k\b', "2k"),
+        (r'[([{<]?\s*4k\s*[)\]}>]?', "4k"),
+        (r'[([{<]?\s*2k\s*[)\]}>]?', "2k"),
+        (r'[([{<]?\s*4kX264\s*[)\]}>]?', "4kX264"),
+        (r'[([{<]?\s*4kx265\s*[)\]}>]?', "4kx265"),
         (r'\bWEB[.\- ]*DL\b', "WEB-DL"),
-        (r'\bH[DR]Rip\b', "HdRip"),
-        (r'\b(\d{3,4})\s*p\b', None),  # 720p, 1080p, 2160p
+        (r'[([{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', "HdRip"),
+        (r'\b(?:.*?(\d{3,4}[^\dp]*p).*?|.*?(\d{3,4}p))\b', None)
     ]
-    for pat, fixed in qpats:
+    for pat, repl in qpats:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return fixed if fixed else f"{m.group(1)}p"
-    return "Unknown"  # [7][8]
+            return repl if repl else (m.group(1) or m.group(2))
+    return "Unknown"
 
-# ------------------------- Message adapters -------------------------
-
-def get_filename_from_msg(msg: Message) -> str:
-    if msg.document and msg.document.file_name:
-        return msg.document.file_name
-    if msg.video and msg.video.file_name:
-        return msg.video.file_name
-    if msg.audio and msg.audio.file_name:
-        return msg.audio.file_name
-    if msg.animation and msg.animation.file_name:
-        return msg.animation.file_name
-    if msg.photo:
-        return f"photo_{msg.id}.jpg"
-    if msg.voice:
-        return f"voice_{msg.id}.ogg"
-    return f"file_{msg.id}"  # [9]
-
-def get_filesize_from_msg(msg: Message) -> Optional[int]:
-    if msg.document:
-        return msg.document.file_size
-    if msg.video:
-        return msg.video.file_size
-    if msg.audio:
-        return msg.audio.file_size
-    if msg.animation:
-        return msg.animation.file_size
-    if msg.voice:
-        return msg.voice.file_size
-    return None  # [9]
-
-def human_size(num_bytes: Optional[int]) -> str:
-    if not num_bytes:
-        return ""
-    units = ["B", "KB", "MB", "GB", "TB"]
-    s = float(num_bytes)
+# -------------------------------------------------
+# Formatting helpers
+# -------------------------------------------------
+def get_readable_file_size(size_in_bytes) -> str:
+    if size_in_bytes is None:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
     idx = 0
-    while s >= 1024 and idx < len(units) - 1:
-        s /= 1024.0
+    while size_in_bytes >= 1024 and idx < len(units) - 1:
+        size_in_bytes /= 1024
         idx += 1
-    return f"{s:.2f} {units[idx]}"  # [3]
+    return f"{size_in_bytes:.2f} {units[idx]}"
 
-def get_duration_from_msg(msg: Message) -> Optional[int]:
-    if msg.video and msg.video.duration:
-        return msg.video.duration
-    if msg.audio and msg.audio.duration:
-        return msg.audio.duration
-    if msg.voice and msg.voice.duration:
-        return msg.voice.duration
-    return None  # [9]
-
-def fmt_duration(seconds: Optional[int]) -> str:
-    if seconds is None:
-        return ""
-    s = int(seconds)
-    h = s // 3600
-    m = (s % 3600) // 60
-    sec = s % 60
-    return f"{h:02d}:{m:02d}:{sec:02d}" if h > 0 else f"{m:02d}:{sec:02d}"  # [3]
-
-# ------------------------- Template rendering -------------------------
-
-def render_template(tpl: str, msg: Message) -> str:
-    fname = get_filename_from_msg(msg)
-    size_bytes = get_filesize_from_msg(msg)
-    dur = get_duration_from_msg(msg)
-
-    season = extract_season(fname) or ""
-    episode = extract_episode(fname) or ""
-    quality = extract_quality(fname) if fname else "Unknown"
-
-    safe = {
-        "filename": fname or "",
-        "filesize": human_size(size_bytes),
-        "duration": fmt_duration(dur),
-        "quality": quality,
-        "season": season,
-        "episode": episode,
-        "chat_id": str(msg.chat.id),
-        "user_id": str(msg.from_user.id if msg.from_user else ""),
-    }
-    return re.sub(r"\{(\w+)\}", lambda m: safe.get(m.group(1), ""), tpl)  # [6]
-
-# ------------------------- Bot state -------------------------
-
-caption_templates: Dict[int, str] = {}  # In-memory; prod me DB use karein. [5]
-MEDIA_FILTER = (filters.photo | filters.video | filters.document | filters.audio | filters.voice | filters.animation)  # [5]
-media_group_first_seen: Dict[str, int] = {}  # Album first-item tracking. [5]
-
-# ------------------------- Commands -------------------------
-
-@app.on_message(filters.command("setcaption") & (filters.group | filters.channel))
-async def set_caption_handler(_, message: Message):
-    # Robust parsing: never raises IndexError
-    text = message.text or ""
-    # Remove the command token by splitting at the first space only
-    _, _, rest = text.partition(" ")
-    tpl = rest.strip()
-
-    if not tpl:
-        await message.reply_text(
-            "Usage:\n/setcaption Your HTML template\n\nPlaceholders: {filename} {filesize} {duration} {quality} {season} {episode}",
-            quote=True,
-        )
-        return
-
-    caption_templates[message.chat.id] = tpl
-    await message.reply_text("Caption template set for this chat.", quote=True)
-
-
-@app.on_message(filters.command("getcaption") & (filters.group | filters.channel))
-async def get_caption_handler(_, message: Message):
-    tpl = caption_templates.get(message.chat.id)
-    if tpl:
-        await message.reply_text(tpl, quote=True, parse_mode=enums.ParseMode.HTML)
-    else:
-        await message.reply_text("No template set. Use /setcaption to set one.", quote=True)  # [2]
-
-# ------------------------- Media handler -------------------------
-
-@app.on_message(MEDIA_FILTER & (filters.group | filters.channel))
-async def media_auto_caption(client, message: Message):
-    tpl = caption_templates.get(message.chat.id)
-    if not tpl:
-        return
-
-    if message.media_group_id:
-        mgid = message.media_group_id
-        if mgid in media_group_first_seen:
-            return
-        media_group_first_seen[mgid] = message.id
-
-    # Template render only — no filename or old caption concatenation
-    rendered = render_template(tpl, message)
-    new_caption = (rendered or "").strip()
-
-    # If nothing to set, skip
-    if not new_caption:
-        return
-
+def format_duration(duration) -> str:
+    if duration is None:
+        return "N/A"
     try:
-        await message.edit_caption(new_caption, parse_mode=enums.ParseMode.HTML)
-    except Exception:
+        secs = int(duration)
+        h, rem = divmod(secs, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+    except (ValueError, TypeError):
+        return "N/A"
+
+async def load_caption(chat_id: str):
+    data = await captiondb.find_one({"chat_id": chat_id})
+    return data["caption"] if data else None
+
+async def save_caption(chat_id: str, caption: str):
+    await captiondb.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"caption": caption}},
+        upsert=True
+    )
+
+# -------------------------------------------------
+# Admin check helper
+# -------------------------------------------------
+def is_admin(uid: int) -> bool:
+    return uid in ADMINS
+
+# -------------------------------------------------
+# Command handlers
+# -------------------------------------------------
+@app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
+async def set_caption(client, message: Message):
+    # Admin check
+    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
+        await message.reply_text("F.ck you")
+        return
+
+    chat_id = str(message.chat.id)
+    if len(message.command) < 2:
+        reply = await message.reply_text(
+            "❌ Provide caption after command.\nExample: `/setcaption <b>{filename}</b>`"
+        )
+        await asyncio.sleep(60)
         try:
-            await client.edit_message_caption(
-                chat_id=message.chat.id,
-                message_id=message.id,
-                caption=new_caption,
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except Exception as e2:
-            print(f"Edit caption failed: {e2}")
+            await message.delete()
+            await reply.delete()
+        except Exception:
+            pass
+        return
+
+    caption = message.text.split(None, 1)[1].strip()
+    await save_caption(chat_id, caption)
+    reply = await message.reply_text("✅ Caption saved!")
+    await asyncio.sleep(60)
+    try:
+        await message.delete()
+        await reply.delete()
+    except Exception:
+        pass
+
+
+@app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
+async def get_caption(client, message: Message):
+    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
+        await message.reply_text("F.ck you")
+        return
+
+    chat_id = str(message.chat.id)
+    caption = await load_caption(chat_id)
+    if not caption:
+        reply = await message.reply_text("❌ No caption set.")
+        await asyncio.sleep(60)
+        try:
+            await message.delete()
+            await reply.delete()
+        except Exception:
+            pass
+        return
+
+    preview = (
+        caption
+        .replace("{filename}", "Example_Filename")
+        .replace("{filesize}", "1.23 GB")
+        .replace("{duration}", "1:23:45")
+        .replace("{quality}", "1080p")
+        .replace("{season}", "1")
+        .replace("{episode}", "01 (123)")
+    )
+    reply = await message.reply_text(
+        f"📝 Current template:\n\n{preview}", parse_mode=ParseMode.HTML
+    )
+    await asyncio.sleep(60)
+    try:
+        await message.delete()
+        await reply.delete()
+    except Exception:
+        pass
+
+# -------------------------------------------------
+# Episode-first, quality-second bulk handler
+# -------------------------------------------------
+from typing import List, Tuple
+
+# chat_id -> {(episode_int, quality_int): [Message, ...]}
+bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
+BULK_WAIT = 5
+LOCK = asyncio.Lock()
+
+# ------------------------------------------------------------------
+# 2.  QUALITY VALUE MAPPER  (360→480→720→1080→4K)
+# ------------------------------------------------------------------
+def _quality_val(fname: str) -> int:
+    txt = fname.upper()
+    if "360P" in txt or "360" in txt:
+        return 360
+    if "480P" in txt or "480" in txt:
+        return 480
+    if "720P" in txt or "720" in txt:
+        return 720
+    if "1080P" in txt or "1080" in txt or "FHD" in txt:
+        return 1080
+    if "4K" in txt or "2160P" in txt or "UHD" in txt:
+        return 2160
+    return 9999
+
+# ------------------------------------------------------------------
+# 3.  EPISODE EXTRACTOR (unchanged)
+# ------------------------------------------------------------------
+def _int_episode(fname: str) -> int:
+    try:
+        raw = extract_episode(fname)          # e.g. "21 (456)"  or "03"
+        return int(re.search(r'\d+', raw).group())
+    except Exception:
+        return 9999
+
+# ------------------------------------------------------------------
+# 4.  INCOMING MEDIA HANDLER
+# ------------------------------------------------------------------
+@app.on_message(filters.channel & filters.media)
+async def handle_bulk(client, message: Message):
+    fname = (
+        message.document and message.document.file_name
+        or message.video and (message.video.file_name or "Video")
+        or message.audio and (message.audio.file_name or "Audio")
+        or "Photo"
+    )
+
+    ep_num = _int_episode(fname)
+    qual   = _quality_val(fname)
+    chat_k = str(message.chat.id)
+
+    async with LOCK:
+        bucket = bulk_bucket[chat_k]
+        bucket.setdefault((ep_num, qual), []).append(message)
+        if sum(len(lst) for lst in bucket.values()) == 1:
+            asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
+
+# ------------------------------------------------------------------
+# 5.  FLUSH & REPOST
+# ------------------------------------------------------------------
+async def _flush_bulk(chat_k: str, delay: int):
+    await asyncio.sleep(delay)
+
+    async with LOCK:
+        bucket = bulk_bucket.pop(chat_k, {})
+    if not bucket:
+        return
+
+    # sort: episode asc, then quality asc
+    ordered: list[Message] = []
+    for (ep, qual), msgs in sorted(bucket.items()):
+        ordered.extend(msgs)
+
+    # post with 1-second gaps
+    for msg in ordered:
+        custom = await load_caption(chat_k)
+        if not custom:
+            continue
+
+        filename = None
+        filesize = None
+        duration = None
+        if msg.document:
+            filename = msg.document.file_name
+            filesize = msg.document.file_size
+        elif msg.video:
+            filename = msg.video.file_name or "Video"
+            filesize = msg.video.file_size
+            duration = msg.video.duration
+        elif msg.audio:
+            filename = msg.audio.file_name or "Audio"
+            filesize = msg.audio.file_size
+            duration = msg.audio.duration
+        elif msg.photo:
+            filename = "Photo"
+
+        if not filename:
+            continue
+
+        cap = (
+            custom
+            .replace("{filename}", html.escape(filename.rsplit(".", 1)[0]))
+            .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
+            .replace("{duration}", html.escape(format_duration(duration)))
+            .replace("{quality}", html.escape(extract_quality(filename)))
+            .replace("{season}", html.escape(extract_season(filename)))
+            .replace("{episode}", html.escape(extract_episode(filename)))
+        )
+
+        try:
+            await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML)
+            await msg.delete()
+        except Exception as e:
+            if "FLOOD_WAIT" in str(e):
+                wait = int(str(e).split("wait ")[1].split()[0])
+                await asyncio.sleep(wait)
+            else:
+                print("Reorder failed:", e)
+        await asyncio.sleep(1)
