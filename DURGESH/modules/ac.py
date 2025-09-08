@@ -303,7 +303,7 @@ async def _flush_bulk(chat_k: str, delay: int):
     for (ep, qual), msgs in sorted(bucket.items()):
         ordered.extend(msgs)
 
-    thumb_id = await load_thumb(chat_k)  # Thumbnail load karo
+    thumb_id = await load_thumb(chat_k)
 
     for msg in ordered:
         custom = await load_caption(chat_k)
@@ -316,6 +316,9 @@ async def _flush_bulk(chat_k: str, delay: int):
         media_type = None
         media_obj = None
 
+        # ———————————————————————————————————————————————————————————————
+        # Pehle check karo — kya ye DOCUMENT hai? (Video file as document)
+        # ———————————————————————————————————————————————————————————————
         if msg.document:
             filename = msg.document.file_name
             filesize = msg.document.file_size
@@ -334,7 +337,6 @@ async def _flush_bulk(chat_k: str, delay: int):
             media_type = "audio"
             media_obj = msg.audio
         elif msg.photo:
-            # Photo ka alag se handle — caption ke saath bhejna
             filename = "Photo"
             media_type = "photo"
             media_obj = msg.photo
@@ -353,52 +355,39 @@ async def _flush_bulk(chat_k: str, delay: int):
         )
 
         try:
-            # ———————————————————————————————————————————————————————————————
-            # AB HUM COPY() NAHI, TYPE KE HISAAB SE SEND KARENGE + THUMB DALENGE
-            # ———————————————————————————————————————————————————————————————
             if media_type == "document":
+                # Document ke saath thumbnail 100% kaam karta hai — chaahe 1GB ka ho
                 await app.send_document(
                     chat_id=int(chat_k),
                     document=media_obj.file_id,
                     caption=cap,
                     parse_mode=ParseMode.HTML,
-                    thumb=thumb_id  # ✅ DOCUMENT ke saath THUMB kaam karta hai!
+                    thumb=thumb_id
                 )
-             elif media_type == "video":
-                if filesize and filesize > 50 * 1024 * 1024:
-                    await app.send_video(
-                        chat_id=int(chat_k),
-                        video=media_obj.file_id,
-                        caption=cap,
-                        parse_mode=ParseMode.HTML,
-                        thumb=thumb_id
-                    )
-                else:
-                    await app.send_video(
-                        chat_id=int(chat_k),
-                        video=media_obj.file_id,
-                        caption=cap,
-                        parse_mode=ParseMode.HTML,
-                        thumb=thumb_id
-                    )
+            elif media_type == "video":
+                # Video ke saath — thumbnail sirf chota video pe reliably kaam karta hai
+                await app.send_video(
+                    chat_id=int(chat_k),
+                    video=media_obj.file_id,
+                    caption=cap,
+                    parse_mode=ParseMode.HTML,
+                    thumb=thumb_id
+                )
             elif media_type == "audio":
                 await app.send_audio(
                     chat_id=int(chat_k),
                     audio=media_obj.file_id,
                     caption=cap,
-                    parse_mode=ParseMode.HTML,
-                    # ❗ Audio ke saath THUMB nahi lagta — ignore
+                    parse_mode=ParseMode.HTML
                 )
             elif media_type == "photo":
                 await app.send_photo(
                     chat_id=int(chat_k),
                     photo=media_obj.file_id,
                     caption=cap,
-                    parse_mode=ParseMode.HTML,
-                    # Photo ke saath alag se thumb nahi daalte — khud photo hi thumb hai
+                    parse_mode=ParseMode.HTML
                 )
 
-            # Original delete kardo
             await msg.delete()
 
         except Exception as e:
