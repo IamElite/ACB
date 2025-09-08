@@ -195,9 +195,14 @@ async def set_thumb(client, message: Message):
 
     chat_id = str(message.chat.id)
 
-    # photo hona chahiye
-    if not message.photo:
-        reply = await message.reply_text("📸 Bhai photo bhej ke command use kar. Example:\nReply karke: `/setthumb`")
+    # ———————————————————————————————————————————————————————————————
+    # CHECK: KYA YE COMMAND KISI PHOTO KE REPLY ME DIYA GAYA HAI?
+    # ———————————————————————————————————————————————————————————————
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        reply = await message.reply_text(
+            "📸 Bhai — kisi **photo pe reply karke** `/setthumb` likho!\n"
+            "Example:\n1. Kisi photo pe reply karo\n2. Type karo: `/setthumb`"
+        )
         await asyncio.sleep(60)
         try:
             await message.delete()
@@ -206,8 +211,10 @@ async def set_thumb(client, message: Message):
             pass
         return
 
-    # photo ka file_id save karenge
-    thumb_id = message.photo.file_id
+    # ———————————————————————————————————————————————————————————————
+    # AGAR REPLY ME PHOTO HAI → TO USKA FILE_ID SAVE KARO
+    # ———————————————————————————————————————————————————————————————
+    thumb_id = message.reply_to_message.photo.file_id
     await save_thumb(chat_id, thumb_id)
     reply = await message.reply_text("✅ Thumbnail set ho gaya! Ab har file ke saath ye cover lagega.")
     await asyncio.sleep(60)
@@ -216,6 +223,8 @@ async def set_thumb(client, message: Message):
         await reply.delete()
     except Exception:
         pass
+
+
 
 @app.on_message(filters.command(["delthumb", "dt"]) & (filters.group | filters.channel))
 async def del_thumb(client, message: Message):
