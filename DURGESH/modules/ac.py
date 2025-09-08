@@ -10,7 +10,7 @@ from config import ADMINS
 from DURGESH.database import db
 
 captiondb = db.captions
-thumbdb = db.thumbs  # <-- NAYI COLLECTION FOR THUMBS
+thumbdb = db.thumbs
 
 # -------------------------------------------------
 # Regex helpers (unchanged)
@@ -92,7 +92,7 @@ async def save_caption(chat_id: str, caption: str):
     )
 
 # -------------------------------------------------
-# THUMB HELPERS (NEW)
+# THUMB HELPERS
 # -------------------------------------------------
 async def load_thumb(chat_id: str):
     data = await thumbdb.find_one({"chat_id": chat_id})
@@ -183,21 +183,14 @@ async def get_caption(client, message: Message):
     except Exception:
         pass
 
-# -------------------------------------------------
-# THUMB COMMANDS (NEW)
-# -------------------------------------------------
 @app.on_message(filters.command(["setthumb", "st"]) & (filters.group | filters.channel))
 async def set_thumb(client, message: Message):
-    # sirf admin
     if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
         await message.reply_text("F.ck you")
         return
 
     chat_id = str(message.chat.id)
 
-    # ———————————————————————————————————————————————————————————————
-    # CHECK: KYA YE COMMAND KISI PHOTO KE REPLY ME DIYA GAYA HAI?
-    # ———————————————————————————————————————————————————————————————
     if not message.reply_to_message or not message.reply_to_message.photo:
         reply = await message.reply_text(
             "📸 Bhai — kisi **photo pe reply karke** `/setthumb` likho!\n"
@@ -211,9 +204,6 @@ async def set_thumb(client, message: Message):
             pass
         return
 
-    # ———————————————————————————————————————————————————————————————
-    # AGAR REPLY ME PHOTO HAI → TO USKA FILE_ID SAVE KARO
-    # ———————————————————————————————————————————————————————————————
     thumb_id = message.reply_to_message.photo.file_id
     await save_thumb(chat_id, thumb_id)
     reply = await message.reply_text("✅ Thumbnail set ho gaya! Ab har file ke saath ye cover lagega.")
@@ -223,8 +213,6 @@ async def set_thumb(client, message: Message):
         await reply.delete()
     except Exception:
         pass
-
-
 
 @app.on_message(filters.command(["delthumb", "dt"]) & (filters.group | filters.channel))
 async def del_thumb(client, message: Message):
@@ -243,7 +231,7 @@ async def del_thumb(client, message: Message):
         pass
 
 # -------------------------------------------------
-# Episode-first, quality-second bulk handler
+# Bulk handler
 # -------------------------------------------------
 from typing import List, Tuple
 
@@ -291,6 +279,9 @@ async def handle_bulk(client, message: Message):
         if sum(len(lst) for lst in bucket.values()) == 1:
             asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
 
+# ———————————————————————————————————————————————————————————————
+# ✅ FINAL _flush_bulk FUNCTION — COPY PASTE THIS
+# ———————————————————————————————————————————————————————————————
 async def _flush_bulk(chat_k: str, delay: int):
     await asyncio.sleep(delay)
 
@@ -316,9 +307,6 @@ async def _flush_bulk(chat_k: str, delay: int):
         media_type = None
         media_obj = None
 
-        # ———————————————————————————————————————————————————————————————
-        # Pehle check karo — kya ye DOCUMENT hai? (Video file as document)
-        # ———————————————————————————————————————————————————————————————
         if msg.document:
             filename = msg.document.file_name
             filesize = msg.document.file_size
@@ -355,8 +343,13 @@ async def _flush_bulk(chat_k: str, delay: int):
         )
 
         try:
+            # ———————————————————————————————————————————————————————————————
+            # LARGE VIDEO WARNING (LOG ME)
+            # ———————————————————————————————————————————————————————————————
+            if media_type == "video" and filesize and filesize > 100 * 1024 * 1024:
+                print(f"⚠️ Large video detected ({filesize/1024/1024:.1f} MB). Thumbnail may not appear.")
+
             if media_type == "document":
-                # Document ke saath thumbnail 100% kaam karta hai — chaahe 1GB ka ho
                 await app.send_document(
                     chat_id=int(chat_k),
                     document=media_obj.file_id,
@@ -365,7 +358,6 @@ async def _flush_bulk(chat_k: str, delay: int):
                     thumb=thumb_id
                 )
             elif media_type == "video":
-                # Video ke saath — thumbnail sirf chota video pe reliably kaam karta hai
                 await app.send_video(
                     chat_id=int(chat_k),
                     video=media_obj.file_id,
