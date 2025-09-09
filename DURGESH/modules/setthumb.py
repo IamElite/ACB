@@ -76,48 +76,37 @@ async def get_thumb(chat_id: int) -> str | None:
 
 
 # ---------- AUTO APPLY (FIXED) ----------
-import asyncio, os, tempfile
+import tempfile, os
 from pyrogram.types import InputMediaVideo
 
-@app.on_message(filters.video & (filters.private | filters.group | filters.channel))
-async def auto_apply_thumb(_, msg: Message):
+@app.on_message(filters.video & filters.private)
+async def hide_thumb(_, msg: Message):
     chat_id = msg.chat.id
-    thumb_file_id = await get_thumb(chat_id)
-    if not thumb_file_id:
-        return  # no custom thumb set
 
-    # 1. download thumb
-    thumb_path = await app.download_media(thumb_file_id)
+    # Create a simple black image as cover
+    black_thumb_path = "black.jpg"
+    if not os.path.exists(black_thumb_path):
+        from PIL import Image
+        img = Image.new("RGB", (320, 180), color="black")
+        img.save(black_thumb_path)
 
-    status = await msg.reply("🔄 Thumbnail lagaya ja raha hai…")
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-        video_path = tmp.name
+    status = await msg.reply("🔄 Cover hide kar rahe hain...")
 
     try:
-        # 2. download video
-        await app.download_media(msg.video.file_id, file_name=video_path)
-        # 3. re-upload with thumb
+        # Re-upload same video with black cover
         await msg.reply_video(
-            video=video_path,
-            thumb=thumb_path,
+            video=msg.video.file_id,
+            thumb=black_thumb_path,
             caption=msg.caption or "",
             caption_entities=msg.caption_entities if msg.caption else None,
-            parse_mode=None,
             duration=msg.video.duration,
             width=msg.video.width,
             height=msg.video.height,
-            supports_streaming=True,
-            reply_parameters=ReplyParameters(message_id=msg.id)
+            supports_streaming=True
         )
     except Exception as e:
-        await msg.reply(f"❌ Thumbnail apply nahi hua: {str(e)}")
+        await msg.reply(f"❌ Error: {str(e)}")
     else:
         await msg.delete()
     finally:
         await status.delete()
-        # clean up
-        if os.path.exists(video_path):
-            os.remove(video_path)
-        if os.path.exists(thumb_path):
-            os.remove(thumb_path)
