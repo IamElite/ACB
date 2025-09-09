@@ -6,6 +6,7 @@ from pyrogram.types import Message, ReplyParameters
 from pyrogram.errors import ChatAdminRequired, UserNotParticipant
 import time
 
+
 thumb_col = db["thumb"]
 
 # ---------- SET THUMB ----------
@@ -75,23 +76,48 @@ async def get_thumb(chat_id: int) -> str | None:
 
 
 # ---------- AUTO APPLY (FIXED) ----------
+import asyncio, os, tempfile
+from pyrogram.types import InputMediaVideo
+
 @app.on_message(filters.video & (filters.private | filters.group | filters.channel))
 async def auto_apply_thumb(_, msg: Message):
     chat_id = msg.chat.id
-    thumb = await get_thumb(chat_id)
-    if not thumb:
-        return  # nothing to do
+    thumb_file_id = await get_thumb(chat_id)
+    if not thumb_file_id:
+        return  # no custom thumb set
+
+    # 1. download thumb
+    thumb_path = await app.download_media(thumb_file_id)
+
+    status = await msg.reply("🔄 Thumbnail lagaya ja raha hai…")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+        video_path = tmp.name
 
     try:
-        sent = await msg.reply_video(
-            video=msg.video.file_id,
-            thumb=thumb,
+        # 2. download video
+        await app.download_media(msg.video.file_id, file_name=video_path)
+        # 3. re-upload with thumb
+        await msg.reply_video(
+            video=video_path,
+            thumb=thumb_path,
             caption=msg.caption or "",
             caption_entities=msg.caption_entities if msg.caption else None,
             parse_mode=None,
+            duration=msg.video.duration,
+            width=msg.video.width,
+            height=msg.video.height,
+            supports_streaming=True,
             reply_parameters=ReplyParameters(message_id=msg.id)
         )
     except Exception as e:
-        await msg.reply(f"❌ Thumbnail apply nahi hui: {str(e)}")
+        await msg.reply(f"❌ Thumbnail apply nahi hua: {str(e)}")
     else:
         await msg.delete()
+    finally:
+        await status.delete()
+        # clean up
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        if os.path.exists(thumb_path):
+            os.remove(thumb_path)
