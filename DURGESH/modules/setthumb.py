@@ -76,7 +76,8 @@ async def get_thumb(chat_id: int) -> str | None:
 
 
 # ---------- AUTO APPLY THUMB ----------
-from pyrogram.types import InputMediaVideo
+import tempfile
+import os
 
 @app.on_message(filters.video & filters.private)
 async def auto_apply_thumb(_, msg: Message):
@@ -84,17 +85,20 @@ async def auto_apply_thumb(_, msg: Message):
 
     # Check if custom thumb is set in DB
     thumb_file_id = await get_thumb(chat_id)
-
     if not thumb_file_id:
         return await msg.reply("⚠️ Pehle /st karke ek thumbnail set karo!")
 
     status = await msg.reply("🔄 Naya thumbnail apply kar rahe hain...")
 
+    # Temporary file banayenge thumb ke liye
+    tmp_thumb = None
     try:
-        # Re-upload same video with saved thumbnail
+        tmp_thumb = await app.download_media(thumb_file_id, file_name=tempfile.mktemp(suffix=".jpg"))
+
+        # Re-upload same video with downloaded thumbnail
         await msg.reply_video(
             video=msg.video.file_id,
-            thumb=thumb_file_id,
+            thumb=tmp_thumb,
             caption=msg.caption or "",
             caption_entities=msg.caption_entities if msg.caption else None,
             duration=msg.video.duration,
@@ -108,4 +112,7 @@ async def auto_apply_thumb(_, msg: Message):
         await msg.delete()
     finally:
         await status.delete()
+        if tmp_thumb and os.path.exists(tmp_thumb):
+            os.remove(tmp_thumb)  # temp thumb delete karna zaroori h
+
 
