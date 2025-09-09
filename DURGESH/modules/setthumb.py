@@ -1,7 +1,7 @@
 from DURGESH import app
 from DURGESH.database import db
 from pyrogram import filters
-from pyrogram.types import Message
+from pyrogram.types import Message, ReplyParameters
 from pyrogram.errors import ChatAdminRequired, UserNotParticipant
 import time
 
@@ -31,7 +31,7 @@ async def set_thumb(_, msg: Message):
         {"chat_id": chat_id},
         {"$set": {
             "thumb_file_id": file_id,
-            "chat_type": str(msg.chat.type),  # ← FIX: Convert ENUM to string
+            "chat_type": str(msg.chat.type),
             "title": msg.chat.title if msg.chat.title else msg.chat.first_name,
             "set_by": msg.from_user.id if msg.from_user else None,
             "set_at": int(time.time())
@@ -70,7 +70,7 @@ async def auto_apply_thumb(_, msg: Message):
             caption=msg.caption if msg.caption else "",
             caption_entities=msg.caption_entities if msg.caption else None,
             parse_mode=None,
-            reply_to_message_id=msg.id
+            reply_parameters=ReplyParameters(message_id=msg.id)  # ← FIX: Deprecated warning removed
         )
         await msg.delete()
     except Exception as e:
