@@ -36,6 +36,7 @@ class Bot(Client):
             api_hash=API_HASH,
             workers=TG_BOT_WORKERS,
             bot_token=BOT_TOKEN,
+            upload_timeout=600,
         )
 
     async def start(self, *args, **kwargs):
@@ -61,3 +62,4 @@ class Bot(Client):
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
+
