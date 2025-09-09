@@ -31,7 +31,7 @@ async def set_thumb(_, msg: Message):
         {"chat_id": chat_id},
         {"$set": {
             "thumb_file_id": file_id,
-            "chat_type": msg.chat.type,
+            "chat_type": str(msg.chat.type),  # ← FIX: Convert ENUM to string
             "title": msg.chat.title if msg.chat.title else msg.chat.first_name,
             "set_by": msg.from_user.id if msg.from_user else None,
             "set_at": int(time.time())
