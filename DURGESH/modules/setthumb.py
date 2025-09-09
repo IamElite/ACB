@@ -75,28 +75,26 @@ async def get_thumb(chat_id: int) -> str | None:
     return doc.get("thumb_file_id") if doc else None
 
 
-# ---------- AUTO APPLY (FIXED) ----------
-import tempfile, os
+# ---------- AUTO APPLY THUMB ----------
 from pyrogram.types import InputMediaVideo
 
 @app.on_message(filters.video & filters.private)
-async def hide_thumb(_, msg: Message):
+async def auto_apply_thumb(_, msg: Message):
     chat_id = msg.chat.id
 
-    # Create a simple black image as cover
-    black_thumb_path = "black.jpg"
-    if not os.path.exists(black_thumb_path):
-        from PIL import Image
-        img = Image.new("RGB", (320, 180), color="black")
-        img.save(black_thumb_path)
+    # Check if custom thumb is set in DB
+    thumb_file_id = await get_thumb(chat_id)
 
-    status = await msg.reply("🔄 Cover hide kar rahe hain...")
+    if not thumb_file_id:
+        return await msg.reply("⚠️ Pehle /st karke ek thumbnail set karo!")
+
+    status = await msg.reply("🔄 Naya thumbnail apply kar rahe hain...")
 
     try:
-        # Re-upload same video with black cover
+        # Re-upload same video with saved thumbnail
         await msg.reply_video(
             video=msg.video.file_id,
-            thumb=black_thumb_path,
+            thumb=thumb_file_id,
             caption=msg.caption or "",
             caption_entities=msg.caption_entities if msg.caption else None,
             duration=msg.video.duration,
@@ -110,3 +108,4 @@ async def hide_thumb(_, msg: Message):
         await msg.delete()
     finally:
         await status.delete()
+
