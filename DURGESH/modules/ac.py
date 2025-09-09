@@ -19,7 +19,7 @@ from DURGESH.database import db
 captiondb = db.captions
 
 # -------------------------------------------------
-# Regex helpers (unchanged)
+# Regex helpers
 # -------------------------------------------------
 def extract_episode(fname: str) -> str:
     for pat, grp in (
@@ -60,7 +60,7 @@ def extract_quality(text: str) -> str:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             return repl if repl else (m.group(1) or m.group(2))
-    return "Unknown"
+    return "480p"  # Default to 480p instead of Unknown
 
 # -------------------------------------------------
 # Formatting helpers
@@ -97,6 +97,9 @@ async def save_caption(chat_id: str, caption: str):
         upsert=True
     )
 
+async def remove_caption(chat_id: str):
+    await captiondb.delete_one({"chat_id": chat_id})
+
 # -------------------------------------------------
 # Admin check helper
 # -------------------------------------------------
@@ -108,7 +111,6 @@ def is_admin(uid: int) -> bool:
 # -------------------------------------------------
 @app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption(client, message: Message):
-    # Admin check
     if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
         await message.reply_text("F.ck you")
         return
@@ -160,13 +162,29 @@ async def get_caption(client, message: Message):
         .replace("{filename}", "Example_Filename")
         .replace("{filesize}", "1.23 GB")
         .replace("{duration}", "1:23:45")
-        .replace("{quality}", "1080p")
+        .replace("{quality}", "480p")
         .replace("{season}", "1")
         .replace("{episode}", "01 (123)")
     )
     reply = await message.reply_text(
         f"📝 Current template:\n\n{preview}", parse_mode=ParseMode.HTML
     )
+    await asyncio.sleep(60)
+    try:
+        await message.delete()
+        await reply.delete()
+    except Exception:
+        pass
+
+@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & (filters.group | filters.channel))
+async def remove_caption_cmd(client, message: Message):
+    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
+        await message.reply_text("F.ck you")
+        return
+
+    chat_id = str(message.chat.id)
+    await remove_caption(chat_id)
+    reply = await message.reply_text("✅ Caption removed! Auto-captioning disabled.")
     await asyncio.sleep(60)
     try:
         await message.delete()
@@ -184,9 +202,6 @@ bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
 BULK_WAIT = 5
 LOCK = asyncio.Lock()
 
-# ------------------------------------------------------------------
-# 2.  QUALITY VALUE MAPPER  (360→480→720→1080→4K)
-# ------------------------------------------------------------------
 def _quality_val(fname: str) -> int:
     txt = fname.upper()
     if "360P" in txt or "360" in txt:
@@ -201,21 +216,20 @@ def _quality_val(fname: str) -> int:
         return 2160
     return 9999
 
-# ------------------------------------------------------------------
-# 3.  EPISODE EXTRACTOR (unchanged)
-# ------------------------------------------------------------------
 def _int_episode(fname: str) -> int:
     try:
-        raw = extract_episode(fname)          # e.g. "21 (456)"  or "03"
+        raw = extract_episode(fname)
         return int(re.search(r'\d+', raw).group())
     except Exception:
         return 9999
 
-# ------------------------------------------------------------------
-# 4.  INCOMING MEDIA HANDLER
-# ------------------------------------------------------------------
 @app.on_message(filters.channel & filters.media)
 async def handle_bulk(client, message: Message):
+    chat_id = str(message.chat.id)
+    caption = await load_caption(chat_id)
+    if not caption:
+        return  # Skip processing if no caption is set
+
     fname = (
         message.document and message.document.file_name
         or message.video and (message.video.file_name or "Video")
@@ -224,7 +238,7 @@ async def handle_bulk(client, message: Message):
     )
 
     ep_num = _int_episode(fname)
-    qual   = _quality_val(fname)
+    qual = _quality_val(fname)
     chat_k = str(message.chat.id)
 
     async with LOCK:
@@ -233,15 +247,17 @@ async def handle_bulk(client, message: Message):
         if sum(len(lst) for lst in bucket.values()) == 1:
             asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
 
-# ------------------------------------------------------------------
-# 5.  FLUSH & REPOST
-# ------------------------------------------------------------------
 async def _flush_bulk(chat_k: str, delay: int):
     await asyncio.sleep(delay)
 
     async with LOCK:
         bucket = bulk_bucket.pop(chat_k, {})
     if not bucket:
+        return
+
+    # Check if caption is still enabled
+    caption = await load_caption(chat_k)
+    if not caption:
         return
 
     # sort: episode asc, then quality asc
@@ -251,10 +267,6 @@ async def _flush_bulk(chat_k: str, delay: int):
 
     # post with 1-second gaps
     for msg in ordered:
-        custom = await load_caption(chat_k)
-        if not custom:
-            continue
-
         filename = None
         filesize = None
         duration = None
@@ -276,7 +288,7 @@ async def _flush_bulk(chat_k: str, delay: int):
             continue
 
         cap = (
-            custom
+            caption
             .replace("{filename}", html.escape(filename.rsplit(".", 1)[0]))
             .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
             .replace("{duration}", html.escape(format_duration(duration)))
