@@ -11,22 +11,22 @@ buttondb = db.button_settings   # store custom buttons
 DEFAULT_BUTTON = [["❖ ʙᴧᴄᴋᴜᴘ ʀєᴧʟϻ ❖", "https://t.me/SyntaxRealm"]]
 
 # -------------------- ENABLE / DISABLE FEATURE -------------------- #
-@app.on_message(filters.command(["addbutton", "ab"]) & (filters.group | filters.channel))
-async def toggle_button_feature(client, message: Message):
-    if len(message.command) != 2 or message.command[1].lower() not in ["on", "off"]:
-        return await message.reply_text("❌ Usage: /addbutton on|off or /ab on|off")
+@app.on_message(filters.channel & filters.regex(r"^/(ab|addbutton)\s+(on|off)"))
+async def toggle_button_channel(client, message: Message):
+    cmd = message.text.split()
+    if len(cmd) != 2:
+        return
 
-    action = message.command[1].lower()
+    action = cmd[1].lower()
     chat_id = message.chat.id
 
     if action == "on":
         await featuredb.update_one({"chat_id": str(chat_id)}, {"$set": {"chat_id": str(chat_id)}}, upsert=True)
-        msg = await message.reply_text("✅ Button feature ENABLED for this chat.")
+        msg = await message.reply_text("✅ Button feature ENABLED for this channel.")
     else:
         await featuredb.delete_one({"chat_id": str(chat_id)})
-        msg = await message.reply_text("✅ Button feature DISABLED for this chat.")
+        msg = await message.reply_text("✅ Button feature DISABLED for this channel.")
 
-    # Delete both bot reply and command for clean chat
     await asyncio.sleep(2)
     try:
         await msg.delete()
