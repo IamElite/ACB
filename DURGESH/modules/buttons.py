@@ -123,10 +123,10 @@ async def remove_forward_tag_handler(client, message: Message):
         await client.copy_message(
             chat_id=channel_id,
             from_chat_id=message.chat.id,
-            message_id=message.message_id,
+            message_id=message.id,
             reply_markup=message.reply_markup,
             caption=message.caption if getattr(message, "caption", None) else None
         )
         await message.delete()
     except Exception as e:
-        print(f"[remove_forward_tag_handler] failed for chat {channel_id} msg {message.message_id}: {e}")
+        print(f"[remove_forward_tag_handler] failed for chat {channel_id} msg {message.id}: {e}")
