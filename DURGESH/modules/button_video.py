@@ -18,13 +18,13 @@ async def toggle_button_channel(client, message: Message):
         return
 
     action = cmd[1].lower()
-    chat_id = message.chat.id
+    chat_id = str(message.chat.id)   # 🔥 always string
 
     if action == "on":
-        await featuredb.update_one({"chat_id": str(chat_id)}, {"$set": {"chat_id": str(chat_id)}}, upsert=True)
+        await featuredb.update_one({"chat_id": chat_id}, {"$set": {"chat_id": chat_id}}, upsert=True)
         msg = await message.reply_text("✅ Button feature ENABLED for this channel.")
     else:
-        await featuredb.delete_one({"chat_id": str(chat_id)})
+        await featuredb.delete_one({"chat_id": chat_id})
         msg = await message.reply_text("✅ Button feature DISABLED for this channel.")
 
     await asyncio.sleep(2)
@@ -65,10 +65,10 @@ async def set_custom_button(client, message: Message):
 # -------------------- VIDEO MESSAGE HANDLER -------------------- #
 @app.on_message(filters.video & (filters.group | filters.channel))
 async def attach_button_to_video(client, message: Message):
-    chat_id = message.chat.id
+    chat_id = str(message.chat.id)   # 🔥 always string
 
-    # Check if feature enabled
-    feature = await featuredb.find_one({"chat_id": str(chat_id)})
+    # Check DB
+    feature = await featuredb.find_one({"chat_id": chat_id})
     if not feature:
         return
 
