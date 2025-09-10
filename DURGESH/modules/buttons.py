@@ -105,7 +105,7 @@ async def change_button_with_link(client, message: Message):
     # Step 5: Parse new buttons
     keyboard = parse_buttons(message.reply_to_message.text)
     if not keyboard:
-        return await message.reply_text("❌ Invalid button format! Use: [Text + https://link]")
+        return await message.reply_text("❌ Invalid button format!\n\n📝 Send me new buttons in format (as a reply to the same forwarded post):\n\n[Text + Link]\n[Another + Link]\n\nMultiple in one row:\n[One + Link] [Two + Link]")
 
     # Step 6: Try editing
     try:
@@ -123,7 +123,7 @@ async def change_button_with_link(client, message: Message):
 async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
     try:
         await msg.copy(
-            int(chat_id),
+            chat_id=int(chat_id),
             caption=cap,
             parse_mode=ParseMode.HTML,
             reply_markup=msg.reply_markup
@@ -135,7 +135,7 @@ async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
             await asyncio.sleep(wait)
             try:
                 await msg.copy(
-                    int(chat_id),
+                    chat_id=int(chat_id),
                     caption=cap,
                     parse_mode=ParseMode.HTML,
                     reply_markup=msg.reply_markup
@@ -148,12 +148,7 @@ async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
     await asyncio.sleep(1)
 
 @app.on_message(filters.channel)
-async def remove_forward_tag_handler(client, message: Message):
-    # Forwarded ya via bot dono detect karo
-    if not message.forward_origin and not message.via_bot:
+async def remove_forward_tag_handler(client, m: Message):
+    if not m.forward_origin and not m.via_bot or not await is_channel_authed(m.chat.id):
         return
-    channel_id = message.chat.id
-    if not await is_channel_authed(channel_id):
-        return
-    cap = message.caption if getattr(message, "caption", None) else None
-    await safe_copy_and_delete(message, channel_id, cap=cap)
+    await safe_copy_and_delete(m, m.chat.id, cap=m.caption if getattr(m, "caption", None) else None)
