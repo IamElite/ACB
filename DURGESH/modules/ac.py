@@ -172,7 +172,7 @@ def _int_episode(fname: str) -> int:
         return int(re.search(r'\d+', raw).group())
     except: return 9999
 
-@app.on_message((filters.group | filters.channel) & filters.media)
+@app.on_message(filters.media & (filters.group | filters.channel))
 async def handle_bulk(client, message: Message):
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
