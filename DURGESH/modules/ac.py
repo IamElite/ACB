@@ -59,8 +59,14 @@ def extract_quality(text: str) -> str:
     for pat, repl in qpats:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return repl if repl else (m.group(1) or m.group(2))
-    return "480p"  # Default to 480p instead of Unknown
+            q = repl if repl else (m.group(1) or m.group(2))
+            if q:  
+                q = q.lower()
+                # ✅ Fix: Agar 360p detect hua to 480p dikhao
+                if "360" in q:
+                    return "480p"
+                return q
+    return "N/A"
 
 # -------------------------------------------------
 # Formatting helpers
