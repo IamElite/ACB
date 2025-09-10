@@ -4,9 +4,8 @@
 #   - Auto-apply on media (groups/channels), album first item only
 #   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
 
-
-import re
 import html
+import re
 import asyncio
 from collections import defaultdict
 from pyrogram import filters
@@ -62,8 +61,7 @@ def extract_quality(text: str) -> str:
             q = repl if repl else (m.group(1) or m.group(2))
             if q:  
                 q = q.lower()
-                # ✅ Fix: Agar 360p detect hua to 480p dikhao
-                if "360" in q:
+                if "360" in q:   # ✅ fix 360p -> 480p
                     return "480p"
                 return q
     return "N/A"
@@ -107,18 +105,24 @@ async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": chat_id})
 
 # -------------------------------------------------
-# Admin check helper
+# Admin check helper (fixed for groups + channels)
 # -------------------------------------------------
-def is_admin(uid: int) -> bool:
-    return uid in ADMINS
+def is_admin_message(message: Message) -> bool:
+    # Groups me: user check karo
+    if message.chat.type in ["group", "supergroup"]:
+        return message.from_user and message.from_user.id in ADMINS
+    # Channels me: agar message.sender_chat hai to allow karo
+    if message.chat.type == "channel":
+        return message.sender_chat is not None
+    return False
 
 # -------------------------------------------------
 # Command handlers
 # -------------------------------------------------
 @app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption(client, message: Message):
-    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
-        await message.reply_text("F.ck you")
+    if not is_admin_message(message):
+        await message.reply_text("⛔ You are not allowed to use this command.")
         return
 
     chat_id = str(message.chat.id)
@@ -144,11 +148,10 @@ async def set_caption(client, message: Message):
     except Exception:
         pass
 
-
 @app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
 async def get_caption(client, message: Message):
-    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
-        await message.reply_text("F.ck you")
+    if not is_admin_message(message):
+        await message.reply_text("⛔ You are not allowed to use this command.")
         return
 
     chat_id = str(message.chat.id)
@@ -184,8 +187,8 @@ async def get_caption(client, message: Message):
 
 @app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & (filters.group | filters.channel))
 async def remove_caption_cmd(client, message: Message):
-    if not message.sender_chat and (not message.from_user or not is_admin(message.from_user.id)):
-        await message.reply_text("F.ck you")
+    if not is_admin_message(message):
+        await message.reply_text("⛔ You are not allowed to use this command.")
         return
 
     chat_id = str(message.chat.id)
@@ -204,7 +207,7 @@ async def remove_caption_cmd(client, message: Message):
 from typing import List, Tuple
 
 bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
-bulk_tasks: dict[str, asyncio.Task] = {}  # ✅ per-chat active flush task
+bulk_tasks: dict[str, asyncio.Task] = {}
 BULK_WAIT = 5
 LOCK = asyncio.Lock()
 
@@ -234,7 +237,7 @@ async def handle_bulk(client, message: Message):
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
     if not caption:
-        return  # Skip if no caption set
+        return
 
     fname = (
         message.document and message.document.file_name
@@ -250,18 +253,16 @@ async def handle_bulk(client, message: Message):
         bucket = bulk_bucket[chat_id]
         bucket.setdefault((ep_num, qual), []).append(message)
 
-        # ✅ Cancel previous flush task and start fresh timer
         if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
             bulk_tasks[chat_id].cancel()
 
         bulk_tasks[chat_id] = asyncio.create_task(_flush_bulk(chat_id, BULK_WAIT))
 
-
 async def _flush_bulk(chat_id: str, delay: int):
     try:
         await asyncio.sleep(delay)
     except asyncio.CancelledError:
-        return  # ✅ If reset, just exit
+        return
 
     async with LOCK:
         bucket = bulk_bucket.pop(chat_id, {})
@@ -309,9 +310,7 @@ async def _flush_bulk(chat_id: str, delay: int):
         )
 
         try:
-            # ✅ Copy with caption
             await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
-            # ✅ Delete raw media
             await msg.delete()
         except Exception as e:
             if "FLOOD_WAIT" in str(e):
@@ -325,4 +324,5 @@ async def _flush_bulk(chat_id: str, delay: int):
             else:
                 print("Reorder failed:", e)
         await asyncio.sleep(1)
+
 
