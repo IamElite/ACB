@@ -95,13 +95,12 @@ async def change_button_start(client, message: Message):
     if not message.reply_to_message or not message.reply_to_message.forward_origin:
         return await message.reply_text("❌ Reply to a forwarded channel post to change its buttons.")
 
-    channel_id = message.reply_to_message.forward_origin.chat.sender_chat.id
+    channel_id = message.reply_to_message.forward_origin.chat.id
     msg_id = message.reply_to_message.forward_origin.message_id
 
     if not await is_channel_authed(channel_id):
         return await message.reply_text("❌ This channel is not authorized. Use /auth first.")
 
-    # Save pending change
     pending_changes[message.from_user.id] = (channel_id, msg_id)
 
     await message.reply_text(
@@ -109,6 +108,7 @@ async def change_button_start(client, message: Message):
         "[Text + Link]\n[Another + Link]\n\n"
         "Multiple in one row:\n[One + Link] [Two + Link]"
     )
+
 
 
 @app.on_message(filters.text)
