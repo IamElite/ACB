@@ -1,6 +1,6 @@
 import re
 import asyncio
-from typing import Dict, Tuple
+from typing import Dict
 from pyrogram import filters
 from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -78,44 +78,36 @@ def parse_buttons(text: str):
             keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
-# -------------------- CHANGE BUTTON -------------------- #
+# -------------------- CHANGE BUTTON (NEW METHOD) -------------------- #
 
-pending_changes: Dict[int, Tuple[int, int]] = {}
+@app.on_message(filters.command(["cd"]))
+async def change_button_with_link(client, message: Message):
+    # Step 1: Check reply (button-text message)
+    if not message.reply_to_message or not message.reply_to_message.text:
+        return await message.reply_text("❌ Reply to a button-text message with /cd <post_link>")
 
-@app.on_message(filters.command(["changebutton", "cb"]))
-async def change_button_start(client, message: Message):
-    if not message.reply_to_message or not isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
-        return await message.reply_text("❌ Reply to a channel forwarded post to change its buttons.")
-    origin = message.reply_to_message.forward_origin
-    channel_id = origin.chat.id
-    msg_id = origin.message_id
+    # Step 2: Check command argument
+    if len(message.command) != 2:
+        return await message.reply_text("❌ Usage: /cd <channel_post_link>")
+
+    link = message.command[1]
+    match = re.match(r"https://t\.me/c/(-?\d+)/(\d+)", link)
+    if not match:
+        return await message.reply_text("❌ Invalid link format! Use: https://t.me/c/<channel_id>/<msg_id>")
+
+    # Step 3: Extract channel_id and message_id
+    channel_id, msg_id = int("-100" + match.group(1)), int(match.group(2))
+
+    # Step 4: Auth check
     if not await is_channel_authed(channel_id):
         return await message.reply_text("❌ This channel is not authorized. Use /auth first.")
-    pending_changes[message.from_user.id] = (channel_id, msg_id)
-    await message.reply_text(
-        "📝 Reply to the same forwarded post with new buttons:\n\n"
-        "[Text + https://link]\n"
-        "[Another + https://link] [Third + https://link]"
-    )
 
-@app.on_message(filters.text)
-async def change_button_receive(client, message: Message):
-    uid = message.from_user.id
-    if uid not in pending_changes:
-        return
-    if not message.reply_to_message or not isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
-        return await message.reply_text("❌ Please reply to the same forwarded post with the new buttons.")
-    channel_id, msg_id = pending_changes.get(uid)
-    origin = message.reply_to_message.forward_origin
-    orig_chat = origin.chat.id
-    orig_msg_id = origin.message_id
-    if orig_chat != channel_id or orig_msg_id != msg_id:
-        pending_changes.pop(uid, None)
-        return await message.reply_text("❌ Wrong post! Start again with /cb.")
-    keyboard = parse_buttons(message.text)
+    # Step 5: Parse new buttons
+    keyboard = parse_buttons(message.reply_to_message.text)
     if not keyboard:
         return await message.reply_text("❌ Invalid button format! Use: [Text + https://link]")
-    pending_changes.pop(uid, None)
+
+    # Step 6: Try editing
     try:
         await client.edit_message_reply_markup(
             chat_id=channel_id,
@@ -157,7 +149,7 @@ async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
 
 @app.on_message(filters.channel)
 async def remove_forward_tag_handler(client, message: Message):
-    # Normal forward ya via bot dono detect karo
+    # Forwarded ya via bot dono detect karo
     if not message.forward_origin and not message.via_bot:
         return
     channel_id = message.chat.id
