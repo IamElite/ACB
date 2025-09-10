@@ -1,4 +1,5 @@
 import re
+import asyncio
 from typing import Dict, Tuple
 from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -7,6 +8,8 @@ from DURGESH import app
 from DURGESH.database import db
 
 authdb = db.auth_channels
+
+# -------------------- AUTH HELPERS -------------------- #
 
 async def add_auth_channel(chat_id: int):
     await authdb.update_one(
@@ -21,6 +24,8 @@ async def remove_auth_channel(chat_id: int):
 async def is_channel_authed(chat_id: int) -> bool:
     data = await authdb.find_one({"chat_id": str(chat_id)})
     return bool(data)
+
+# -------------------- AUTH COMMANDS -------------------- #
 
 @app.on_message(filters.command(["auth"]))
 async def auth_channel_cmd(client, message: Message):
@@ -57,6 +62,8 @@ async def unauth_channel_cmd(client, message: Message):
     await remove_auth_channel(chat_id)
     await message.reply_text(f"✅ Un-Authorized channel: `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
 
+# -------------------- BUTTON PARSER -------------------- #
+
 def parse_buttons(text: str):
     keyboard = []
     for line in text.strip().splitlines():
@@ -67,6 +74,8 @@ def parse_buttons(text: str):
         if btns:
             keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
+
+# -------------------- CHANGE BUTTON -------------------- #
 
 pending_changes: Dict[int, Tuple[int, int]] = {}
 
@@ -112,6 +121,35 @@ async def change_button_receive(client, message: Message):
     except Exception as e:
         await message.reply_text(f"⚠️ Failed to edit message: {e}")
 
+# -------------------- FORWARD TAG REMOVER -------------------- #
+
+async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
+    try:
+        await msg.copy(
+            int(chat_id),
+            caption=cap,
+            parse_mode=ParseMode.HTML,
+            reply_markup=msg.reply_markup
+        )
+        await msg.delete()
+    except Exception as e:
+        if "FLOOD_WAIT" in str(e):
+            wait = int(str(e).split("wait ")[1].split()[0])
+            await asyncio.sleep(wait)
+            try:
+                await msg.copy(
+                    int(chat_id),
+                    caption=cap,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=msg.reply_markup
+                )
+                await msg.delete()
+            except:
+                pass
+        else:
+            print("safe_copy_and_delete failed:", e)
+    await asyncio.sleep(1)
+
 @app.on_message(filters.channel)
 async def remove_forward_tag_handler(client, message: Message):
     if not message.forward_origin:
@@ -119,14 +157,5 @@ async def remove_forward_tag_handler(client, message: Message):
     channel_id = message.chat.id
     if not await is_channel_authed(channel_id):
         return
-    try:
-        await client.copy_message(
-            chat_id=channel_id,
-            from_chat_id=message.chat.id,
-            message_id=message.id,
-            reply_markup=message.reply_markup,
-            caption=message.caption if getattr(message, "caption", None) else None
-        )
-        await message.delete()
-    except Exception as e:
-        print(f"[remove_forward_tag_handler] failed for chat {channel_id} msg {message.id}: {e}")
+    cap = message.caption if getattr(message, "caption", None) else None
+    await safe_copy_and_delete(message, channel_id, cap=cap)
