@@ -154,7 +154,7 @@ async def remove_caption_channel(client, message: Message): await _remove_captio
 # ---------------- Bulk Handler ----------------
 bulk_bucket: dict[str, dict[tuple[int,int], list[Message]]] = defaultdict(dict)
 bulk_tasks: dict[str, asyncio.Task] = {}
-BULK_WAIT = 2
+BULK_WAIT = 3
 LOCK = asyncio.Lock()
 
 def _quality_val(fname: str) -> int:
