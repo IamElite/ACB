@@ -1,9 +1,3 @@
-
-#   - /setcaption or /st <HTML template> per chat (safe parsing; no IndexError)
-#   - /getcaption or /gc shows current template (HTML rendered)
-#   - Auto-apply on media (groups/channels), album first item only
-#   - Placeholders: {filename} {filesize} {duration} {quality} {season} {episode}
-
 import html
 import re
 import asyncio
@@ -94,8 +88,7 @@ async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": chat_id})
 
 # ---------------- Commands ----------------
-@app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
-async def set_caption(client, message: Message):
+async def _set_caption(message: Message):
     chat_id = str(message.chat.id)
     if len(message.command) < 2:
         reply = await message.reply_text("❌ Provide caption after command.\nExample: `/setcaption <b>{filename}</b>`")
@@ -110,8 +103,7 @@ async def set_caption(client, message: Message):
     try: await message.delete(); await reply.delete()
     except: pass
 
-@app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
-async def get_caption(client, message: Message):
+async def _get_caption(message: Message):
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
     if not caption:
@@ -131,14 +123,33 @@ async def get_caption(client, message: Message):
     try: await message.delete(); await reply.delete()
     except: pass
 
-@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & (filters.group | filters.channel))
-async def remove_caption_cmd(client, message: Message):
+async def _remove_caption(message: Message):
     chat_id = str(message.chat.id)
     await remove_caption(chat_id)
     reply = await message.reply_text("✅ Caption removed! Auto-captioning disabled.")
     await asyncio.sleep(60)
     try: await message.delete(); await reply.delete()
     except: pass
+
+# Register in groups
+@app.on_message(filters.group & filters.command(["setcaption", "sc"]))
+async def set_caption_group(client, message: Message): await _set_caption(message)
+
+@app.on_message(filters.group & filters.command(["getcaption", "gc"]))
+async def get_caption_group(client, message: Message): await _get_caption(message)
+
+@app.on_message(filters.group & filters.command(["removecaption", "rc", "rmcaption"]))
+async def remove_caption_group(client, message: Message): await _remove_caption(message)
+
+# Register in channels
+@app.on_message(filters.channel & filters.command(["setcaption", "sc"]))
+async def set_caption_channel(client, message: Message): await _set_caption(message)
+
+@app.on_message(filters.channel & filters.command(["getcaption", "gc"]))
+async def get_caption_channel(client, message: Message): await _get_caption(message)
+
+@app.on_message(filters.channel & filters.command(["removecaption", "rc", "rmcaption"]))
+async def remove_caption_channel(client, message: Message): await _remove_caption(message)
 
 # ---------------- Bulk Handler ----------------
 bulk_bucket: dict[str, dict[tuple[int,int], list[Message]]] = defaultdict(dict)
@@ -161,7 +172,7 @@ def _int_episode(fname: str) -> int:
         return int(re.search(r'\d+', raw).group())
     except: return 9999
 
-@app.on_message(filters.group | filters.channel & filters.media)
+@app.on_message((filters.group | filters.channel) & filters.media)
 async def handle_bulk(client, message: Message):
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
@@ -229,4 +240,3 @@ async def _flush_bulk(chat_id: str, delay: int):
                 except: pass
             else: print("Reorder failed:", e)
         await asyncio.sleep(1)
-
