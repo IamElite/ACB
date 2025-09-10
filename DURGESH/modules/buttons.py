@@ -121,34 +121,34 @@ async def change_button_with_link(client, message: Message):
 # -------------------- FORWARD TAG REMOVER -------------------- #
 
 async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
-    try:
+    async def _copy():
         await msg.copy(
-            chat_id=int(chat_id),
+            chat_id,
             caption=cap,
             parse_mode=ParseMode.HTML,
             reply_markup=msg.reply_markup
         )
         await msg.delete()
+
+    try:
+        await _copy()
     except Exception as e:
         if "FLOOD_WAIT" in str(e):
-            wait = int(str(e).split("wait ")[1].split()[0])
+            wait = int(re.search(r"wait (\d+)", str(e)).group(1))
             await asyncio.sleep(wait)
             try:
-                await msg.copy(
-                    chat_id=int(chat_id),
-                    caption=cap,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=msg.reply_markup
-                )
-                await msg.delete()
+                await _copy()
             except:
                 pass
         else:
             print("safe_copy_and_delete failed:", e)
     await asyncio.sleep(1)
 
+
 @app.on_message(filters.channel)
-async def remove_forward_tag_handler(client, m: Message):
-    if not m.forward_origin and not m.via_bot or not await is_channel_authed(m.chat.id):
+async def remove_forward_tag_handler(client, message: Message):
+    if not (message.forward_origin or message.via_bot):
         return
-    await safe_copy_and_delete(m, m.chat.id, cap=m.caption if getattr(m, "caption", None) else None)
+    if not await is_channel_authed(message.chat.id):
+        return
+    await safe_copy_and_delete(message, message.chat.id, cap=message.caption or None)
