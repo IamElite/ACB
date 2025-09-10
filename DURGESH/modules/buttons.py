@@ -70,6 +70,35 @@ async def unauth_channel_cmd(client, message: Message):
     await message.reply_text(f"✅ Un-Authorized channel: `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
 
 
+@app.on_message(filters.channel)
+async def remove_forward_tag(client, message: Message):
+    # Sirf forwarded posts ko target karo
+    if not message.forward_origin:
+        return
+
+    channel_id = message.chat.id
+
+    # Sirf authorized channels pe kaam kare
+    if not await is_channel_authed(channel_id):
+        return
+
+    try:
+        # Forwarded post ko copy karo (buttons + media safe rahenge)
+        new_msg = await client.copy_message(
+            chat_id=channel_id,
+            from_chat_id=channel_id,
+            message_id=message.id,
+            caption=message.caption or None,
+            reply_markup=message.reply_markup
+        )
+
+        # Purana forwarded post delete kar do
+        await message.delete()
+
+    except Exception as e:
+        print(f"[ERROR] Forward tag remove failed: {e}")
+
+
 # -------------------------------------------------
 # Parse Button Format
 # -------------------------------------------------
