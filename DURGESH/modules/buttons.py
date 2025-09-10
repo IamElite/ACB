@@ -80,7 +80,7 @@ def parse_buttons(text: str):
 
 # -------------------- CHANGE BUTTON (NEW METHOD) -------------------- #
 
-@app.on_message(filters.command(["cd"]))
+@app.on_message(filters.command(["cb"]))
 async def change_button_with_link(client, message: Message):
     # Step 1: Check reply (button-text message)
     if not message.reply_to_message or not message.reply_to_message.text:
