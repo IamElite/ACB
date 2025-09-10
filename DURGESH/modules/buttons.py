@@ -30,15 +30,15 @@ async def is_channel_authed(chat_id: int) -> bool:
 # -------------------------------------------------
 # /auth & /unauth commands
 # -------------------------------------------------
-@app.on_message(filters.command(["auth"]) & filters.private)
+@app.on_message(filters.command(["auth"]))
 async def auth_channel_cmd(client, message: Message):
     if len(message.command) == 2:
         try:
             chat_id = int(message.command[1])
         except ValueError:
             return await message.reply_text("❌ Invalid channel_id!")
-    elif message.reply_to_message and message.reply_to_message.forward_from_chat:
-        chat_id = message.reply_to_message.forward_from_chat.id
+    elif message.reply_to_message and message.reply_to_message.forward_origin:
+        chat_id = message.reply_to_message.forward_origin.chat.sender_chat.id
     else:
         return await message.reply_text("❌ Usage: /auth <channel_id> or reply to a forwarded channel message.")
 
@@ -54,15 +54,15 @@ async def auth_channel_cmd(client, message: Message):
     await message.reply_text(f"✅ Authorized channel: `{chat.title}` (`{chat_id}`)", parse_mode=ParseMode.MARKDOWN)
 
 
-@app.on_message(filters.command(["unauth"]) & filters.private)
+@app.on_message(filters.command(["unauth"]))
 async def unauth_channel_cmd(client, message: Message):
     if len(message.command) == 2:
         try:
             chat_id = int(message.command[1])
         except ValueError:
             return await message.reply_text("❌ Invalid channel_id!")
-    elif message.reply_to_message and message.reply_to_message.forward_from_chat:
-        chat_id = message.reply_to_message.forward_from_chat.id
+    elif message.reply_to_message and message.reply_to_message.forward_origin:
+        chat_id = message.reply_to_message.forward_origin.chat.sender_chat.id
     else:
         return await message.reply_text("❌ Usage: /unauth <channel_id> or reply to a forwarded channel message.")
 
@@ -92,27 +92,31 @@ pending_changes = {}  # user_id -> (channel_id, message_id)
 
 @app.on_message(filters.command(["changebutton", "cb"]))
 async def change_button_start(client, message: Message):
-    if not message.reply_to_message or not message.reply_to_message.forward_from_chat:
+    if not message.reply_to_message or not message.reply_to_message.forward_origin:
         return await message.reply_text("❌ Reply to a forwarded channel post to change its buttons.")
 
-    channel_id = message.reply_to_message.forward_from_chat.id
-    msg_id = message.reply_to_message.forward_from_message_id
+    channel_id = message.reply_to_message.forward_origin.chat.sender_chat.id
+    msg_id = message.reply_to_message.forward_origin.message_id
 
     if not await is_channel_authed(channel_id):
         return await message.reply_text("❌ This channel is not authorized. Use /auth first.")
 
+    # Save pending change
     pending_changes[message.from_user.id] = (channel_id, msg_id)
+
     await message.reply_text(
-        "📝 Send me new buttons in format:\n\n"
+        "📝 Send me new buttons in format (as a reply to the same forwarded post):\n\n"
         "[Text + Link]\n[Another + Link]\n\n"
         "Multiple in one row:\n[One + Link] [Two + Link]"
     )
 
 
-@app.on_message(filters.text & filters.private)
+@app.on_message(filters.text)
 async def change_button_receive(client, message: Message):
     if message.from_user.id not in pending_changes:
         return
+    if not message.reply_to_message or not message.reply_to_message.forward_origin:
+        return  # user must reply to the forwarded post with buttons
 
     channel_id, msg_id = pending_changes.pop(message.from_user.id)
     keyboard = parse_buttons(message.text)
