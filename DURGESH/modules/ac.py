@@ -203,8 +203,8 @@ async def remove_caption_cmd(client, message: Message):
 # -------------------------------------------------
 from typing import List, Tuple
 
-# chat_id -> {(episode_int, quality_int): [Message, ...]}
 bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
+bulk_tasks: dict[str, asyncio.Task] = {}  # ✅ per-chat active flush task
 BULK_WAIT = 5
 LOCK = asyncio.Lock()
 
@@ -234,7 +234,7 @@ async def handle_bulk(client, message: Message):
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
     if not caption:
-        return  # Skip processing if no caption is set
+        return  # Skip if no caption set
 
     fname = (
         message.document and message.document.file_name
@@ -245,33 +245,38 @@ async def handle_bulk(client, message: Message):
 
     ep_num = _int_episode(fname)
     qual = _quality_val(fname)
-    chat_k = str(message.chat.id)
 
     async with LOCK:
-        bucket = bulk_bucket[chat_k]
+        bucket = bulk_bucket[chat_id]
         bucket.setdefault((ep_num, qual), []).append(message)
-        if sum(len(lst) for lst in bucket.values()) == 1:
-            asyncio.create_task(_flush_bulk(chat_k, BULK_WAIT))
 
-async def _flush_bulk(chat_k: str, delay: int):
-    await asyncio.sleep(delay)
+        # ✅ Cancel previous flush task and start fresh timer
+        if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
+            bulk_tasks[chat_id].cancel()
+
+        bulk_tasks[chat_id] = asyncio.create_task(_flush_bulk(chat_id, BULK_WAIT))
+
+
+async def _flush_bulk(chat_id: str, delay: int):
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return  # ✅ If reset, just exit
 
     async with LOCK:
-        bucket = bulk_bucket.pop(chat_k, {})
+        bucket = bulk_bucket.pop(chat_id, {})
+
     if not bucket:
         return
 
-    # Check if caption is still enabled
-    caption = await load_caption(chat_k)
+    caption = await load_caption(chat_id)
     if not caption:
         return
 
-    # sort: episode asc, then quality asc
     ordered: list[Message] = []
     for (ep, qual), msgs in sorted(bucket.items()):
         ordered.extend(msgs)
 
-    # post with 1-second gaps
     for msg in ordered:
         filename = None
         filesize = None
@@ -304,12 +309,20 @@ async def _flush_bulk(chat_k: str, delay: int):
         )
 
         try:
-            await msg.copy(int(chat_k), caption=cap, parse_mode=ParseMode.HTML)
+            # ✅ Copy with caption
+            await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
+            # ✅ Delete raw media
             await msg.delete()
         except Exception as e:
             if "FLOOD_WAIT" in str(e):
                 wait = int(str(e).split("wait ")[1].split()[0])
                 await asyncio.sleep(wait)
+                try:
+                    await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
+                    await msg.delete()
+                except:
+                    pass
             else:
                 print("Reorder failed:", e)
         await asyncio.sleep(1)
+
