@@ -2,7 +2,10 @@ import re
 import asyncio
 from typing import Dict, Tuple
 from pyrogram import filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import (
+    Message, InlineKeyboardMarkup, InlineKeyboardButton,
+    MessageOriginChannel
+)
 from pyrogram.enums import ParseMode
 from DURGESH import app
 from DURGESH.database import db
@@ -34,10 +37,10 @@ async def auth_channel_cmd(client, message: Message):
             chat_id = int(message.command[1])
         except ValueError:
             return await message.reply_text("❌ Invalid channel_id!")
-    elif message.reply_to_message and message.reply_to_message.forward_origin:
+    elif message.reply_to_message and isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
         chat_id = message.reply_to_message.forward_origin.chat.id
     else:
-        return await message.reply_text("❌ Usage: /auth <channel_id> or reply to a forwarded channel message.")
+        return await message.reply_text("❌ Usage: /auth <channel_id> or reply to a channel forwarded post.")
     try:
         member = await client.get_chat_member(chat_id, "me")
         priv = getattr(member, "privileges", None)
@@ -55,10 +58,10 @@ async def unauth_channel_cmd(client, message: Message):
             chat_id = int(message.command[1])
         except ValueError:
             return await message.reply_text("❌ Invalid channel_id!")
-    elif message.reply_to_message and message.reply_to_message.forward_origin:
+    elif message.reply_to_message and isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
         chat_id = message.reply_to_message.forward_origin.chat.id
     else:
-        return await message.reply_text("❌ Usage: /unauth <channel_id> or reply to a forwarded channel message.")
+        return await message.reply_text("❌ Usage: /unauth <channel_id> or reply to a channel forwarded post.")
     await remove_auth_channel(chat_id)
     await message.reply_text(f"✅ Un-Authorized channel: `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
 
@@ -81,10 +84,11 @@ pending_changes: Dict[int, Tuple[int, int]] = {}
 
 @app.on_message(filters.command(["changebutton", "cb"]))
 async def change_button_start(client, message: Message):
-    if not message.reply_to_message or not message.reply_to_message.forward_origin:
-        return await message.reply_text("❌ Reply to a forwarded channel post to change its buttons.")
-    channel_id = message.reply_to_message.forward_origin.chat.id
-    msg_id = message.reply_to_message.forward_origin.message_id
+    if not message.reply_to_message or not isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
+        return await message.reply_text("❌ Reply to a channel forwarded post to change its buttons.")
+    origin = message.reply_to_message.forward_origin
+    channel_id = origin.chat.id
+    msg_id = origin.message_id
     if not await is_channel_authed(channel_id):
         return await message.reply_text("❌ This channel is not authorized. Use /auth first.")
     pending_changes[message.from_user.id] = (channel_id, msg_id)
@@ -99,14 +103,15 @@ async def change_button_receive(client, message: Message):
     uid = message.from_user.id
     if uid not in pending_changes:
         return
-    if not message.reply_to_message or not message.reply_to_message.forward_origin:
+    if not message.reply_to_message or not isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
         return await message.reply_text("❌ Please reply to the same forwarded post with the new buttons.")
     channel_id, msg_id = pending_changes.get(uid)
-    orig_chat = message.reply_to_message.forward_origin.chat.id
-    orig_msg_id = message.reply_to_message.forward_origin.message_id
+    origin = message.reply_to_message.forward_origin
+    orig_chat = origin.chat.id
+    orig_msg_id = origin.message_id
     if orig_chat != channel_id or orig_msg_id != msg_id:
         pending_changes.pop(uid, None)
-        return await message.reply_text("❌ Reply must be to the same forwarded post you used with /cb. Start again with /cb.")
+        return await message.reply_text("❌ Wrong post! Start again with /cb.")
     keyboard = parse_buttons(message.text)
     if not keyboard:
         return await message.reply_text("❌ Invalid button format! Use: [Text + https://link]")
@@ -152,7 +157,8 @@ async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
 
 @app.on_message(filters.channel)
 async def remove_forward_tag_handler(client, message: Message):
-    if not message.forward_origin:
+    # Normal forward ya via bot dono detect karo
+    if not message.forward_origin and not message.via_bot:
         return
     channel_id = message.chat.id
     if not await is_channel_authed(channel_id):
