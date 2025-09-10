@@ -12,7 +12,6 @@ from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
 from DURGESH import app
-from config import ADMINS
 from DURGESH.database import db
 
 captiondb = db.captions
@@ -105,26 +104,10 @@ async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": chat_id})
 
 # -------------------------------------------------
-# Admin check helper (fixed for groups + channels)
-# -------------------------------------------------
-def is_admin_message(message: Message) -> bool:
-    # Groups me: user check karo
-    if message.chat.type in ["group", "supergroup"]:
-        return message.from_user and message.from_user.id in ADMINS
-    # Channels me: agar message.sender_chat hai to allow karo
-    if message.chat.type == "channel":
-        return message.sender_chat is not None
-    return False
-
-# -------------------------------------------------
-# Command handlers
+# Command handlers (everyone can use)
 # -------------------------------------------------
 @app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption(client, message: Message):
-    if not is_admin_message(message):
-        await message.reply_text("⛔ You are not allowed to use this command.")
-        return
-
     chat_id = str(message.chat.id)
     if len(message.command) < 2:
         reply = await message.reply_text(
@@ -150,10 +133,6 @@ async def set_caption(client, message: Message):
 
 @app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
 async def get_caption(client, message: Message):
-    if not is_admin_message(message):
-        await message.reply_text("⛔ You are not allowed to use this command.")
-        return
-
     chat_id = str(message.chat.id)
     caption = await load_caption(chat_id)
     if not caption:
@@ -187,10 +166,6 @@ async def get_caption(client, message: Message):
 
 @app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & (filters.group | filters.channel))
 async def remove_caption_cmd(client, message: Message):
-    if not is_admin_message(message):
-        await message.reply_text("⛔ You are not allowed to use this command.")
-        return
-
     chat_id = str(message.chat.id)
     await remove_caption(chat_id)
     reply = await message.reply_text("✅ Caption removed! Auto-captioning disabled.")
@@ -202,7 +177,7 @@ async def remove_caption_cmd(client, message: Message):
         pass
 
 # -------------------------------------------------
-# Episode-first, quality-second bulk handler
+# Bulk handler (unchanged)
 # -------------------------------------------------
 from typing import List, Tuple
 
@@ -324,5 +299,4 @@ async def _flush_bulk(chat_id: str, delay: int):
             else:
                 print("Reorder failed:", e)
         await asyncio.sleep(1)
-
 
