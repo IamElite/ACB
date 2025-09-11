@@ -73,13 +73,15 @@ def parse_buttons(text: str):
 
     for line in lines:
         btns = []
-        matches = re.findall(r"\[([^+\]]+?)\s*\+\s*(https?://[^\]\s]+)\]", line)
+        # FIXED REGEX → label me ']' bhi allowed hai, split hamesha " + " par hoga
+        matches = re.findall(r"\[(.+?)\s*\+\s*(https?://[^\]\s]+)\]", line)
         for label, link in matches:
             btns.append(InlineKeyboardButton(label.strip(), url=link.strip()))
         if btns:
-            keyboard.append(btns)   # Har line ek nayi row
+            keyboard.append(btns)   # har line ek row
 
     return InlineKeyboardMarkup(keyboard) if keyboard else None
+
 
 
 
