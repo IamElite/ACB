@@ -69,21 +69,13 @@ async def unauth_channel_cmd(client, message: Message):
 
 def parse_buttons(text: str):
     keyboard = []
-    matches = re.findall(r"\[([^+\]]+?)\s*\+\s*(https?://[^\]\s]+)\]", text)
-
-    row = []
-    for i, (label, link) in enumerate(matches, start=1):
-        row.append(InlineKeyboardButton(label.strip(), url=link.strip()))
-
-        # Agar row me 8 buttons ho gaye to nayi row bana do
-        if i % 8 == 0:
+    for line in text.strip().splitlines():
+        btns = re.findall(r"\[([^+\]]+?)\s*\+\s*(https?://[^\]\s]+)\]", line)
+        row = []
+        for label, link in btns:
+            row.append(InlineKeyboardButton(label.strip(), url=link.strip()))
+        if row:
             keyboard.append(row)
-            row = []
-
-    # Last row agar khali nahi hai to bhi add kar do
-    if row:
-        keyboard.append(row)
-
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 
