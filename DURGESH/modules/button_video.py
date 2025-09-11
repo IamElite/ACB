@@ -1,4 +1,4 @@
-import asyncio
+import asyncio, re
 from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from DURGESH import app
@@ -11,15 +11,19 @@ buttondb = db.button_settings   # store custom buttons
 DEFAULT_BUTTON = [["❖ ʙᴧᴄᴋᴜᴘ ʀєᴧʟϻ ❖", "https://t.me/SyntaxRealm"]]
 
 
-# -------------------- ENABLE / DISABLE FEATURE -------------------- #
-@app.on_message(filters.channel & filters.regex(r"^/(ab|addbutton)\s+(on|off)"))
-async def toggle_button_channel(client, message: Message):
-    cmd = message.text.split()
-    if len(cmd) != 2:
+# -------------------- CHANNEL COMMAND -------------------- #
+@app.on_message(filters.channel & filters.text)
+async def channel_ab_handler(client, message: Message):
+    if not message.text:
         return
 
-    action = cmd[1].lower()
-    chat_id = str(message.chat.id)   # 🔥 always string
+    # Regex match for /ab or /addbutton
+    match = re.match(r"^/(ab|addbutton)\s+(on|off)$", message.text.strip(), re.IGNORECASE)
+    if not match:
+        return
+
+    action = match.group(2).lower()
+    chat_id = str(message.chat.id)  # always string for DB
 
     if action == "on":
         await featuredb.update_one({"chat_id": chat_id}, {"$set": {"chat_id": chat_id}}, upsert=True)
@@ -28,6 +32,7 @@ async def toggle_button_channel(client, message: Message):
         await featuredb.delete_one({"chat_id": chat_id})
         msg = await message.reply_text("✅ Button feature DISABLED for this channel.")
 
+    # Clean chat
     await asyncio.sleep(2)
     try:
         await msg.delete()
