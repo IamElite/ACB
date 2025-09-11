@@ -10,6 +10,7 @@ buttondb = db.button_settings   # store custom buttons
 
 DEFAULT_BUTTON = [["❖ ʙᴧᴄᴋᴜᴘ ʀєᴧʟϻ ❖", "https://t.me/SyntaxRealm"]]
 
+
 # -------------------- ENABLE / DISABLE FEATURE -------------------- #
 @app.on_message(filters.channel & filters.regex(r"^/(ab|addbutton)\s+(on|off)"))
 async def toggle_button_channel(client, message: Message):
@@ -61,6 +62,92 @@ async def set_custom_button(client, message: Message):
             upsert=True
         )
         return await message.reply_text(f"✅ Global button set: [{button_text}]({button_url})", disable_web_page_preview=True)
+
+
+from pyrogram.enums import ParseMode
+
+# -------------------- BULK ADD BUTTON -------------------- #
+@app.on_message(filters.command(["setallbutton", "sab"]))
+async def set_all_button(client, message: Message):
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage:\n/sab <channel_id>\n/sab <msg_link1> <msg_link2> ...")
+
+    args = message.command[1:]
+    button_data = await buttondb.find_one({"global": True})
+    button = button_data.get("button", DEFAULT_BUTTON[0]) if button_data else DEFAULT_BUTTON[0]
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(button[0], url=button[1])]])
+
+    # Mode 1: channel_id given
+    if len(args) == 1 and args[0].isdigit():
+        channel_id = int(args[0])
+        count = 0
+        async for msg in client.get_chat_history(channel_id, limit=2000):  # limit adjust karna
+            if msg.video and not msg.reply_markup:
+                try:
+                    await client.edit_message_reply_markup(channel_id, msg.id, reply_markup=keyboard)
+                    count += 1
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    print("Skip:", e)
+        return await message.reply_text(f"✅ Added button to {count} video posts in {channel_id}")
+
+    # Mode 2: specific links
+    else:
+        count = 0
+        for link in args:
+            try:
+                match = re.match(r"https://t\.me/c/(-?\d+)/(\d+)", link)
+                if not match:
+                    continue
+                channel_id = int("-100" + match.group(1))
+                msg_id = int(match.group(2))
+                msg = await client.get_messages(channel_id, msg_id)
+                if msg.video:
+                    await client.edit_message_reply_markup(channel_id, msg_id, reply_markup=keyboard)
+                    count += 1
+            except Exception as e:
+                print("Skip:", e)
+        return await message.reply_text(f"✅ Added button to {count} selected messages")
+
+# -------------------- BULK REMOVE BUTTON -------------------- #
+@app.on_message(filters.command(["rmallbutton", "rmab"]))
+async def remove_all_button(client, message: Message):
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage:\n/rmab <channel_id>\n/rmab <msg_link1> <msg_link2> ...")
+
+    args = message.command[1:]
+    removed = 0
+
+    # Mode 1: channel_id given
+    if len(args) == 1 and args[0].isdigit():
+        channel_id = int(args[0])
+        async for msg in client.get_chat_history(channel_id, limit=2000):
+            if msg.video and msg.reply_markup:
+                try:
+                    await client.edit_message_reply_markup(channel_id, msg.id, reply_markup=None)
+                    removed += 1
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    print("Skip:", e)
+        return await message.reply_text(f"✅ Removed buttons from {removed} video posts in {channel_id}")
+
+    # Mode 2: specific links
+    else:
+        for link in args:
+            try:
+                match = re.match(r"https://t\.me/c/(-?\d+)/(\d+)", link)
+                if not match:
+                    continue
+                channel_id = int("-100" + match.group(1))
+                msg_id = int(match.group(2))
+                msg = await client.get_messages(channel_id, msg_id)
+                if msg.video and msg.reply_markup:
+                    await client.edit_message_reply_markup(channel_id, msg_id, reply_markup=None)
+                    removed += 1
+            except Exception as e:
+                print("Skip:", e)
+        return await message.reply_text(f"✅ Removed buttons from {removed} selected messages")
+
 
 # -------------------- VIDEO MESSAGE HANDLER -------------------- #
 @app.on_message(filters.video & (filters.group | filters.channel))
