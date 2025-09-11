@@ -82,21 +82,22 @@ async def set_all_button(client, message: Message):
     button = button_data.get("button", DEFAULT_BUTTON[0]) if button_data else DEFAULT_BUTTON[0]
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(button[0], url=button[1])]])
 
-    # Mode 1: channel_id given
+    # ---------------- Mode 1: channel_id given ---------------- #
     if len(args) == 1 and args[0].isdigit():
         channel_id = int(args[0])
         count = 0
-        async for msg in client.get_chat_history(channel_id, limit=2000):  # limit adjust karna
-            if msg.video and not msg.reply_markup:
-                try:
-                    await client.edit_message_reply_markup(channel_id, msg.id, reply_markup=keyboard)
+        async for msg in client.get_chat_history(channel_id, limit=0):  # 🔥 all messages
+            try:
+                if msg.video and not msg.reply_markup:
+                    await msg.edit_reply_markup(reply_markup=keyboard)   # 🔥 direct edit
                     count += 1
-                    await asyncio.sleep(0.5)
-                except Exception as e:
-                    print("Skip:", e)
+                    await asyncio.sleep(1)
+            except Exception as e:
+                print("Skip:", e)
+                continue
         return await message.reply_text(f"✅ Added button to {count} video posts in {channel_id}")
 
-    # Mode 2: specific links
+    # ---------------- Mode 2: specific links ---------------- #
     else:
         count = 0
         for link in args:
@@ -107,11 +108,12 @@ async def set_all_button(client, message: Message):
                 channel_id = int("-100" + match.group(1))
                 msg_id = int(match.group(2))
                 msg = await client.get_messages(channel_id, msg_id)
-                if msg.video:
-                    await client.edit_message_reply_markup(channel_id, msg_id, reply_markup=keyboard)
+                if msg.video and not msg.reply_markup:
+                    await msg.edit_reply_markup(reply_markup=keyboard)
                     count += 1
             except Exception as e:
                 print("Skip:", e)
+                continue
         return await message.reply_text(f"✅ Added button to {count} selected messages")
 
 # -------------------- BULK REMOVE BUTTON -------------------- #
