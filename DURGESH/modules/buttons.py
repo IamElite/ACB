@@ -65,6 +65,27 @@ async def unauth_channel_cmd(client, message: Message):
     await remove_auth_channel(chat_id)
     await message.reply_text(f"✅ Un-Authorized channel: `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
 
+@app.on_message(filters.command(["authlist", "al"]))
+async def authlist_handler(client, message: Message):
+    cursor = authdb.find({})
+    channels = [doc async for doc in cursor]
+
+    if not channels:
+        return await message.reply_text("⚠️ Abhi tak koi bhi channel authorize nahi hai.")
+
+    text = "✅ Authorized Channels:\n\n"
+    for i, doc in enumerate(channels, start=1):
+        chat_id = int(doc["chat_id"])
+        try:
+            chat = await client.get_chat(chat_id)
+            name = chat.title or "Unknown"
+            text += f"**{i}.** {name} (`{chat_id}`)\n"
+        except:
+            text += f"**{i}.** `{chat_id}` (not accessible)\n"
+
+    await message.reply_text(text)
+
+
 # -------------------- BUTTON PARSER -------------------- #
 
 def parse_buttons(text: str):
