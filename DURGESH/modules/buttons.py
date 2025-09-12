@@ -147,29 +147,21 @@ async def change_button_with_link(client, message: Message):
         await message.reply_text(f"⚠️ Failed to edit message: {e}")
 
 # -------------------- FORWARD TAG REMOVER -------------------- #
-async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
-    async def _copy():
-        await msg.copy(
-            chat_id,
-            caption=cap,
-            parse_mode=None,
-            reply_markup=msg.reply_markup
-        )
-        await msg.delete()
-
+async def safe_copy_and_delete(msg: Message, chat_id: int):
     try:
-        await _copy()
+        await msg.copy(chat_id)
+        await msg.delete()
     except Exception as e:
         if "FLOOD_WAIT" in str(e):
-            wait = int(re.search(r"wait (\d+)", str(e)).group(1))
+            wait = int(str(e).split("wait ")[1].split()[0])
             await asyncio.sleep(wait)
             try:
-                await _copy()
+                await msg.copy(chat_id)
+                await msg.delete()
             except:
                 pass
         else:
             print("safe_copy_and_delete failed:", e)
-    await asyncio.sleep(1)
 
 
 @app.on_message(filters.channel)
