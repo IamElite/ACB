@@ -3,9 +3,10 @@ tgcrypto
 asyncio
 python-dotenv
 aiohttp
-Kurigram
+Kurigram==2.2.10
 requests
 pillow
 
 aiofiles
 yt_dlp
+
