@@ -152,6 +152,7 @@ async def safe_copy_and_delete(msg: Message, chat_id: int, cap=None):
         await msg.copy(
             chat_id,
             caption=cap,
+            parse_mode=ParseMode.MARKDOWN,
             reply_markup=msg.reply_markup
         )
         await msg.delete()
