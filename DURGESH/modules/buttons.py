@@ -149,19 +149,45 @@ async def change_button_with_link(client, message: Message):
 # -------------------- FORWARD TAG REMOVER -------------------- #
 async def safe_copy_and_delete(msg: Message, chat_id: int):
     try:
-        await msg.copy(chat_id)
+        if msg.text:  # Normal text messages
+            await msg.copy(
+                chat_id,
+                entities=msg.entities,
+                reply_markup=msg.reply_markup
+            )
+        else:  # Media messages with caption
+            await msg.copy(
+                chat_id,
+                caption=msg.caption,
+                caption_entities=msg.caption_entities,
+                reply_markup=msg.reply_markup
+            )
         await msg.delete()
     except Exception as e:
         if "FLOOD_WAIT" in str(e):
             wait = int(str(e).split("wait ")[1].split()[0])
             await asyncio.sleep(wait)
             try:
-                await msg.copy(chat_id)
+                if msg.text:
+                    await msg.copy(
+                        chat_id,
+                        entities=msg.entities,
+                        reply_markup=msg.reply_markup
+                    )
+                else:
+                    await msg.copy(
+                        chat_id,
+                        caption=msg.caption,
+                        caption_entities=msg.caption_entities,
+                        reply_markup=msg.reply_markup
+                    )
                 await msg.delete()
             except:
                 pass
         else:
             print("safe_copy_and_delete failed:", e)
+    await asyncio.sleep(1)
+
 
 
 @app.on_message(filters.channel)
