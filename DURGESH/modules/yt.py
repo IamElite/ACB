@@ -1,5 +1,5 @@
 from pyrogram import filters
-from DURGEHS import app  # your existing Pyrogram Client
+from DURGESH import app  # your existing Pyrogram Client
 import aiohttp
 import asyncio
 import os
