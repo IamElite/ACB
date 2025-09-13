@@ -3,6 +3,7 @@ import aiohttp
 import json
 import os
 import time
+import yt_dlp
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 
@@ -13,66 +14,11 @@ from DURGESH import app
 # The key will be the callback_data from the button
 media_cache = {}
 
-async def get_best_media(youtube_url: str):
-    """
-    Fetches the best video and audio streams for a given YouTube URL from the clipto.com API.
-    """
-    api_url = "https://www.clipto.com/api/youtube"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-    }
-    payload = {"url": youtube_url}
-
-    best_video = None
-    best_audio = None
-
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(api_url, json=payload) as response:
-                if response.status != 200:
-                    print(f"Error: API returned status code {response.status}.")
-                    return None, None, f"API returned status code {response.status}"
-
-                data = await response.json()
-
-                if not data.get("success"):
-                    print("Error: API request was not successful.")
-                    return None, None, "API request was not successful."
-
-                # Find the best video stream (mp4, no audio)
-                max_height = 0
-                for media in data.get("medias", []):
-                    if media.get("type") == "video" and media.get("ext") == "mp4" and media.get("audioQuality") is None:
-                        height = media.get("height", 0)
-                        if height > max_height:
-                            max_height = height
-                            best_video = media
-
-                # Find the best audio stream
-                max_bitrate = 0
-                for media in data.get("medias", []):
-                    if media.get("type") == "audio":
-                        bitrate = media.get("bitrate", 0)
-                        if bitrate > max_bitrate:
-                            max_bitrate = bitrate
-                            best_audio = media
-                
-                return best_video, best_audio, None
-
-    except aiohttp.ClientError as e:
-        print(f"An error occurred while sending the request: {e}")
-        return None, None, f"An error occurred: {e}"
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        return None, None, f"An unexpected error occurred: {e}"
-
 
 @app.on_message(filters.command("yt"))
 async def yt_command_handler(client: Client, message: Message):
     """
-    Handles the /yt command. Fetches media info and presents download buttons.
+    Handles the /yt command. Fetches media info using yt-dlp and presents download buttons.
     """
     if len(message.command) < 2:
         await message.reply_text("Please provide a YouTube URL after the command.\n\nExample: `/yt https://www.youtube.com/watch?v=dQw4w9WgXcQ`")
@@ -80,49 +26,70 @@ async def yt_command_handler(client: Client, message: Message):
 
     youtube_url = message.command[1]
     
-    processing_message = await message.reply_text("`Fetching media details, please wait...`")
+    processing_message = await message.reply_text("`Fetching formats, please wait...`")
 
-    best_video, best_audio, error = await get_best_media(youtube_url)
+    try:
+        # Use yt-dlp to extract video information without downloading
+        ydl_opts = {'quiet': True, 'no_warnings': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = await asyncio.to_thread(ydl.extract_info, youtube_url, download=False)
 
-    if error:
-        await processing_message.edit_text(f"**An error occurred:**\n`{error}`")
+    except Exception as e:
+        await processing_message.edit_text(f"**An error occurred while fetching video info:**\n`{e}`")
         return
+
+    best_video = None
+    best_audio = None
+    max_height = 0
+    max_abr = 0
+
+    # Find the best video-only and audio-only formats
+    for f in info.get('formats', []):
+        if f.get('vcodec') != 'none' and f.get('acodec') == 'none' and f.get('ext') == 'mp4':
+            height = f.get('height', 0)
+            if height > max_height:
+                max_height = height
+                best_video = f
+        
+        if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and 'm4a' in f.get('ext', ''):
+            abr = f.get('abr', 0)
+            if abr > max_abr:
+                max_abr = abr
+                best_audio = f
 
     if not best_video and not best_audio:
         await processing_message.edit_text("Could not find any suitable video or audio streams for the provided URL.")
         return
 
     # Prepare the response text and buttons
-    response_text = "**Found Best Media Streams!**\n\n"
+    response_text = f"**{info.get('title', 'Video')}**\n\n"
     buttons = []
     
     if best_video:
+        filesize = best_video.get('filesize') or best_video.get('filesize_approx')
+        formatted_size = f"{filesize / (1024*1024):.2f} MB" if filesize else "N/A"
         response_text += (
             f"**🎬 Best Video (No Audio):**\n"
-            f"  - **Quality:** `{best_video.get('quality', 'N/A')}`\n"
-            f"  - **Resolution:** `{best_video.get('width', 'N/A')}x{best_video.get('height', 'N/A')}`\n"
-            f"  - **Size:** `{best_video.get('formattedSize', 'N/A')}`\n\n"
+            f"  - **Quality:** `{best_video.get('format_note', 'N/A')}`\n"
+            f"  - **Resolution:** `{best_video.get('resolution', 'N/A')}`\n"
+            f"  - **Size:** `{formatted_size}`\n\n"
         )
-        # Unique callback data to act as a key for our cache
         cache_key = f"dl_video_{message.id}_{int(time.time())}"
-        buttons.append(
-            InlineKeyboardButton("Download Video 🎬", callback_data=cache_key)
-        )
-        media_cache[cache_key] = best_video
+        buttons.append(InlineKeyboardButton("Download Video 🎬", callback_data=cache_key))
+        media_cache[cache_key] = {'url': youtube_url, 'format_id': best_video['format_id'], 'title': info.get('title', 'video')}
 
     if best_audio:
+        filesize = best_audio.get('filesize') or best_audio.get('filesize_approx')
+        formatted_size = f"{filesize / (1024*1024):.2f} MB" if filesize else "N/A"
         response_text += (
             f"**🎵 Best Audio:**\n"
-            f"  - **Bitrate:** `{best_audio.get('bitrate', 'N/A')} kbps`\n"
-            f"  - **Size:** `{best_audio.get('formattedSize', 'N/A')}`\n"
+            f"  - **Bitrate:** `{best_audio.get('abr', 0)} kbps`\n"
+            f"  - **Size:** `{formatted_size}`\n"
         )
         cache_key = f"dl_audio_{message.id}_{int(time.time())}"
-        buttons.append(
-            InlineKeyboardButton("Download Audio 🎵", callback_data=cache_key)
-        )
-        media_cache[cache_key] = best_audio
+        buttons.append(InlineKeyboardButton("Download Audio 🎵", callback_data=cache_key))
+        media_cache[cache_key] = {'url': youtube_url, 'format_id': best_audio['format_id'], 'title': info.get('title', 'audio')}
     
-    # Create rows of buttons
     keyboard = [buttons] if len(buttons) <= 2 else [[b] for b in buttons]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -133,17 +100,19 @@ async def yt_command_handler(client: Client, message: Message):
     )
 
 async def progress_callback(current, total, message):
-    """Updates the message with upload progress."""
+    """Updates the message with Telegram upload progress."""
     try:
-        await message.edit_text(f"`Uploading... {current * 100 / total:.1f}%`")
-    except asyncio.exceptions.TimeoutError:
-        pass # Ignore if editing times out
+        # Edit message only every few seconds to avoid API spam
+        current_time = time.time()
+        if not hasattr(progress_callback, "last_edit") or (current_time - progress_callback.last_edit) > 3:
+            await message.edit_text(f"`Uploading... {current * 100 / total:.1f}%`")
+            progress_callback.last_edit = current_time
     except Exception:
-        pass # Ignore other potential errors like message not modified
+        pass
 
 @app.on_callback_query(filters.regex("^dl_"))
 async def download_handler(client: Client, callback_query: CallbackQuery):
-    """Handles the download button clicks."""
+    """Handles the download button clicks using yt-dlp."""
     cache_key = callback_query.data
     media_info = media_cache.get(cache_key)
     
@@ -155,54 +124,68 @@ async def download_handler(client: Client, callback_query: CallbackQuery):
     await callback_query.answer("Request received. Starting download...", show_alert=False)
     
     media_type = "video" if "video" in cache_key else "audio"
-    download_url = media_info.get("url")
-    
-    # Generate a safe filename
+    youtube_url = media_info['url']
+    format_id = media_info['format_id']
     title = media_info.get('title', 'media').replace('/', '_').replace(':', '_')
-    quality = media_info.get('quality', 'audio')
-    ext = media_info.get('ext', 'mp4')
-    file_name = f"{title[:50]}_{quality}.{ext}"
     
     download_dir = "downloads"
     if not os.path.isdir(download_dir):
         os.makedirs(download_dir)
-    file_path = os.path.join(download_dir, file_name)
 
+    # Use a predictable filename to easily find the downloaded file
+    base_filename = f"{title[:50]}_{cache_key}"
+    file_path_template = os.path.join(download_dir, f"{base_filename}.%(ext)s")
+    
+    downloaded_file = None
     try:
+        # Progress hook for yt-dlp to show download progress
+        async def ytdl_progress_hook(d):
+            if d['status'] == 'downloading':
+                total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
+                if total_bytes:
+                    downloaded_bytes = d.get('downloaded_bytes', 0)
+                    percentage = downloaded_bytes * 100 / total_bytes
+                    current_time = time.time()
+                    if not hasattr(ytdl_progress_hook, "last_edit") or (current_time - ytdl_progress_hook.last_edit) > 3:
+                        try:
+                            await callback_query.message.edit_text(f"`Downloading {media_type}... {percentage:.1f}%`")
+                            ytdl_progress_hook.last_edit = current_time
+                        except Exception:
+                            pass
+
+        ydl_opts = {
+            'format': format_id,
+            'outtmpl': file_path_template,
+            'progress_hooks': [ytdl_progress_hook],
+            'noprogress': True,
+        }
+
         await callback_query.message.edit_text(f"`Downloading {media_type}... Please wait.`")
         
-        # Download the file using aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(download_url) as resp:
-                if resp.status == 200:
-                    with open(file_path, 'wb') as f:
-                        while True:
-                            chunk = await resp.content.read(4096)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                else:
-                    await callback_query.message.edit_text("Failed to download the file. The link might be broken.")
-                    return
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            await asyncio.to_thread(ydl.download, [youtube_url])
+
+        # Find the exact name of the downloaded file
+        for f in os.listdir(download_dir):
+            if f.startswith(base_filename):
+                downloaded_file = os.path.join(download_dir, f)
+                break
+        
+        if not downloaded_file:
+            await callback_query.message.edit_text("Error: Downloaded file not found on server.")
+            return
 
         await callback_query.message.edit_text(f"`Download complete. Uploading to Telegram...`")
 
-        # Upload to Telegram
         if media_type == "video":
             await client.send_video(
-                chat_id=callback_query.message.chat.id,
-                video=file_path,
-                caption=f"{media_info.get('title', 'Video')}",
-                progress=progress_callback,
-                progress_args=(callback_query.message,)
+                chat_id=callback_query.message.chat.id, video=downloaded_file,
+                caption=title, progress=progress_callback, progress_args=(callback_query.message,)
             )
-        else: # audio
+        else:
             await client.send_audio(
-                chat_id=callback_query.message.chat.id,
-                audio=file_path,
-                caption=f"{media_info.get('title', 'Audio')}",
-                progress=progress_callback,
-                progress_args=(callback_query.message,)
+                chat_id=callback_query.message.chat.id, audio=downloaded_file,
+                caption=title, progress=progress_callback, progress_args=(callback_query.message,)
             )
         
         await callback_query.message.delete()
@@ -211,9 +194,8 @@ async def download_handler(client: Client, callback_query: CallbackQuery):
         print(f"Error during download/upload: {e}")
         await callback_query.message.edit_text(f"**An error occurred:**\n`{e}`")
     finally:
-        # Clean up the downloaded file and cache
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if downloaded_file and os.path.exists(downloaded_file):
+            os.remove(downloaded_file)
         if cache_key in media_cache:
             del media_cache[cache_key]
 
