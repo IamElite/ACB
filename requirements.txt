@@ -9,4 +9,5 @@ pillow
 
 aiofiles
 yt_dlp
+bs4
 
