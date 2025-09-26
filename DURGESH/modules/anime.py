@@ -157,7 +157,7 @@ query ($id: Int,$search: String) {
 url = "https://graphql.anilist.co"
 
 
-def extract_arg(message: Message):
+def extract_arg(message):
     split = message.text.split(" ", 1)
     if len(split) > 1:
         return split[1]
