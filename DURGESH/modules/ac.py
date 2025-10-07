@@ -118,7 +118,7 @@ async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": chat_id})
 
 # ---------------- Auth Commands ----------------
-@app.on_message(filters.command(["capauth", "ca"]) & filters.private)
+@app.on_message(filters.command(["capauth", "ca"]))
 async def auth_channel_cmd(client, message: Message):
     """Authorize a channel for caption management"""
     
@@ -139,12 +139,13 @@ async def auth_channel_cmd(client, message: Message):
             print(f"📝 Got channel ID from forwarded message: {channel_id}")
         else:
             return await message.reply_text(
-                "❌ **Usage:**\n\n"
-                "`/capauth <channel_id>`\n"
+                "❌ <b>Usage:</b>\n\n"
+                "<code>/capauth &lt;channel_id&gt;</code>\n"
                 "or\n"
-                "`/ca <channel_id>`\n\n"
-                "**Example:** `/ca -1001234567890`\n\n"
-                "Or reply to a forwarded channel message with `/ca`"
+                "<code>/ca &lt;channel_id&gt;</code>\n\n"
+                "<b>Example:</b> <code>/ca -1001234567890</code>\n\n"
+                "Or reply to a forwarded channel message with <code>/ca</code>",
+                parse_mode=ParseMode.HTML
             )
         
         # Try to get chat info to verify
@@ -155,13 +156,14 @@ async def auth_channel_cmd(client, message: Message):
         except Exception as e:
             print(f"❌ Error accessing channel: {e}")
             return await message.reply_text(
-                f"⚠️ **Error:** Cannot access channel!\n\n"
-                f"**Channel ID:** `{channel_id}`\n\n"
-                f"**Reason:** {str(e)}\n\n"
-                f"**Solution:**\n"
+                f"⚠️ <b>Error:</b> Cannot access channel!\n\n"
+                f"<b>Channel ID:</b> <code>{channel_id}</code>\n\n"
+                f"<b>Reason:</b> {html.escape(str(e))}\n\n"
+                f"<b>Solution:</b>\n"
                 f"1. Make sure bot is added as admin in the channel\n"
                 f"2. Bot needs 'Post Messages' and 'Delete Messages' permissions\n"
-                f"3. Check if channel ID is correct"
+                f"3. Check if channel ID is correct",
+                parse_mode=ParseMode.HTML
             )
         
         # Add to auth list
@@ -173,21 +175,22 @@ async def auth_channel_cmd(client, message: Message):
         print(f"✅ Default caption set for {channel_id}")
         
         await message.reply_text(
-            f"✅ **Channel Authorized!**\n\n"
-            f"📺 **Channel:** {chat_name}\n"
-            f"🆔 **ID:** `{channel_id}`\n\n"
+            f"✅ <b>Channel Authorized!</b>\n\n"
+            f"📺 <b>Channel:</b> {html.escape(chat_name)}\n"
+            f"🆔 <b>ID:</b> <code>{channel_id}</code>\n\n"
             f"✅ Default caption has been set!\n\n"
-            f"**Next Steps:**\n"
+            f"<b>Next Steps:</b>\n"
             f"• Upload media to channel to test\n"
-            f"• Use `/gc {channel_id}` to view caption\n"
-            f"• Use `/sc {channel_id} <new_caption>` to change caption"
+            f"• Use <code>/gc {channel_id}</code> to view caption\n"
+            f"• Use <code>/sc {channel_id} &lt;new_caption&gt;</code> to change caption",
+            parse_mode=ParseMode.HTML
         )
         
     except Exception as e:
         print(f"❌ Unexpected error in capauth: {e}")
-        await message.reply_text(f"❌ **Unexpected Error:** {str(e)}")
+        await message.reply_text(f"❌ <b>Unexpected Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
 
-@app.on_message(filters.command(["capunauth", "cua"]) & filters.private)
+@app.on_message(filters.command(["capunauth", "cua"]))
 async def unauth_channel_cmd(client, message: Message):
     """Remove channel authorization"""
     
@@ -205,26 +208,28 @@ async def unauth_channel_cmd(client, message: Message):
             channel_id = str(message.reply_to_message.forward_from_chat.id)
         else:
             return await message.reply_text(
-                "❌ **Usage:** `/capunauth <channel_id>` or `/cua <channel_id>`\n\n"
-                "**Example:** `/cua -1001234567890`"
+                "❌ <b>Usage:</b> <code>/capunauth &lt;channel_id&gt;</code> or <code>/cua &lt;channel_id&gt;</code>\n\n"
+                "<b>Example:</b> <code>/cua -1001234567890</code>",
+                parse_mode=ParseMode.HTML
             )
         
         await remove_auth_channel(channel_id)
         await remove_caption(channel_id)
         
         await message.reply_text(
-            f"✅ **Channel Unauthorized!**\n\n"
-            f"🆔 **ID:** `{channel_id}`\n\n"
-            f"Caption removed and auto-captioning disabled."
+            f"✅ <b>Channel Unauthorized!</b>\n\n"
+            f"🆔 <b>ID:</b> <code>{channel_id}</code>\n\n"
+            f"Caption removed and auto-captioning disabled.",
+            parse_mode=ParseMode.HTML
         )
         
         print(f"✅ Channel {channel_id} unauthorized")
         
     except Exception as e:
         print(f"❌ Error in capunauth: {e}")
-        await message.reply_text(f"❌ **Error:** {str(e)}")
+        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
 
-@app.on_message(filters.command(["authlist", "al"]) & filters.private)
+@app.on_message(filters.command(["authlist", "al"]))
 async def list_auth_channels_cmd(client, message: Message):
     """List all authorized channels"""
     
@@ -234,29 +239,32 @@ async def list_auth_channels_cmd(client, message: Message):
         channels = await get_all_auth_channels()
         
         if not channels:
-            return await message.reply_text("⚠️ **No channels authorized yet.**\n\nUse `/capauth <channel_id>` to authorize a channel.")
+            return await message.reply_text(
+                "⚠️ <b>No channels authorized yet.</b>\n\nUse <code>/capauth &lt;channel_id&gt;</code> to authorize a channel.",
+                parse_mode=ParseMode.HTML
+            )
         
-        text = "✅ **Authorized Channels:**\n\n"
+        text = "✅ <b>Authorized Channels:</b>\n\n"
         for i, ch_id in enumerate(channels, 1):
             try:
                 chat = await client.get_chat(ch_id)
                 name = chat.title or "Unknown"
-                text += f"**{i}.** {name}\n🆔 `{ch_id}`\n\n"
+                text += f"<b>{i}.</b> {html.escape(name)}\n🆔 <code>{ch_id}</code>\n\n"
             except:
-                text += f"**{i}.** `{ch_id}` ⚠️ (Not accessible)\n\n"
+                text += f"<b>{i}.</b> <code>{ch_id}</code> ⚠️ (Not accessible)\n\n"
         
-        text += f"\n**Total:** {len(channels)} channel(s)"
+        text += f"\n<b>Total:</b> {len(channels)} channel(s)"
         
-        await message.reply_text(text)
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
         
         print(f"✅ Showed {len(channels)} authorized channels")
         
     except Exception as e:
         print(f"❌ Error in authlist: {e}")
-        await message.reply_text(f"❌ **Error:** {str(e)}")
+        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
 
 # ---------------- Caption Commands ----------------
-@app.on_message(filters.command(["setcaption", "sc"]) & filters.private)
+@app.on_message(filters.command(["setcaption", "sc"]))
 async def set_caption_cmd(client, message: Message):
     """Set caption for a channel"""
     
@@ -266,16 +274,17 @@ async def set_caption_cmd(client, message: Message):
         # Get channel_id from command
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ **Usage:** `/sc <channel_id> <caption>`\n\n"
-                "**Example:**\n"
-                "`/sc -1001234567890 <b>{filename}</b>`\n\n"
-                "**Available variables:**\n"
-                "`{filename}` - File name without extension\n"
-                "`{filesize}` - File size (e.g., 1.23 GB)\n"
-                "`{duration}` - Video duration\n"
-                "`{quality}` - Video quality (e.g., 720p)\n"
-                "`{season}` - Season number\n"
-                "`{episode}` - Episode number"
+                "❌ <b>Usage:</b> <code>/sc &lt;channel_id&gt; &lt;caption&gt;</code>\n\n"
+                "<b>Example:</b>\n"
+                "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt;</code>\n\n"
+                "<b>Available variables:</b>\n"
+                "<code>{filename}</code> - File name without extension\n"
+                "<code>{filesize}</code> - File size (e.g., 1.23 GB)\n"
+                "<code>{duration}</code> - Video duration\n"
+                "<code>{quality}</code> - Video quality (e.g., 720p)\n"
+                "<code>{season}</code> - Season number\n"
+                "<code>{episode}</code> - Episode number",
+                parse_mode=ParseMode.HTML
             )
         
         channel_id = message.command[1]
@@ -288,9 +297,10 @@ async def set_caption_cmd(client, message: Message):
         # Check if authorized
         if not await is_channel_authed(channel_id):
             return await message.reply_text(
-                f"❌ **Channel not authorized!**\n\n"
-                f"🆔 `{channel_id}`\n\n"
-                f"Use `/capauth {channel_id}` first to authorize this channel."
+                f"❌ <b>Channel not authorized!</b>\n\n"
+                f"🆔 <code>{channel_id}</code>\n\n"
+                f"Use <code>/capauth {channel_id}</code> first to authorize this channel.",
+                parse_mode=ParseMode.HTML
             )
         
         # Extract caption
@@ -299,27 +309,29 @@ async def set_caption_cmd(client, message: Message):
         
         if len(parts) < 3:
             return await message.reply_text(
-                "❌ **Please provide caption after channel_id**\n\n"
-                "**Example:**\n"
-                f"`/sc {channel_id} <b>{{filename}}</b>`"
+                "❌ <b>Please provide caption after channel_id</b>\n\n"
+                "<b>Example:</b>\n"
+                f"<code>/sc {channel_id} &lt;b&gt;{{filename}}&lt;/b&gt;</code>",
+                parse_mode=ParseMode.HTML
             )
         
         caption = parts[2].strip()
         await save_caption(channel_id, caption)
         
         await message.reply_text(
-            f"✅ **Caption Updated!**\n\n"
-            f"🆔 **Channel:** `{channel_id}`\n\n"
-            f"Use `/gc {channel_id}` to preview the caption."
+            f"✅ <b>Caption Updated!</b>\n\n"
+            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
+            f"Use <code>/gc {channel_id}</code> to preview the caption.",
+            parse_mode=ParseMode.HTML
         )
         
         print(f"✅ Caption set for channel {channel_id}")
         
     except Exception as e:
         print(f"❌ Error in setcaption: {e}")
-        await message.reply_text(f"❌ **Error:** {str(e)}")
+        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
 
-@app.on_message(filters.command(["getcaption", "gc"]) & filters.private)
+@app.on_message(filters.command(["getcaption", "gc"]))
 async def get_caption_cmd(client, message: Message):
     """Get current caption for a channel"""
     
@@ -328,8 +340,9 @@ async def get_caption_cmd(client, message: Message):
     try:
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ **Usage:** `/gc <channel_id>`\n\n"
-                "**Example:** `/gc -1001234567890`"
+                "❌ <b>Usage:</b> <code>/gc &lt;channel_id&gt;</code>\n\n"
+                "<b>Example:</b> <code>/gc -1001234567890</code>",
+                parse_mode=ParseMode.HTML
             )
         
         channel_id = message.command[1]
@@ -342,15 +355,17 @@ async def get_caption_cmd(client, message: Message):
         # Check if authorized
         if not await is_channel_authed(channel_id):
             return await message.reply_text(
-                f"❌ **Channel not authorized!**\n\n"
-                f"🆔 `{channel_id}`"
+                f"❌ <b>Channel not authorized!</b>\n\n"
+                f"🆔 <code>{channel_id}</code>",
+                parse_mode=ParseMode.HTML
             )
         
         caption = await load_caption(channel_id)
         if not caption:
             return await message.reply_text(
-                f"❌ **No caption set for this channel**\n\n"
-                f"🆔 `{channel_id}`"
+                f"❌ <b>No caption set for this channel</b>\n\n"
+                f"🆔 <code>{channel_id}</code>",
+                parse_mode=ParseMode.HTML
             )
         
         preview = (caption.replace("{filename}", "Example_Filename")
@@ -361,8 +376,8 @@ async def get_caption_cmd(client, message: Message):
                          .replace("{episode}", "01 (123)"))
         
         await message.reply_text(
-            f"📝 **Current Caption Preview**\n\n"
-            f"🆔 **Channel:** `{channel_id}`\n\n"
+            f"📝 <b>Current Caption Preview</b>\n\n"
+            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
             f"━━━━━━━━━━━━━━━━━━\n\n"
             f"{preview}",
             parse_mode=ParseMode.HTML
@@ -372,9 +387,9 @@ async def get_caption_cmd(client, message: Message):
         
     except Exception as e:
         print(f"❌ Error in getcaption: {e}")
-        await message.reply_text(f"❌ **Error:** {str(e)}")
+        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
 
-@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & filters.private)
+@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]))
 async def remove_caption_cmd(client, message: Message):
     """Remove caption for a channel"""
     
@@ -383,8 +398,9 @@ async def remove_caption_cmd(client, message: Message):
     try:
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ **Usage:** `/rc <channel_id>`\n\n"
-                "**Example:** `/rc -1001234567890`"
+                "❌ <b>Usage:</b> <code>/rc &lt;channel_id&gt;</code>\n\n"
+                "<b>Example:</b> <code>/rc -1001234567890</code>",
+                parse_mode=ParseMode.HTML
             )
         
         channel_id = message.command[1]
@@ -397,23 +413,25 @@ async def remove_caption_cmd(client, message: Message):
         # Check if authorized
         if not await is_channel_authed(channel_id):
             return await message.reply_text(
-                f"❌ **Channel not authorized!**\n\n"
-                f"🆔 `{channel_id}`"
+                f"❌ <b>Channel not authorized!</b>\n\n"
+                f"🆔 <code>{channel_id}</code>",
+                parse_mode=ParseMode.HTML
             )
         
         await remove_caption(channel_id)
         
         await message.reply_text(
-            f"✅ **Caption Removed!**\n\n"
-            f"🆔 **Channel:** `{channel_id}`\n\n"
-            f"Auto-captioning disabled for this channel."
+            f"✅ <b>Caption Removed!</b>\n\n"
+            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
+            f"Auto-captioning disabled for this channel.",
+            parse_mode=ParseMode.HTML
         )
         
         print(f"✅ Caption removed for channel {channel_id}")
         
     except Exception as e:
         print(f"❌ Error in removecaption: {e}")
-        await message.reply_text(f"❌ **Error:** {str(e)}")
+        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
 
 
 # ---------------- Bulk Handler ----------------
