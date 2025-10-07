@@ -12,5 +12,7 @@ aiofiles
 yt_dlp
 bs4
 jikanpy
+httpx
+
 
 
