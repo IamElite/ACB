@@ -133,23 +133,29 @@ async def _remove_caption(message: Message):
 
 # Register in groups
 @app.on_message(filters.group & filters.command(["setcaption", "sc"]))
-async def set_caption_group(client, message: Message): await _set_caption(message)
+async def set_caption_group(client, message: Message): 
+    await _set_caption(message)
 
 @app.on_message(filters.group & filters.command(["getcaption", "gc"]))
-async def get_caption_group(client, message: Message): await _get_caption(message)
+async def get_caption_group(client, message: Message): 
+    await _get_caption(message)
 
 @app.on_message(filters.group & filters.command(["removecaption", "rc", "rmcaption"]))
-async def remove_caption_group(client, message: Message): await _remove_caption(message)
+async def remove_caption_group(client, message: Message): 
+    await _remove_caption(message)
 
-# Register in channels
+# Register in channels - FIXED: Separate handlers for channels
 @app.on_message(filters.channel & filters.command(["setcaption", "sc"]))
-async def set_caption_channel(client, message: Message): await _set_caption(message)
+async def set_caption_channel(client, message: Message): 
+    await _set_caption(message)
 
 @app.on_message(filters.channel & filters.command(["getcaption", "gc"]))
-async def get_caption_channel(client, message: Message): await _get_caption(message)
+async def get_caption_channel(client, message: Message): 
+    await _get_caption(message)
 
 @app.on_message(filters.channel & filters.command(["removecaption", "rc", "rmcaption"]))
-async def remove_caption_channel(client, message: Message): await _remove_caption(message)
+async def remove_caption_channel(client, message: Message): 
+    await _remove_caption(message)
 
 # ---------------- Bulk Handler ----------------
 bulk_bucket: dict[str, dict[tuple[int,int], list[Message]]] = defaultdict(dict)
@@ -172,16 +178,27 @@ def _int_episode(fname: str) -> int:
         return int(re.search(r'\d+', raw).group())
     except: return 9999
 
-@app.on_message(filters.media & (filters.group | filters.channel))
+# FIXED: Explicit media filter instead of generic filters.media
+@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & (filters.group | filters.channel))
 async def handle_bulk(client, message: Message):
+    """Handler for media messages in groups and channels"""
     chat_id = str(message.chat.id)
+    
+    # Debug logging - check if handler is triggered
+    print(f"📥 Media received in chat {chat_id}: {message.chat.title}")
+    
     caption = await load_caption(chat_id)
-    if not caption: return
+    if not caption:
+        print(f"⚠️ No caption set for chat {chat_id}")
+        return
 
     fname = (message.document.file_name if message.document else
              message.video.file_name if message.video else
              message.audio.file_name if message.audio else
              "Photo")
+    
+    print(f"📝 Processing file: {fname}")
+    
     ep_num = _int_episode(fname)
     qual = _quality_val(fname)
 
@@ -193,33 +210,45 @@ async def handle_bulk(client, message: Message):
         bulk_tasks[chat_id] = asyncio.create_task(_flush_bulk(chat_id, BULK_WAIT))
 
 async def _flush_bulk(chat_id: str, delay: int):
-    try: await asyncio.sleep(delay)
-    except asyncio.CancelledError: return
+    try: 
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError: 
+        return
 
     async with LOCK:
         bucket = bulk_bucket.pop(chat_id, {})
 
-    if not bucket: return
+    if not bucket: 
+        return
 
     caption = await load_caption(chat_id)
-    if not caption: return
+    if not caption: 
+        return
 
     ordered = []
     for (ep, qual), msgs in sorted(bucket.items()):
         ordered.extend(msgs)
 
+    print(f"🔄 Reordering {len(ordered)} messages in chat {chat_id}")
+
     for msg in ordered:
         filename = filesize = duration = None
         if msg.document:
-            filename = msg.document.file_name; filesize = msg.document.file_size
+            filename = msg.document.file_name
+            filesize = msg.document.file_size
         elif msg.video:
-            filename = msg.video.file_name or "Video"; filesize = msg.video.file_size; duration = msg.video.duration
+            filename = msg.video.file_name or "Video"
+            filesize = msg.video.file_size
+            duration = msg.video.duration
         elif msg.audio:
-            filename = msg.audio.file_name or "Audio"; filesize = msg.audio.file_size; duration = msg.audio.duration
+            filename = msg.audio.file_name or "Audio"
+            filesize = msg.audio.file_size
+            duration = msg.audio.duration
         elif msg.photo:
             filename = "Photo"
 
-        if not filename: continue
+        if not filename: 
+            continue
 
         cap = (caption
                .replace("{filename}", html.escape(filename.rsplit('.',1)[0]))
@@ -232,11 +261,17 @@ async def _flush_bulk(chat_id: str, delay: int):
         try:
             await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
             await msg.delete()
+            print(f"✅ Reordered: {filename}")
         except Exception as e:
             if "FLOOD_WAIT" in str(e):
                 wait = int(str(e).split("wait ")[1].split()[0])
+                print(f"⚠️ Flood wait {wait}s")
                 await asyncio.sleep(wait)
-                try: await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML); await msg.delete()
-                except: pass
-            else: print("Reorder failed:", e)
+                try: 
+                    await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
+                    await msg.delete()
+                except Exception as retry_err:
+                    print(f"❌ Retry failed: {retry_err}")
+            else: 
+                print(f"❌ Reorder failed: {e}")
         await asyncio.sleep(1)
