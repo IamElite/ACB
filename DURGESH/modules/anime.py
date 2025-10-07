@@ -79,8 +79,8 @@ def format_anime_info(data):
     genres = ", ".join(media.get("genres", []))
     site_url = media.get("siteUrl")
     
-    # Image URL - AniList CDN se
-    image_url = f"https://img.anili.st/media/{anime_id}"
+    # ✅ Image priority: coverImage → bannerImage → FAILED_PIC
+    image_url = media.get("coverImage", {}).get("large") or media.get("bannerImage") or FAILED_PIC
     
     # Caption banao
     caption = f"**{title_rom}**\n"
