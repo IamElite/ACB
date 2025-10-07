@@ -3,8 +3,7 @@ import asyncio
 from typing import Dict
 from pyrogram import filters
 from pyrogram.types import (
-    Message, InlineKeyboardMarkup, InlineKeyboardButton,
-    MessageOriginChannel
+    Message, InlineKeyboardMarkup, InlineKeyboardButton
 )
 from pyrogram.enums import ParseMode
 from DURGESH import app
@@ -37,10 +36,12 @@ async def auth_channel_cmd(client, message: Message):
             chat_id = int(message.command[1])
         except ValueError:
             return await message.reply_text("❌ Invalid channel_id!")
-    elif message.reply_to_message and isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
-        chat_id = message.reply_to_message.forward_origin.chat.id
+    elif message.reply_to_message and message.reply_to_message.forward_from_chat:
+        # FIX: Use forward_from_chat instead of forward_origin
+        chat_id = message.reply_to_message.forward_from_chat.id
     else:
         return await message.reply_text("❌ Usage: /auth <channel_id> or reply to a channel forwarded post.")
+    
     try:
         member = await client.get_chat_member(chat_id, "me")
         priv = getattr(member, "privileges", None)
@@ -48,6 +49,7 @@ async def auth_channel_cmd(client, message: Message):
             return await message.reply_text("❌ Bot must be admin with edit messages rights in that channel.")
     except Exception as e:
         return await message.reply_text(f"⚠️ Error: {e}")
+    
     await add_auth_channel(chat_id)
     await message.reply_text(f"✅ Authorized channel: `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
 
@@ -58,10 +60,12 @@ async def unauth_channel_cmd(client, message: Message):
             chat_id = int(message.command[1])
         except ValueError:
             return await message.reply_text("❌ Invalid channel_id!")
-    elif message.reply_to_message and isinstance(message.reply_to_message.forward_origin, MessageOriginChannel):
-        chat_id = message.reply_to_message.forward_origin.chat.id
+    elif message.reply_to_message and message.reply_to_message.forward_from_chat:
+        # FIX: Use forward_from_chat instead of forward_origin
+        chat_id = message.reply_to_message.forward_from_chat.id
     else:
         return await message.reply_text("❌ Usage: /unauth <channel_id> or reply to a channel forwarded post.")
+    
     await remove_auth_channel(chat_id)
     await message.reply_text(f"✅ Un-Authorized channel: `{chat_id}`", parse_mode=ParseMode.MARKDOWN)
 
@@ -88,54 +92,46 @@ async def authlist_handler(client, message: Message):
 
 # -------------------- BUTTON PARSER -------------------- #
 
-def parse_buttons(text: str):
+def parse_buttons(text: str) -> InlineKeyboardMarkup | None:
     keyboard = []
     lines = text.strip().splitlines()
 
     for line in lines:
         btns = []
-        # FIXED REGEX → label me ']' bhi allowed hai, split hamesha " + " par hoga
-        matches = re.findall(r"\[(.+?)\s*\+\s*(https?://[^\]\s]+)\]", line)
+        # Improved regex for better parsing
+        matches = re.findall(r"\[([^\]]+?)\s*\+\s*(https?://\S+)\]", line)
         for label, link in matches:
             btns.append(InlineKeyboardButton(label.strip(), url=link.strip()))
         if btns:
-            keyboard.append(btns)   # har line ek row
+            keyboard.append(btns)
 
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 
-
-
-# -------------------- CHANGE BUTTON (NEW METHOD) -------------------- #
+# -------------------- CHANGE BUTTON -------------------- #
 
 @app.on_message(filters.command(["cb"]))
 async def change_button_with_link(client, message: Message):
-    # Step 1: Check reply (button-text message)
     if not message.reply_to_message or not message.reply_to_message.text:
-        return await message.reply_text("❌ Reply to a button-text message with /cd <post_link>")
+        return await message.reply_text("❌ Reply to a button-text message with /cb <post_link>")
 
-    # Step 2: Check command argument
     if len(message.command) != 2:
-        return await message.reply_text("❌ Usage: /cd <channel_post_link>")
+        return await message.reply_text("❌ Usage: /cb <channel_post_link>")
 
     link = message.command[1]
     match = re.match(r"https://t\.me/c/(-?\d+)/(\d+)", link)
     if not match:
         return await message.reply_text("❌ Invalid link format! Use: https://t.me/c/<channel_id>/<msg_id>")
 
-    # Step 3: Extract channel_id and message_id
     channel_id, msg_id = int("-100" + match.group(1)), int(match.group(2))
 
-    # Step 4: Auth check
     if not await is_channel_authed(channel_id):
         return await message.reply_text("❌ This channel is not authorized. Use /auth first.")
 
-    # Step 5: Parse new buttons
     keyboard = parse_buttons(message.reply_to_message.text)
     if not keyboard:
-        return await message.reply_text("❌ Invalid button format!\n\n📝 Send me new buttons in format (as a reply to the same forwarded post):\n\n[Text + Link]\n[Another + Link]\n\nMultiple in one row:\n[One + Link] [Two + Link]")
+        return await message.reply_text("❌ Invalid button format!\n\n📝 Format:\n[Text + Link]\n[Another + Link]")
 
-    # Step 6: Try editing
     try:
         await client.edit_message_reply_markup(
             chat_id=channel_id,
@@ -146,16 +142,18 @@ async def change_button_with_link(client, message: Message):
     except Exception as e:
         await message.reply_text(f"⚠️ Failed to edit message: {e}")
 
+
 # -------------------- FORWARD TAG REMOVER -------------------- #
+
 async def safe_copy_and_delete(msg: Message, chat_id: int):
     try:
-        if msg.text:  # Normal text messages
+        if msg.text:
             await msg.copy(
                 chat_id,
                 entities=msg.entities,
                 reply_markup=msg.reply_markup
             )
-        else:  # Media messages with caption
+        else:
             await msg.copy(
                 chat_id,
                 caption=msg.caption,
@@ -189,11 +187,11 @@ async def safe_copy_and_delete(msg: Message, chat_id: int):
     await asyncio.sleep(1)
 
 
-
 @app.on_message(filters.channel)
 async def remove_forward_tag_handler(client, message: Message):
-    if not (message.forward_origin or message.via_bot):
+    if not (message.forward_from_chat or message.via_bot):
         return
     if not await is_channel_authed(message.chat.id):
         return
-    await safe_copy_and_delete(message, message.chat.id, cap=message.caption or None)
+    # FIX: Removed extra 'cap' parameter
+    await safe_copy_and_delete(message, message.chat.id)
