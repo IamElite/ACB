@@ -60,17 +60,14 @@ async def fetch_anime_data(query):
     except Exception as e:
         return {"errors": [{"message": str(e)}]}
 
-
 def format_anime_info(data):
-    """Anime info ko format karna"""
     media = data["data"]["Media"]
-    
-    # Basic info
-    anime_id = media.get("id")
+
+    # Titles
     title_rom = media["title"]["romaji"]
     title_eng = media["title"].get("english")
     title_native = media["title"]["native"]
-    
+
     # Details
     format_type = media.get("format", "N/A")
     status = media.get("status", "N/A")
@@ -79,43 +76,45 @@ def format_anime_info(data):
     score = media.get("averageScore")
     genres = ", ".join(media.get("genres", []))
     site_url = media.get("siteUrl")
-    
-    # Image URL - AniList ke response se
-    image_url = media["coverImage"].get("extraLarge") or media["coverImage"].get("large") or FAILED_PIC
-    
-    # Caption banao
+
+    # ✅ Force AniList cover image only
+    image_url = (
+        media["coverImage"].get("extraLarge")
+        or media["coverImage"].get("large")
+        or FAILED_PIC
+    )
+
+    # Caption
     caption = f"**{title_rom}**\n"
     if title_eng:
         caption += f"__{title_eng}__\n"
     caption += f"{title_native}\n\n"
-    
+
     caption += f"**Format:** `{format_type}`\n"
     caption += f"**Status:** `{status}`\n"
     caption += f"**Episodes:** `{episodes}`\n"
-    
+
     if duration:
         caption += f"**Duration:** `{duration} min/ep`\n"
-    
     if score:
         caption += f"**Score:** `{score}%` 🌟\n"
-    
     if genres:
         caption += f"**Genres:** `{genres}`\n"
-    
-    # Next airing episode info
+
+    # Next airing
     next_ep = media.get("nextAiringEpisode")
     if next_ep:
         hours = next_ep["timeUntilAiring"] // 3600
         caption += f"\n**Next Episode:** Ep {next_ep['episode']} in {hours} hrs"
-    
+
     # Short description
     desc = media.get("description", "")
     if desc:
         desc = desc.replace("<br>", "").replace("<i>", "").replace("</i>", "")
         caption += f"\n\n**Description:**\n{desc[:400]}..."
-    
+
     caption += f"\n\n[View on AniList]({site_url})"
-    
+
     return image_url, caption
 
 
