@@ -4,7 +4,7 @@ import asyncio
 from collections import defaultdict
 from pyrogram import filters
 from pyrogram.types import Message
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatType
 from DURGESH import app
 from DURGESH.database import db
 
@@ -90,21 +90,33 @@ async def remove_caption(chat_id: str):
 # ---------------- Commands ----------------
 async def _set_caption(message: Message):
     chat_id = str(message.chat.id)
+    
+    # Debug logging
+    print(f"🔧 setcaption called in {message.chat.type} (ID: {chat_id})")
+    
     if len(message.command) < 2:
         reply = await message.reply_text("❌ Provide caption after command.\nExample: `/setcaption <b>{filename}</b>`")
         await asyncio.sleep(60)
         try: await message.delete(); await reply.delete()
         except: pass
         return
+    
     caption = message.text.split(None, 1)[1].strip()
     await save_caption(chat_id, caption)
     reply = await message.reply_text("✅ Caption saved!")
+    
+    print(f"✅ Caption saved for chat {chat_id}")
+    
     await asyncio.sleep(60)
     try: await message.delete(); await reply.delete()
     except: pass
 
 async def _get_caption(message: Message):
     chat_id = str(message.chat.id)
+    
+    # Debug logging
+    print(f"🔍 getcaption called in {message.chat.type} (ID: {chat_id})")
+    
     caption = await load_caption(chat_id)
     if not caption:
         reply = await message.reply_text("❌ No caption set.")
@@ -112,6 +124,7 @@ async def _get_caption(message: Message):
         try: await message.delete(); await reply.delete()
         except: pass
         return
+    
     preview = (caption.replace("{filename}", "Example_Filename")
                      .replace("{filesize}", "1.23 GB")
                      .replace("{duration}", "1:23:45")
@@ -119,42 +132,39 @@ async def _get_caption(message: Message):
                      .replace("{season}", "1")
                      .replace("{episode}", "01 (123)"))
     reply = await message.reply_text(f"📝 Current template:\n\n{preview}", parse_mode=ParseMode.HTML)
+    
+    print(f"✅ Showed caption for chat {chat_id}")
+    
     await asyncio.sleep(60)
     try: await message.delete(); await reply.delete()
     except: pass
 
 async def _remove_caption(message: Message):
     chat_id = str(message.chat.id)
+    
+    # Debug logging
+    print(f"🗑️ removecaption called in {message.chat.type} (ID: {chat_id})")
+    
     await remove_caption(chat_id)
     reply = await message.reply_text("✅ Caption removed! Auto-captioning disabled.")
+    
+    print(f"✅ Caption removed for chat {chat_id}")
+    
     await asyncio.sleep(60)
     try: await message.delete(); await reply.delete()
     except: pass
 
-# Register in groups
-@app.on_message(filters.group & filters.command(["setcaption", "sc"]))
-async def set_caption_group(client, message: Message): 
+# FIXED: Unified command handlers for both groups and channels
+@app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
+async def set_caption_handler(client, message: Message): 
     await _set_caption(message)
 
-@app.on_message(filters.group & filters.command(["getcaption", "gc"]))
-async def get_caption_group(client, message: Message): 
+@app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
+async def get_caption_handler(client, message: Message): 
     await _get_caption(message)
 
-@app.on_message(filters.group & filters.command(["removecaption", "rc", "rmcaption"]))
-async def remove_caption_group(client, message: Message): 
-    await _remove_caption(message)
-
-# Register in channels - FIXED: Separate handlers for channels
-@app.on_message(filters.channel & filters.command(["setcaption", "sc"]))
-async def set_caption_channel(client, message: Message): 
-    await _set_caption(message)
-
-@app.on_message(filters.channel & filters.command(["getcaption", "gc"]))
-async def get_caption_channel(client, message: Message): 
-    await _get_caption(message)
-
-@app.on_message(filters.channel & filters.command(["removecaption", "rc", "rmcaption"]))
-async def remove_caption_channel(client, message: Message): 
+@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & (filters.group | filters.channel))
+async def remove_caption_handler(client, message: Message): 
     await _remove_caption(message)
 
 # ---------------- Bulk Handler ----------------
@@ -178,14 +188,14 @@ def _int_episode(fname: str) -> int:
         return int(re.search(r'\d+', raw).group())
     except: return 9999
 
-# FIXED: Explicit media filter instead of generic filters.media
+# Media handler for both groups and channels
 @app.on_message((filters.document | filters.video | filters.audio | filters.photo) & (filters.group | filters.channel))
 async def handle_bulk(client, message: Message):
     """Handler for media messages in groups and channels"""
     chat_id = str(message.chat.id)
     
-    # Debug logging - check if handler is triggered
-    print(f"📥 Media received in chat {chat_id}: {message.chat.title}")
+    # Debug logging
+    print(f"📥 Media received in {message.chat.type} (ID: {chat_id}): {message.chat.title}")
     
     caption = await load_caption(chat_id)
     if not caption:
