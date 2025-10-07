@@ -4,11 +4,22 @@ import asyncio
 from collections import defaultdict
 from pyrogram import filters
 from pyrogram.types import Message
-from pyrogram.enums import ParseMode, ChatType
+from pyrogram.enums import ParseMode
 from DURGESH import app
 from DURGESH.database import db
 
 captiondb = db.captions
+authchanneldb = db.auth_channels
+
+# Default caption
+DEFAULT_CAPTION = """<blockquote>
+╭────────────────────⦿
+├ 📺<b>єᴘɪꜱσᴅє</b> ➛ <i>{episode}</i> <b>(ꜱєᴧꜱση</b> <i>{season}</i><b>)</b>
+├ 🔊<b>ᴧᴜᴅɪσ</b> ➛ <i>ʜɪηᴅɪ #σꜰꜰɪᴄɪᴧʟ</i>
+├ 🎥<b>ǫᴜᴧʟɪᴛʏ</b> ➛ <i>{quality}</i>
+├ 🌐<b>[ @TGUrlsHub & @TGEliteHub ]</b>
+╰────────────────────⦿
+</blockquote>"""
 
 # ---------------- Helpers ----------------
 def extract_episode(fname: str) -> str:
@@ -76,7 +87,26 @@ def format_duration(duration) -> str:
     except:
         return "N/A"
 
-# ---------------- Database ----------------
+# ---------------- Auth Database ----------------
+async def add_auth_channel(chat_id: str):
+    await authchanneldb.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"chat_id": chat_id}},
+        upsert=True
+    )
+
+async def remove_auth_channel(chat_id: str):
+    await authchanneldb.delete_one({"chat_id": chat_id})
+
+async def is_channel_authed(chat_id: str) -> bool:
+    data = await authchanneldb.find_one({"chat_id": chat_id})
+    return bool(data)
+
+async def get_all_auth_channels():
+    cursor = authchanneldb.find({})
+    return [doc["chat_id"] async for doc in cursor]
+
+# ---------------- Caption Database ----------------
 async def load_caption(chat_id: str):
     data = await captiondb.find_one({"chat_id": chat_id})
     return data["caption"] if data else None
@@ -87,47 +117,158 @@ async def save_caption(chat_id: str, caption: str):
 async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": chat_id})
 
-# ---------------- Commands ----------------
-async def _set_caption(message: Message):
-    chat_id = str(message.chat.id)
+# ---------------- Auth Commands ----------------
+@app.on_message(filters.command(["capauth", "ca"]))
+async def auth_channel_cmd(client, message: Message):
+    """Authorize a channel for caption management"""
     
-    # Debug logging
-    print(f"🔧 setcaption called in {message.chat.type} (ID: {chat_id})")
+    # Extract channel_id from command or reply
+    if len(message.command) == 2:
+        try:
+            channel_id = message.command[1]
+            if not channel_id.startswith('-100'):
+                channel_id = f"-100{channel_id}"
+        except:
+            return await message.reply_text("❌ Invalid channel ID!")
+    elif message.reply_to_message and message.reply_to_message.forward_from_chat:
+        channel_id = str(message.reply_to_message.forward_from_chat.id)
+    else:
+        return await message.reply_text("❌ Usage: `/capauth <channel_id>` or reply to a forwarded channel message.")
     
-    # Extract caption text
-    text = message.text or message.caption or ""
-    parts = text.split(None, 1)
+    # Try to get chat info to verify
+    try:
+        chat = await client.get_chat(channel_id)
+        chat_name = chat.title or "Unknown"
+    except Exception as e:
+        return await message.reply_text(f"⚠️ Error: Cannot access channel. Make sure bot is admin there.\n\nError: {e}")
     
-    if len(parts) < 2:
-        reply = await message.reply_text("❌ Provide caption after command.\nExample: `/setcaption <b>{filename}</b>`")
-        await asyncio.sleep(60)
-        try: await message.delete(); await reply.delete()
-        except: pass
-        return
+    # Add to auth list
+    await add_auth_channel(channel_id)
     
-    caption = parts[1].strip()
-    await save_caption(chat_id, caption)
-    reply = await message.reply_text("✅ Caption saved!")
+    # Set default caption
+    await save_caption(channel_id, DEFAULT_CAPTION)
     
-    print(f"✅ Caption saved for chat {chat_id}")
+    reply = await message.reply_text(
+        f"✅ Channel Authorized!\n\n"
+        f"📺 **Channel:** {chat_name}\n"
+        f"🆔 **ID:** `{channel_id}`\n\n"
+        f"✅ Default caption set!"
+    )
+    
+    print(f"✅ Channel {channel_id} authorized with default caption")
     
     await asyncio.sleep(60)
     try: await message.delete(); await reply.delete()
     except: pass
 
-async def _get_caption(message: Message):
-    chat_id = str(message.chat.id)
+@app.on_message(filters.command(["capunauth", "cua"]))
+async def unauth_channel_cmd(client, message: Message):
+    """Remove channel authorization"""
     
-    # Debug logging
-    print(f"🔍 getcaption called in {message.chat.type} (ID: {chat_id})")
+    if len(message.command) == 2:
+        try:
+            channel_id = message.command[1]
+            if not channel_id.startswith('-100'):
+                channel_id = f"-100{channel_id}"
+        except:
+            return await message.reply_text("❌ Invalid channel ID!")
+    elif message.reply_to_message and message.reply_to_message.forward_from_chat:
+        channel_id = str(message.reply_to_message.forward_from_chat.id)
+    else:
+        return await message.reply_text("❌ Usage: `/capunauth <channel_id>` or reply to a forwarded channel message.")
     
-    caption = await load_caption(chat_id)
-    if not caption:
-        reply = await message.reply_text("❌ No caption set.")
+    await remove_auth_channel(channel_id)
+    await remove_caption(channel_id)
+    
+    reply = await message.reply_text(f"✅ Channel `{channel_id}` unauthorized and caption removed!")
+    
+    print(f"✅ Channel {channel_id} unauthorized")
+    
+    await asyncio.sleep(60)
+    try: await message.delete(); await reply.delete()
+    except: pass
+
+@app.on_message(filters.command(["authlist", "al"]))
+async def list_auth_channels_cmd(client, message: Message):
+    """List all authorized channels"""
+    
+    channels = await get_all_auth_channels()
+    
+    if not channels:
+        reply = await message.reply_text("⚠️ No channels authorized yet.")
         await asyncio.sleep(60)
         try: await message.delete(); await reply.delete()
         except: pass
         return
+    
+    text = "✅ **Authorized Channels:**\n\n"
+    for i, ch_id in enumerate(channels, 1):
+        try:
+            chat = await client.get_chat(ch_id)
+            name = chat.title or "Unknown"
+            text += f"**{i}.** {name}\n🆔 `{ch_id}`\n\n"
+        except:
+            text += f"**{i}.** `{ch_id}` (Not accessible)\n\n"
+    
+    reply = await message.reply_text(text)
+    
+    await asyncio.sleep(60)
+    try: await message.delete(); await reply.delete()
+    except: pass
+
+# ---------------- Caption Commands ----------------
+@app.on_message(filters.command(["setcaption", "sc"]))
+async def set_caption_cmd(client, message: Message):
+    """Set caption for a channel"""
+    
+    # Get channel_id from command
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: `/sc <channel_id> <caption>`")
+    
+    channel_id = message.command[1]
+    if not channel_id.startswith('-100'):
+        channel_id = f"-100{channel_id}"
+    
+    # Check if authorized
+    if not await is_channel_authed(channel_id):
+        return await message.reply_text(f"❌ Channel `{channel_id}` is not authorized! Use `/capauth {channel_id}` first.")
+    
+    # Extract caption
+    text = message.text or ""
+    parts = text.split(None, 2)
+    
+    if len(parts) < 3:
+        return await message.reply_text("❌ Please provide caption after channel_id.\n\nExample: `/sc -1001234567890 <b>{filename}</b>`")
+    
+    caption = parts[2].strip()
+    await save_caption(channel_id, caption)
+    
+    reply = await message.reply_text(f"✅ Caption updated for channel `{channel_id}`!")
+    
+    print(f"✅ Caption set for channel {channel_id}")
+    
+    await asyncio.sleep(60)
+    try: await message.delete(); await reply.delete()
+    except: pass
+
+@app.on_message(filters.command(["getcaption", "gc"]))
+async def get_caption_cmd(client, message: Message):
+    """Get current caption for a channel"""
+    
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: `/gc <channel_id>`")
+    
+    channel_id = message.command[1]
+    if not channel_id.startswith('-100'):
+        channel_id = f"-100{channel_id}"
+    
+    # Check if authorized
+    if not await is_channel_authed(channel_id):
+        return await message.reply_text(f"❌ Channel `{channel_id}` is not authorized!")
+    
+    caption = await load_caption(channel_id)
+    if not caption:
+        return await message.reply_text(f"❌ No caption set for `{channel_id}`")
     
     preview = (caption.replace("{filename}", "Example_Filename")
                      .replace("{filesize}", "1.23 GB")
@@ -135,80 +276,41 @@ async def _get_caption(message: Message):
                      .replace("{quality}", "480p")
                      .replace("{season}", "1")
                      .replace("{episode}", "01 (123)"))
-    reply = await message.reply_text(f"📝 Current template:\n\n{preview}", parse_mode=ParseMode.HTML)
     
-    print(f"✅ Showed caption for chat {chat_id}")
+    reply = await message.reply_text(
+        f"📝 **Current caption for** `{channel_id}`:\n\n{preview}",
+        parse_mode=ParseMode.HTML
+    )
     
-    await asyncio.sleep(60)
-    try: await message.delete(); await reply.delete()
-    except: pass
-
-async def _remove_caption(message: Message):
-    chat_id = str(message.chat.id)
-    
-    # Debug logging
-    print(f"🗑️ removecaption called in {message.chat.type} (ID: {chat_id})")
-    
-    await remove_caption(chat_id)
-    reply = await message.reply_text("✅ Caption removed! Auto-captioning disabled.")
-    
-    print(f"✅ Caption removed for chat {chat_id}")
+    print(f"✅ Caption shown for channel {channel_id}")
     
     await asyncio.sleep(60)
     try: await message.delete(); await reply.delete()
     except: pass
 
-# Standard command handlers for groups and channels
-@app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
-async def set_caption_handler(client, message: Message): 
-    await _set_caption(message)
-
-@app.on_message(filters.command(["getcaption", "gc"]) & (filters.group | filters.channel))
-async def get_caption_handler(client, message: Message): 
-    await _get_caption(message)
-
-@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & (filters.group | filters.channel))
-async def remove_caption_handler(client, message: Message): 
-    await _remove_caption(message)
-
-
-# ===== ALTERNATIVE: Text-based handler for channels (BACKUP METHOD) =====
-@app.on_message(filters.channel & filters.text & ~filters.command(["setcaption", "sc", "getcaption", "gc", "removecaption", "rc", "rmcaption"]))
-async def channel_text_backup_handler(client, message: Message):
-    """
-    Backup handler for channels where command filters might not work.
-    This catches text messages and manually checks for commands.
-    """
+@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]))
+async def remove_caption_cmd(client, message: Message):
+    """Remove caption for a channel"""
     
-    if not message.text:
-        return
+    if len(message.command) < 2:
+        return await message.reply_text("❌ Usage: `/rc <channel_id>`")
     
-    text = message.text.strip()
+    channel_id = message.command[1]
+    if not channel_id.startswith('-100'):
+        channel_id = f"-100{channel_id}"
     
-    # Only process if it looks like a command
-    if not text.startswith('/'):
-        return
+    # Check if authorized
+    if not await is_channel_authed(channel_id):
+        return await message.reply_text(f"❌ Channel `{channel_id}` is not authorized!")
     
-    # Debug log
-    print(f"📨 Channel text detected: {text[:50]}...")
+    await remove_caption(channel_id)
+    reply = await message.reply_text(f"✅ Caption removed for `{channel_id}`! Auto-captioning disabled.")
     
-    # Check for setcaption command
-    if text.startswith('/setcaption') or text.startswith('/sc ') or text == '/sc':
-        print("🔧 Triggering setcaption via text handler")
-        await _set_caption(message)
-        return
+    print(f"✅ Caption removed for channel {channel_id}")
     
-    # Check for getcaption command  
-    if text.startswith('/getcaption') or text.startswith('/gc ') or text == '/gc':
-        print("🔍 Triggering getcaption via text handler")
-        await _get_caption(message)
-        return
-    
-    # Check for removecaption command
-    if text.startswith('/removecaption') or text.startswith('/rc ') or text == '/rc' or text.startswith('/rmcaption'):
-        print("🗑️ Triggering removecaption via text handler")
-        await _remove_caption(message)
-        return
+    await asyncio.sleep(60)
+    try: await message.delete(); await reply.delete()
+    except: pass
 
 
 # ---------------- Bulk Handler ----------------
@@ -232,18 +334,23 @@ def _int_episode(fname: str) -> int:
         return int(re.search(r'\d+', raw).group())
     except: return 9999
 
-# Media handler for both groups and channels
-@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & (filters.group | filters.channel))
-async def handle_bulk(client, message: Message):
-    """Handler for media messages in groups and channels"""
+# Media handler for channels
+@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & filters.channel)
+async def handle_bulk_channel(client, message: Message):
+    """Handler for media messages in authorized channels"""
     chat_id = str(message.chat.id)
     
     # Debug logging
-    print(f"📥 Media received in {message.chat.type} (ID: {chat_id}): {message.chat.title}")
+    print(f"📥 Media received in channel (ID: {chat_id}): {message.chat.title}")
+    
+    # Check if channel is authorized
+    if not await is_channel_authed(chat_id):
+        print(f"⚠️ Channel {chat_id} not authorized - skipping")
+        return
     
     caption = await load_caption(chat_id)
     if not caption:
-        print(f"⚠️ No caption set for chat {chat_id}")
+        print(f"⚠️ No caption set for channel {chat_id}")
         return
 
     fname = (message.document.file_name if message.document else
@@ -283,7 +390,7 @@ async def _flush_bulk(chat_id: str, delay: int):
     for (ep, qual), msgs in sorted(bucket.items()):
         ordered.extend(msgs)
 
-    print(f"🔄 Reordering {len(ordered)} messages in chat {chat_id}")
+    print(f"🔄 Reordering {len(ordered)} messages in channel {chat_id}")
 
     for msg in ordered:
         filename = filesize = duration = None
