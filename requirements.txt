@@ -3,7 +3,8 @@ tgcrypto
 asyncio
 python-dotenv
 aiohttp
-Kurigram==2.2.10
+#Kurigram==2.2.10
+https://github.com/IamDvis/pyrogram/archive/dvis.zip
 requests
 pillow
 
@@ -11,4 +12,5 @@ aiofiles
 yt_dlp
 bs4
 jikanpy
+
 
