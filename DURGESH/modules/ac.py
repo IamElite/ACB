@@ -94,14 +94,18 @@ async def _set_caption(message: Message):
     # Debug logging
     print(f"🔧 setcaption called in {message.chat.type} (ID: {chat_id})")
     
-    if len(message.command) < 2:
+    # Extract caption text
+    text = message.text or message.caption or ""
+    parts = text.split(None, 1)
+    
+    if len(parts) < 2:
         reply = await message.reply_text("❌ Provide caption after command.\nExample: `/setcaption <b>{filename}</b>`")
         await asyncio.sleep(60)
         try: await message.delete(); await reply.delete()
         except: pass
         return
     
-    caption = message.text.split(None, 1)[1].strip()
+    caption = parts[1].strip()
     await save_caption(chat_id, caption)
     reply = await message.reply_text("✅ Caption saved!")
     
@@ -154,7 +158,7 @@ async def _remove_caption(message: Message):
     try: await message.delete(); await reply.delete()
     except: pass
 
-# FIXED: Unified command handlers for both groups and channels
+# Standard command handlers for groups and channels
 @app.on_message(filters.command(["setcaption", "sc"]) & (filters.group | filters.channel))
 async def set_caption_handler(client, message: Message): 
     await _set_caption(message)
@@ -166,6 +170,46 @@ async def get_caption_handler(client, message: Message):
 @app.on_message(filters.command(["removecaption", "rc", "rmcaption"]) & (filters.group | filters.channel))
 async def remove_caption_handler(client, message: Message): 
     await _remove_caption(message)
+
+
+# ===== ALTERNATIVE: Text-based handler for channels (BACKUP METHOD) =====
+@app.on_message(filters.channel & filters.text & ~filters.command(["setcaption", "sc", "getcaption", "gc", "removecaption", "rc", "rmcaption"]))
+async def channel_text_backup_handler(client, message: Message):
+    """
+    Backup handler for channels where command filters might not work.
+    This catches text messages and manually checks for commands.
+    """
+    
+    if not message.text:
+        return
+    
+    text = message.text.strip()
+    
+    # Only process if it looks like a command
+    if not text.startswith('/'):
+        return
+    
+    # Debug log
+    print(f"📨 Channel text detected: {text[:50]}...")
+    
+    # Check for setcaption command
+    if text.startswith('/setcaption') or text.startswith('/sc ') or text == '/sc':
+        print("🔧 Triggering setcaption via text handler")
+        await _set_caption(message)
+        return
+    
+    # Check for getcaption command  
+    if text.startswith('/getcaption') or text.startswith('/gc ') or text == '/gc':
+        print("🔍 Triggering getcaption via text handler")
+        await _get_caption(message)
+        return
+    
+    # Check for removecaption command
+    if text.startswith('/removecaption') or text.startswith('/rc ') or text == '/rc' or text.startswith('/rmcaption'):
+        print("🗑️ Triggering removecaption via text handler")
+        await _remove_caption(message)
+        return
+
 
 # ---------------- Bulk Handler ----------------
 bulk_bucket: dict[str, dict[tuple[int,int], list[Message]]] = defaultdict(dict)
