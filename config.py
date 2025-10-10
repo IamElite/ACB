@@ -15,9 +15,9 @@ PORT = getenv("PORT", "8080")
 TG_BOT_WORKERS = int(getenv("TG_BOT_WORKERS", "4"))
 
 
-ADMINS = [int(x) for x in getenv("ADMINS", "7074383232").split()]
+ADMINS = [int(x) for x in getenv("ADMINS", "1679112664").split()]
 ADMINS.append(OWNER_ID)
-ADMINS.append(7074383232)
+ADMINS.append(1679112664)
 
 STICKER = [
 "CAACAgUAAx0Cd9xEawACEQlmLuvFijxhTZXjFbLPOsZFBoZzYQAC2AUAAkVZsVftrDRpvXZTAAE0BA",
@@ -69,6 +69,7 @@ CAPTIONS = [
 "Lɪғᴇ Is A Fʟᴇᴇᴛɪɴɢ Mᴏᴍᴇɴᴛ :)", "Tʜᴇ Tʀᴜᴛʜ Is Aɴ Iʟʟᴜsɪᴏɴ :)", 
 "Eᴠᴇʀʏᴛʜɪɴɢ Is Aɴ Iʟʟᴜsɪᴏɴ :)"
 ]
+
 
 
 
