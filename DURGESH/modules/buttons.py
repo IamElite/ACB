@@ -33,9 +33,14 @@ async def is_channel_authed(chat_id: int) -> bool:
 async def auth_channel_cmd(client, message: Message):
     if len(message.command) == 2:
         try:
-            chat_id = int(message.command[1])
-        except ValueError:
-            return await message.reply_text("❌ Invalid channel_id!")
+            # Handle username links like @channelname
+            if message.command[1].startswith("@"):
+                chat = await client.get_chat(message.command[1])
+                chat_id = chat.id
+            else:
+                chat_id = int(message.command[1])
+        except (ValueError, Exception):
+            return await message.reply_text("❌ Invalid channel_id or username!")
     elif message.reply_to_message and message.reply_to_message.forward_from_chat:
         # FIX: Use forward_from_chat instead of forward_origin
         chat_id = message.reply_to_message.forward_from_chat.id
@@ -57,9 +62,14 @@ async def auth_channel_cmd(client, message: Message):
 async def unauth_channel_cmd(client, message: Message):
     if len(message.command) == 2:
         try:
-            chat_id = int(message.command[1])
-        except ValueError:
-            return await message.reply_text("❌ Invalid channel_id!")
+            # Handle username links like @channelname
+            if message.command[1].startswith("@"):
+                chat = await client.get_chat(message.command[1])
+                chat_id = chat.id
+            else:
+                chat_id = int(message.command[1])
+        except (ValueError, Exception):
+            return await message.reply_text("❌ Invalid channel_id or username!")
     elif message.reply_to_message and message.reply_to_message.forward_from_chat:
         # FIX: Use forward_from_chat instead of forward_origin
         chat_id = message.reply_to_message.forward_from_chat.id
@@ -119,11 +129,26 @@ async def change_button_with_link(client, message: Message):
         return await message.reply_text("❌ Usage: /cb <channel_post_link>")
 
     link = message.command[1]
-    match = re.match(r"https://t\.me/c/(-?\d+)/(\d+)", link)
-    if not match:
-        return await message.reply_text("❌ Invalid link format! Use: https://t.me/c/<channel_id>/<msg_id>")
+    
+    # FIX: Check for both public and private link formats
+    public_match = re.match(r"https?://t\.me/([a-zA-Z0-9_]{5,})/(\d+)", link)
+    private_match = re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", link)
 
-    channel_id, msg_id = int("-100" + match.group(1)), int(match.group(2))
+    if public_match:
+        # It's a public channel link
+        chat_username = public_match.group(1)
+        msg_id = int(public_match.group(2))
+        try:
+            chat = await client.get_chat(chat_username)
+            channel_id = chat.id
+        except Exception as e:
+            return await message.reply_text(f"❌ Could not find the public channel: {e}")
+    elif private_match:
+        # It's a private channel link
+        channel_id = int("-100" + private_match.group(1))
+        msg_id = int(private_match.group(2))
+    else:
+        return await message.reply_text("❌ Invalid link format!\nUse: `https://t.me/channelname/123` or `https://t.me/c/.../123`")
 
     if not await is_channel_authed(channel_id):
         return await message.reply_text("❌ This channel is not authorized. Use /auth first.")
@@ -193,5 +218,4 @@ async def remove_forward_tag_handler(client, message: Message):
         return
     if not await is_channel_authed(message.chat.id):
         return
-    # FIX: Removed extra 'cap' parameter
     await safe_copy_and_delete(message, message.chat.id)
