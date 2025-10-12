@@ -5,6 +5,7 @@ from collections import defaultdict
 from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
 from DURGESH import app
 from DURGESH.database import db
 
@@ -538,6 +539,17 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 )
                 print(f"✅ Sent episode header: Episode {ep_num}")
                 await asyncio.sleep(1)
+            except FloodWait as fw:
+                print(f"⚠️ FloodWait {fw.value}s on episode header")
+                await asyncio.sleep(fw.value)
+                try:
+                    await client.send_message(
+                        int(chat_id),
+                        f"<b>Episode {ep_num}</b>",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as retry_err:
+                    print(f"❌ Retry failed for episode header: {retry_err}")
             except Exception as e:
                 print(f"❌ Failed to send episode header: {e}")
 
@@ -573,18 +585,16 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
                 await msg.delete()
                 print(f"✅ Reordered: {filename}")
+            except FloodWait as fw:
+                print(f"⚠️ FloodWait {fw.value}s for {filename}")
+                await asyncio.sleep(fw.value)
+                try: 
+                    await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
+                    await msg.delete()
+                except Exception as retry_err:
+                    print(f"❌ Retry failed: {retry_err}")
             except Exception as e:
-                if "FLOOD_WAIT" in str(e):
-                    wait = int(str(e).split("wait ")[1].split()[0])
-                    print(f"⚠️ Flood wait {wait}s")
-                    await asyncio.sleep(wait)
-                    try: 
-                        await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
-                        await msg.delete()
-                    except Exception as retry_err:
-                        print(f"❌ Retry failed: {retry_err}")
-                else: 
-                    print(f"❌ Reorder failed: {e}")
+                print(f"❌ Reorder failed: {e}")
             await asyncio.sleep(1)
 
         # Send sticker after all qualities of this episode
@@ -595,5 +605,15 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             )
             print(f"✅ Sent separator sticker after episode {ep_num}")
             await asyncio.sleep(1)
+        except FloodWait as fw:
+            print(f"⚠️ FloodWait {fw.value}s for sticker")
+            await asyncio.sleep(fw.value)
+            try:
+                await client.send_sticker(
+                    int(chat_id),
+                    EPISODE_SEPARATOR_STICKER
+                )
+            except Exception as retry_err:
+                print(f"❌ Retry failed for sticker: {retry_err}")
         except Exception as e:
             print(f"❌ Failed to send sticker: {e}")
