@@ -21,6 +21,9 @@ DEFAULT_CAPTION = """<blockquote>
 ╰────────────────────⦿
 </blockquote>"""
 
+# Sticker file_id for episode separator
+EPISODE_SEPARATOR_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
+
 # ---------------- Helpers ----------------
 def extract_episode(fname: str) -> str:
     for pat, grp in (
@@ -489,9 +492,9 @@ async def handle_bulk_channel(client, message: Message):
         bucket.setdefault((ep_num, qual), []).append(message)
         if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
             bulk_tasks[chat_id].cancel()
-        bulk_tasks[chat_id] = asyncio.create_task(_flush_bulk(chat_id, BULK_WAIT))
+        bulk_tasks[chat_id] = asyncio.create_task(_flush_bulk(client, chat_id, BULK_WAIT))
 
-async def _flush_bulk(chat_id: str, delay: int):
+async def _flush_bulk(client, chat_id: str, delay: int):
     try: 
         await asyncio.sleep(delay)
     except asyncio.CancelledError: 
@@ -507,53 +510,90 @@ async def _flush_bulk(chat_id: str, delay: int):
     if not caption: 
         return
 
-    ordered = []
-    for (ep, qual), msgs in sorted(bucket.items()):
-        ordered.extend(msgs)
+    # Group messages by episode number
+    episodes = defaultdict(list)
+    for (ep, qual), msgs in bucket.items():
+        episodes[ep].extend(msgs)
 
-    print(f"🔄 Reordering {len(ordered)} messages in channel {chat_id}")
+    # Sort episodes
+    sorted_episodes = sorted(episodes.items())
 
-    for msg in ordered:
-        filename = filesize = duration = None
-        if msg.document:
-            filename = msg.document.file_name
-            filesize = msg.document.file_size
-        elif msg.video:
-            filename = msg.video.file_name or "Video"
-            filesize = msg.video.file_size
-            duration = msg.video.duration
-        elif msg.audio:
-            filename = msg.audio.file_name or "Audio"
-            filesize = msg.audio.file_size
-            duration = msg.audio.duration
-        elif msg.photo:
-            filename = "Photo"
+    print(f"🔄 Processing {len(sorted_episodes)} episodes in channel {chat_id}")
 
-        if not filename: 
-            continue
+    for ep_num, msgs_in_episode in sorted_episodes:
+        # Sort by quality within episode
+        sorted_msgs = sorted(msgs_in_episode, key=lambda m: _quality_val(
+            m.document.file_name if m.document else
+            m.video.file_name if m.video else
+            m.audio.file_name if m.audio else "Photo"
+        ))
 
-        cap = (caption
-               .replace("{filename}", html.escape(filename.rsplit('.',1)[0]))
-               .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
-               .replace("{duration}", html.escape(format_duration(duration)))
-               .replace("{quality}", html.escape(extract_quality(filename)))
-               .replace("{season}", html.escape(extract_season(filename)))
-               .replace("{episode}", html.escape(extract_episode(filename))))
+        # Send episode header (bold text)
+        if ep_num != 9999:  # Only if valid episode number
+            try:
+                await client.send_message(
+                    int(chat_id),
+                    f"<b>Episode {ep_num}</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                print(f"✅ Sent episode header: Episode {ep_num}")
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"❌ Failed to send episode header: {e}")
 
+        # Process all qualities for this episode
+        for msg in sorted_msgs:
+            filename = filesize = duration = None
+            if msg.document:
+                filename = msg.document.file_name
+                filesize = msg.document.file_size
+            elif msg.video:
+                filename = msg.video.file_name or "Video"
+                filesize = msg.video.file_size
+                duration = msg.video.duration
+            elif msg.audio:
+                filename = msg.audio.file_name or "Audio"
+                filesize = msg.audio.file_size
+                duration = msg.audio.duration
+            elif msg.photo:
+                filename = "Photo"
+
+            if not filename: 
+                continue
+
+            cap = (caption
+                   .replace("{filename}", html.escape(filename.rsplit('.',1)[0]))
+                   .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
+                   .replace("{duration}", html.escape(format_duration(duration)))
+                   .replace("{quality}", html.escape(extract_quality(filename)))
+                   .replace("{season}", html.escape(extract_season(filename)))
+                   .replace("{episode}", html.escape(extract_episode(filename))))
+
+            try:
+                await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
+                await msg.delete()
+                print(f"✅ Reordered: {filename}")
+            except Exception as e:
+                if "FLOOD_WAIT" in str(e):
+                    wait = int(str(e).split("wait ")[1].split()[0])
+                    print(f"⚠️ Flood wait {wait}s")
+                    await asyncio.sleep(wait)
+                    try: 
+                        await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
+                        await msg.delete()
+                    except Exception as retry_err:
+                        print(f"❌ Retry failed: {retry_err}")
+                else: 
+                    print(f"❌ Reorder failed: {e}")
+            await asyncio.sleep(1)
+
+        # Send sticker after all qualities of this episode
         try:
-            await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
-            await msg.delete()
-            print(f"✅ Reordered: {filename}")
+            await client.send_sticker(
+                int(chat_id),
+                EPISODE_SEPARATOR_STICKER
+            )
+            print(f"✅ Sent separator sticker after episode {ep_num}")
+            await asyncio.sleep(1)
         except Exception as e:
-            if "FLOOD_WAIT" in str(e):
-                wait = int(str(e).split("wait ")[1].split()[0])
-                print(f"⚠️ Flood wait {wait}s")
-                await asyncio.sleep(wait)
-                try: 
-                    await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
-                    await msg.delete()
-                except Exception as retry_err:
-                    print(f"❌ Retry failed: {retry_err}")
-            else: 
-                print(f"❌ Reorder failed: {e}")
-        await asyncio.sleep(1)
+            print(f"❌ Failed to send sticker: {e}")
