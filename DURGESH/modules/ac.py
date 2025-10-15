@@ -58,6 +58,7 @@ def extract_quality(text: str) -> str:
         (r'\bWEB[.\- ]*DL\b', "WEB-DL"),
         (r'[([{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', "HdRip"),
         (r'\b(?:.*?(\d{3,4}[^\dPp]*[Pp]).*?|.*?(\d{3,4}[Pp]))\b', None)
+        (r'(\d{3,4})[pP]', None)
     ]
     for pat, repl in qpats:
         m = re.search(pat, text, re.IGNORECASE)
