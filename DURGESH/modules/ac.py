@@ -234,7 +234,7 @@ async def unauth_channel_cmd(client, message: Message):
         print(f"❌ Error in capunauth: {e}")
         await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
 
-@app.on_message(filters.command(["authlist", "al"]))
+@app.on_message(filters.command(["capauthlist", "cal"]))
 async def list_auth_channels_cmd(client, message: Message):
     """List all authorized channels"""
     
