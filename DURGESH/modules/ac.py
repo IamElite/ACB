@@ -10,7 +10,7 @@ from DURGESH import app
 from DURGESH.database import db
 
 captiondb = db.captions
-authchanneldb = db.auth_channels
+authchanneldb = db.capauth_channels
 
 # Default caption
 DEFAULT_CAPTION = """<blockquote>
