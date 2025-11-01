@@ -469,7 +469,7 @@ async def remove_caption_cmd(client, message: Message):
 # ---------------- Bulk Handler ----------------
 bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
 bulk_tasks: dict[str, asyncio.Task] = {}
-BULK_WAIT = 5  # Increased to 5 seconds for better grouping
+BULK_WAIT = 3  # Increased to 5 seconds for better grouping
 LOCK = asyncio.Lock()
 
 def _quality_val(fname: str) -> int:
