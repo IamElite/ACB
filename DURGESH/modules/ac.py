@@ -27,48 +27,49 @@ EPISODE_SEPARATOR_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnu
 
 # ---------------- Helpers ----------------
 def extract_episode(fname: str) -> str:
+    """Extract episode number from filename"""
     for pat, grp in (
         (r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', (2, 3)),
         (r'S(\d+)\s*(?:E|EP)(\d+)\s*\((\d+)\)', (2, 3)),
         (r'S(\d+)\s*(?:E|EP)(\d+)', (2,)),
         (r'(?:E|EP)\s*\((\d+)\)', (1,)),
+        (r'(?:E|EP)(\d+)', (1,)),
         (r'-\s*(\d+)', (1,))
     ):
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
             if len(grp) == 2:
                 return f"{m.group(grp[0]).zfill(2)} ({m.group(grp[1])})"
-            return f"{m.group(grp[0]).zfill(2)}" if grp[0] == 2 else f"({m.group(grp[0])})"
+            return f"{m.group(grp[0]).zfill(2)}"
     return "N/A"
 
 def extract_season(fname: str) -> str:
+    """Extract season number from filename"""
     for pat in (r'S(\d+)(?:E|EP)(\d+)', r'S(\d+)\s*(?:E|EP|-\s*EP)(\d+)',
                 r'S(\d+)[^\d]*(\d+)', r'\bseason\s*(\d+)\b', r'\bs(\d+)\b'):
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
-            return m.group(1)
+            return m.group(1).zfill(2)
     return "N/A"
 
 def extract_quality(text: str) -> str:
+    """Extract quality from filename"""
     qpats = [
-        (r'[([{<]?\s*4k\s*[)\]}>]?', "4k"),
-        (r'[([{<]?\s*2k\s*[)\]}>]?', "2k"),
-        (r'[([{<]?\s*4kX264\s*[)\]}>]?', "4kX264"),
-        (r'[([{<]?\s*4kx265\s*[)\]}>]?', "4kx265"),
+        (r'[(\[{<]?\s*4k\s*[)\]}>]?', "4K"),
+        (r'[(\[{<]?\s*2k\s*[)\]}>]?', "2K"),
+        (r'[(\[{<]?\s*4kX264\s*[)\]}>]?', "4K X264"),
+        (r'[(\[{<]?\s*4kx265\s*[)\]}>]?', "4K X265"),
         (r'\bWEB[.\- ]*DL\b', "WEB-DL"),
-        (r'[([{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', "HdRip"),
-        (r'\b(?:.*?(\d{3,4}[^\dPp]*[Pp]).*?|.*?(\d{3,4}[Pp]))\b', None),
-        (r'(\d{3,4})[pP]', None)
+        (r'[(\[{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', "HDRip"),
+        (r'(\d{3,4})[pP]', None),
     ]
     for pat, repl in qpats:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            q = repl if repl else (m.group(1) or m.group(2))
-            if q:
-                q = q.lower()
-                if "360" in q:
-                    return "480p"
-                return q
+            q = repl if repl else m.group(1) + "p"
+            if q and "360" in q.lower():
+                return "480p"
+            return q
     return "N/A"
 
 def get_readable_file_size(size_in_bytes) -> str:
@@ -467,9 +468,9 @@ async def remove_caption_cmd(client, message: Message):
         )
 
 # ---------------- Bulk Handler ----------------
-bulk_bucket: dict[str, dict[tuple[int, int], list[Message]]] = defaultdict(dict)
+bulk_bucket: dict[str, list[Message]] = defaultdict(list)
 bulk_tasks: dict[str, asyncio.Task] = {}
-BULK_WAIT = 3  # Increased to 5 seconds for better grouping
+BULK_WAIT = 3  # 3 seconds wait time
 LOCK = asyncio.Lock()
 
 def _quality_val(fname: str) -> int:
@@ -516,34 +517,15 @@ async def handle_bulk_channel(client, message: Message):
         print(f"⚠️ Channel {chat_id} not authorized - skipping")
         return
     
-    caption = await load_caption(chat_id)
-    if not caption:
+    caption_template = await load_caption(chat_id)
+    if not caption_template:
         print(f"⚠️ No caption set for channel {chat_id}")
         return
 
-    # Get filename
-    fname = None
-    if message.document:
-        fname = message.document.file_name
-    elif message.video:
-        fname = message.video.file_name or "Video"
-    elif message.audio:
-        fname = message.audio.file_name or "Audio"
-    elif message.photo:
-        fname = "Photo"
+    print(f"✅ Channel authorized, collecting media for bulk processing")
     
-    if not fname:
-        print(f"⚠️ No filename found for message {message.id}")
-        return
-    
-    print(f"📝 Processing file: {fname}")
-    
-    ep_num = _int_episode(fname)
-    qual = _quality_val(fname)
-
     async with LOCK:
-        bucket = bulk_bucket[chat_id]
-        bucket.setdefault((ep_num, qual), []).append(message)
+        bulk_bucket[chat_id].append(message)
         
         # Cancel existing task and create new one
         if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
@@ -558,27 +540,42 @@ async def _flush_bulk(client, chat_id: str, delay: int):
     try:
         await asyncio.sleep(delay)
     except asyncio.CancelledError:
+        print(f"⚠️ Flush task cancelled for {chat_id}")
         return
 
     async with LOCK:
-        bucket = bulk_bucket.pop(chat_id, {})
+        messages = bulk_bucket.pop(chat_id, [])
 
-    if not bucket:
+    if not messages:
+        print(f"⚠️ No messages to process for {chat_id}")
         return
 
     caption_template = await load_caption(chat_id)
     if not caption_template:
+        print(f"⚠️ No caption template for {chat_id}")
         return
 
-    # Group messages by episode number
+    print(f"🔄 Processing {len(messages)} message(s) in channel {chat_id}")
+
+    # Group by episode
     episodes = defaultdict(list)
-    for (ep, qual), msgs in bucket.items():
-        episodes[ep].extend(msgs)
+    for msg in messages:
+        fname = None
+        if msg.document:
+            fname = msg.document.file_name
+        elif msg.video:
+            fname = msg.video.file_name or "Video"
+        elif msg.audio:
+            fname = msg.audio.file_name or "Audio"
+        elif msg.photo:
+            fname = "Photo"
+        
+        if fname:
+            ep_num = _int_episode(fname)
+            episodes[ep_num].append(msg)
 
     # Sort episodes
     sorted_episodes = sorted(episodes.items())
-
-    print(f"🔄 Processing {len(sorted_episodes)} episode(s) in channel {chat_id}")
 
     for ep_num, msgs_in_episode in sorted_episodes:
         # Sort by quality within episode (lowest to highest)
@@ -593,7 +590,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             try:
                 await client.send_message(
                     int(chat_id),
-                    f"<b>Episode {ep_num:02d}</b>",
+                    f"<b>━━━ Episode {ep_num:02d} ━━━</b>",
                     parse_mode=ParseMode.HTML
                 )
                 print(f"✅ Sent episode header: Episode {ep_num:02d}")
@@ -601,14 +598,6 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             except FloodWait as fw:
                 print(f"⚠️ FloodWait {fw.value}s on episode header")
                 await asyncio.sleep(fw.value)
-                try:
-                    await client.send_message(
-                        int(chat_id),
-                        f"<b>Episode {ep_num:02d}</b>",
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception as retry_err:
-                    print(f"❌ Retry failed for episode header: {retry_err}")
             except Exception as e:
                 print(f"❌ Failed to send episode header: {e}")
 
@@ -649,10 +638,14 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                     caption=cap, 
                     parse_mode=ParseMode.HTML
                 )
+                print(f"✅ Copied: {filename}")
+                await asyncio.sleep(0.5)
+                
                 # Delete original message
                 await msg.delete()
-                print(f"✅ Reordered: {filename}")
-                await asyncio.sleep(1)
+                print(f"✅ Deleted original: {filename}")
+                await asyncio.sleep(0.5)
+                
             except FloodWait as fw:
                 print(f"⚠️ FloodWait {fw.value}s for {filename}")
                 await asyncio.sleep(fw.value)
@@ -669,24 +662,18 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 print(f"❌ Reorder failed for {filename}: {e}")
 
         # Send sticker separator after all qualities of this episode
-        try:
-            await client.send_sticker(
-                int(chat_id),
-                EPISODE_SEPARATOR_STICKER
-            )
-            print(f"✅ Sent separator sticker after episode {ep_num}")
-            await asyncio.sleep(1)
-        except FloodWait as fw:
-            print(f"⚠️ FloodWait {fw.value}s for sticker")
-            await asyncio.sleep(fw.value)
+        if ep_num != 9999:
             try:
                 await client.send_sticker(
                     int(chat_id),
                     EPISODE_SEPARATOR_STICKER
                 )
-            except Exception as retry_err:
-                print(f"❌ Retry failed for sticker: {retry_err}")
-        except Exception as e:
-            print(f"❌ Failed to send sticker: {e}")
+                print(f"✅ Sent separator sticker after episode {ep_num}")
+                await asyncio.sleep(1)
+            except FloodWait as fw:
+                print(f"⚠️ FloodWait {fw.value}s for sticker")
+                await asyncio.sleep(fw.value)
+            except Exception as e:
+                print(f"❌ Failed to send sticker: {e}")
 
     print(f"✅ Bulk processing completed for channel {chat_id}")
