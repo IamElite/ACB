@@ -22,8 +22,8 @@ DEFAULT_CAPTION = """<blockquote>
 ╰────────────────────⦿
 </blockquote>"""
 
-# Sticker file_id for episode separator
-EPISODE_SEPARATOR_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
+# Default sticker file_id for episode separator
+DEFAULT_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
 
 # ---------------- Helpers ----------------
 def extract_episode(fname: str) -> str:
@@ -119,17 +119,34 @@ async def get_all_auth_channels():
     cursor = authchanneldb.find({})
     return [doc["chat_id"] async for doc in cursor]
 
-# ---------------- Caption Database ----------------
+# ---------------- Caption & Sticker Database ----------------
 async def load_caption(chat_id: str):
     """Load caption for a channel"""
     data = await captiondb.find_one({"chat_id": chat_id})
     return data["caption"] if data else None
 
-async def save_caption(chat_id: str, caption: str):
-    """Save caption for a channel"""
+async def save_caption(chat_id: str, caption: str, sticker_id: str = None):
+    """Save caption and optionally sticker for a channel"""
+    update_data = {"caption": caption}
+    if sticker_id:
+        update_data["sticker_id"] = sticker_id
+    
     await captiondb.update_one(
         {"chat_id": chat_id}, 
-        {"$set": {"caption": caption}}, 
+        {"$set": update_data}, 
+        upsert=True
+    )
+
+async def load_sticker(chat_id: str):
+    """Load sticker for a channel"""
+    data = await captiondb.find_one({"chat_id": chat_id})
+    return data.get("sticker_id", DEFAULT_STICKER) if data else DEFAULT_STICKER
+
+async def save_sticker(chat_id: str, sticker_id: str):
+    """Save sticker for a channel"""
+    await captiondb.update_one(
+        {"chat_id": chat_id}, 
+        {"$set": {"sticker_id": sticker_id}}, 
         upsert=True
     )
 
@@ -189,19 +206,19 @@ async def auth_channel_cmd(client, message: Message):
         await add_auth_channel(channel_id)
         print(f"✅ Channel {channel_id} added to auth list")
         
-        # Set default caption
-        await save_caption(channel_id, DEFAULT_CAPTION)
-        print(f"✅ Default caption set for {channel_id}")
+        # Set default caption and sticker
+        await save_caption(channel_id, DEFAULT_CAPTION, DEFAULT_STICKER)
+        print(f"✅ Default caption and sticker set for {channel_id}")
         
         await message.reply_text(
             f"✅ <b>Channel Authorized!</b>\n\n"
             f"📺 <b>Channel:</b> {html.escape(chat_name)}\n"
             f"🆔 <b>ID:</b> <code>{channel_id}</code>\n\n"
-            f"✅ Default caption has been set!\n\n"
+            f"✅ Default caption & sticker set!\n\n"
             f"<b>Next Steps:</b>\n"
             f"• Upload media to channel to test\n"
             f"• Use <code>/gc {channel_id}</code> to view caption\n"
-            f"• Use <code>/sc {channel_id} &lt;new_caption&gt;</code> to change caption",
+            f"• Use <code>/sc {channel_id} &lt;caption&gt; -s &lt;sticker_id&gt;</code> to customize",
             parse_mode=ParseMode.HTML
         )
         
@@ -293,23 +310,27 @@ async def list_auth_channels_cmd(client, message: Message):
 # ---------------- Caption Commands ----------------
 @app.on_message(filters.command(["setcaption", "sc"]))
 async def set_caption_cmd(client, message: Message):
-    """Set caption for a channel"""
+    """Set caption and optionally sticker for a channel"""
     print(f"🔧 setcaption command received from user {message.from_user.id}")
     
     try:
         # Get channel_id from command
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/sc &lt;channel_id&gt; &lt;caption&gt;</code>\n\n"
-                "<b>Example:</b>\n"
+                "❌ <b>Usage:</b> <code>/sc &lt;channel_id&gt; &lt;caption&gt; -s &lt;sticker_id&gt;</code>\n\n"
+                "<b>Examples:</b>\n"
+                "1. Caption only:\n"
                 "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt;</code>\n\n"
+                "2. Caption + Sticker:\n"
+                "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA...</code>\n\n"
                 "<b>Available variables:</b>\n"
                 "<code>{filename}</code> - File name without extension\n"
                 "<code>{filesize}</code> - File size (e.g., 1.23 GB)\n"
                 "<code>{duration}</code> - Video duration\n"
                 "<code>{quality}</code> - Video quality (e.g., 720p)\n"
                 "<code>{season}</code> - Season number\n"
-                "<code>{episode}</code> - Episode number",
+                "<code>{episode}</code> - Episode number\n\n"
+                "<b>Tip:</b> To get sticker ID, forward any sticker to @RawDataBot",
                 parse_mode=ParseMode.HTML
             )
         
@@ -329,7 +350,7 @@ async def set_caption_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
         
-        # Extract caption
+        # Extract caption and sticker
         text = message.text or ""
         parts = text.split(None, 2)
         
@@ -341,17 +362,34 @@ async def set_caption_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
         
-        caption = parts[2].strip()
-        await save_caption(channel_id, caption)
+        full_text = parts[2].strip()
         
-        await message.reply_text(
-            f"✅ <b>Caption Updated!</b>\n\n"
-            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
-            f"Use <code>/gc {channel_id}</code> to preview the caption.",
-            parse_mode=ParseMode.HTML
-        )
+        # Check for -s flag (sticker)
+        sticker_id = None
+        caption = full_text
         
-        print(f"✅ Caption set for channel {channel_id}")
+        if " -s " in full_text:
+            split_parts = full_text.split(" -s ", 1)
+            caption = split_parts[0].strip()
+            sticker_id = split_parts[1].strip()
+            print(f"📌 Sticker ID provided: {sticker_id}")
+        
+        # Save caption and sticker
+        await save_caption(channel_id, caption, sticker_id)
+        
+        response = f"✅ <b>Caption Updated!</b>\n\n" \
+                   f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
+        
+        if sticker_id:
+            response += f"🎨 <b>Sticker:</b> Custom sticker set!\n\n"
+        else:
+            response += f"🎨 <b>Sticker:</b> Using default sticker\n\n"
+        
+        response += f"Use <code>/gc {channel_id}</code> to preview."
+        
+        await message.reply_text(response, parse_mode=ParseMode.HTML)
+        
+        print(f"✅ Caption{' and sticker' if sticker_id else ''} set for channel {channel_id}")
         
     except Exception as e:
         print(f"❌ Error in setcaption: {e}")
@@ -396,6 +434,8 @@ async def get_caption_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
         
+        sticker_id = await load_sticker(channel_id)
+        
         preview = (caption
                    .replace("{filename}", "Example_Filename")
                    .replace("{filesize}", "1.23 GB")
@@ -404,18 +444,77 @@ async def get_caption_cmd(client, message: Message):
                    .replace("{season}", "01")
                    .replace("{episode}", "01 (123)"))
         
-        await message.reply_text(
-            f"📝 <b>Current Caption Preview</b>\n\n"
-            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"{preview}",
-            parse_mode=ParseMode.HTML
-        )
+        response = f"📝 <b>Current Caption Preview</b>\n\n" \
+                   f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n" \
+                   f"━━━━━━━━━━━━━━━━━━\n\n" \
+                   f"{preview}\n\n" \
+                   f"━━━━━━━━━━━━━━━━━━\n\n" \
+                   f"🎨 <b>Sticker ID:</b> <code>{sticker_id}</code>"
+        
+        await message.reply_text(response, parse_mode=ParseMode.HTML)
+        
+        # Send sticker preview
+        try:
+            await message.reply_sticker(sticker_id)
+        except Exception as e:
+            print(f"⚠️ Could not send sticker preview: {e}")
         
         print(f"✅ Caption shown for channel {channel_id}")
         
     except Exception as e:
         print(f"❌ Error in getcaption: {e}")
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
+
+@app.on_message(filters.command(["getsticker", "gs"]))
+async def get_sticker_cmd(client, message: Message):
+    """Get current sticker for a channel"""
+    print(f"🎨 getsticker command received from user {message.from_user.id}")
+    
+    try:
+        if len(message.command) < 2:
+            return await message.reply_text(
+                "❌ <b>Usage:</b> <code>/gs &lt;channel_id&gt;</code>\n\n"
+                "<b>Example:</b> <code>/gs -1001234567890</code>",
+                parse_mode=ParseMode.HTML
+            )
+        
+        channel_id = message.command[1]
+        if not channel_id.startswith('-100'):
+            if channel_id.startswith('-'):
+                channel_id = f"-100{channel_id.lstrip('-')}"
+            else:
+                channel_id = f"-100{channel_id}"
+        
+        # Check if authorized
+        if not await is_channel_authed(channel_id):
+            return await message.reply_text(
+                f"❌ <b>Channel not authorized!</b>\n\n"
+                f"🆔 <code>{channel_id}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        
+        sticker_id = await load_sticker(channel_id)
+        
+        await message.reply_text(
+            f"🎨 <b>Current Sticker</b>\n\n"
+            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n"
+            f"🎨 <b>Sticker ID:</b> <code>{sticker_id}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Send sticker
+        try:
+            await message.reply_sticker(sticker_id)
+        except Exception as e:
+            await message.reply_text(f"⚠️ Could not send sticker: {html.escape(str(e))}")
+        
+        print(f"✅ Sticker shown for channel {channel_id}")
+        
+    except Exception as e:
+        print(f"❌ Error in getsticker: {e}")
         await message.reply_text(
             f"❌ <b>Error:</b> {html.escape(str(e))}", 
             parse_mode=ParseMode.HTML
@@ -470,7 +569,7 @@ async def remove_caption_cmd(client, message: Message):
 # ---------------- Bulk Handler ----------------
 bulk_bucket: dict[str, list[Message]] = defaultdict(list)
 bulk_tasks: dict[str, asyncio.Task] = {}
-BULK_WAIT = 3  # 3 seconds wait time
+BULK_WAIT = 5  # 5 seconds wait time
 LOCK = asyncio.Lock()
 
 def _quality_val(fname: str) -> int:
@@ -551,6 +650,8 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         return
 
     caption_template = await load_caption(chat_id)
+    sticker_id = await load_sticker(chat_id)
+    
     if not caption_template:
         print(f"⚠️ No caption template for {chat_id}")
         return
@@ -666,7 +767,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             try:
                 await client.send_sticker(
                     int(chat_id),
-                    EPISODE_SEPARATOR_STICKER
+                    sticker_id
                 )
                 print(f"✅ Sent separator sticker after episode {ep_num}")
                 await asyncio.sleep(1)
