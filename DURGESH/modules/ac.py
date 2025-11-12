@@ -104,26 +104,34 @@ async def add_auth_channel(chat_id: str):
         {"$set": {"chat_id": chat_id}},
         upsert=True
     )
+    print(f"✅ Database: Channel {chat_id} added to auth list")
 
 async def remove_auth_channel(chat_id: str):
     """Remove channel from authorized list"""
     await authchanneldb.delete_one({"chat_id": chat_id})
+    print(f"✅ Database: Channel {chat_id} removed from auth list")
 
 async def is_channel_authed(chat_id: str) -> bool:
     """Check if channel is authorized"""
     data = await authchanneldb.find_one({"chat_id": chat_id})
-    return bool(data)
+    result = bool(data)
+    print(f"🔍 Database: Channel {chat_id} auth check = {result}")
+    return result
 
 async def get_all_auth_channels():
     """Get all authorized channels"""
     cursor = authchanneldb.find({})
-    return [doc["chat_id"] async for doc in cursor]
+    channels = [doc["chat_id"] async for doc in cursor]
+    print(f"📋 Database: Found {len(channels)} authorized channels")
+    return channels
 
 # ---------------- Caption & Sticker Database ----------------
 async def load_caption(chat_id: str):
     """Load caption for a channel"""
     data = await captiondb.find_one({"chat_id": chat_id})
-    return data["caption"] if data else None
+    caption = data["caption"] if data else None
+    print(f"📝 Database: Caption for {chat_id} = {'Found' if caption else 'Not found'}")
+    return caption
 
 async def save_caption(chat_id: str, caption: str, sticker_id: str = None):
     """Save caption and optionally sticker for a channel"""
@@ -136,11 +144,14 @@ async def save_caption(chat_id: str, caption: str, sticker_id: str = None):
         {"$set": update_data}, 
         upsert=True
     )
+    print(f"✅ Database: Caption{' and sticker' if sticker_id else ''} saved for {chat_id}")
 
 async def load_sticker(chat_id: str):
     """Load sticker for a channel"""
     data = await captiondb.find_one({"chat_id": chat_id})
-    return data.get("sticker_id", DEFAULT_STICKER) if data else DEFAULT_STICKER
+    sticker = data.get("sticker_id", DEFAULT_STICKER) if data else DEFAULT_STICKER
+    print(f"🎨 Database: Sticker for {chat_id} = {sticker[:20]}...")
+    return sticker
 
 async def save_sticker(chat_id: str, sticker_id: str):
     """Save sticker for a channel"""
@@ -149,10 +160,12 @@ async def save_sticker(chat_id: str, sticker_id: str):
         {"$set": {"sticker_id": sticker_id}}, 
         upsert=True
     )
+    print(f"✅ Database: Sticker saved for {chat_id}")
 
 async def remove_caption(chat_id: str):
     """Remove caption for a channel"""
     await captiondb.delete_one({"chat_id": chat_id})
+    print(f"✅ Database: Caption removed for {chat_id}")
 
 # ---------------- Auth Commands ----------------
 @app.on_message(filters.command(["capauth", "ca"]))
@@ -204,11 +217,9 @@ async def auth_channel_cmd(client, message: Message):
         
         # Add to auth list
         await add_auth_channel(channel_id)
-        print(f"✅ Channel {channel_id} added to auth list")
         
         # Set default caption and sticker
         await save_caption(channel_id, DEFAULT_CAPTION, DEFAULT_STICKER)
-        print(f"✅ Default caption and sticker set for {channel_id}")
         
         await message.reply_text(
             f"✅ <b>Channel Authorized!</b>\n\n"
@@ -569,7 +580,7 @@ async def remove_caption_cmd(client, message: Message):
 # ---------------- Bulk Handler ----------------
 bulk_bucket: dict[str, list[Message]] = defaultdict(list)
 bulk_tasks: dict[str, asyncio.Task] = {}
-BULK_WAIT = 5  # 5 seconds wait time
+BULK_WAIT = 3  # 3 seconds wait time
 LOCK = asyncio.Lock()
 
 def _quality_val(fname: str) -> int:
@@ -599,45 +610,83 @@ def _int_episode(fname: str) -> int:
         pass
     return 9999
 
-# Media handler for channels
+# Media handler for channels - IMPROVED WITH BETTER LOGGING
 @app.on_message(
     (filters.document | filters.video | filters.audio | filters.photo) & 
-    filters.channel
+    filters.channel,
+    group=10
 )
 async def handle_bulk_channel(client, message: Message):
     """Handler for media messages in authorized channels"""
-    chat_id = str(message.chat.id)
-    
-    # Debug logging
-    print(f"📥 Media received in channel (ID: {chat_id}): {message.chat.title}")
-    
-    # Check if channel is authorized
-    if not await is_channel_authed(chat_id):
-        print(f"⚠️ Channel {chat_id} not authorized - skipping")
-        return
-    
-    caption_template = await load_caption(chat_id)
-    if not caption_template:
-        print(f"⚠️ No caption set for channel {chat_id}")
-        return
-
-    print(f"✅ Channel authorized, collecting media for bulk processing")
-    
-    async with LOCK:
-        bulk_bucket[chat_id].append(message)
+    try:
+        chat_id = str(message.chat.id)
         
-        # Cancel existing task and create new one
-        if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
-            bulk_tasks[chat_id].cancel()
+        # Debug logging
+        print(f"\n{'='*50}")
+        print(f"📥 MEDIA RECEIVED")
+        print(f"Channel: {message.chat.title}")
+        print(f"Channel ID: {chat_id}")
+        print(f"Message ID: {message.id}")
         
-        bulk_tasks[chat_id] = asyncio.create_task(
-            _flush_bulk(client, chat_id, BULK_WAIT)
-        )
+        # Get filename for logging
+        fname = "Unknown"
+        if message.document:
+            fname = message.document.file_name
+        elif message.video:
+            fname = message.video.file_name or "Video"
+        elif message.audio:
+            fname = message.audio.file_name or "Audio"
+        elif message.photo:
+            fname = "Photo"
+        
+        print(f"File: {fname}")
+        
+        # Check if channel is authorized
+        is_authed = await is_channel_authed(chat_id)
+        if not is_authed:
+            print(f"⚠️ Channel {chat_id} NOT authorized - skipping")
+            print(f"{'='*50}\n")
+            return
+        
+        print(f"✅ Channel IS authorized")
+        
+        # Check caption
+        caption_template = await load_caption(chat_id)
+        if not caption_template:
+            print(f"⚠️ No caption template set for {chat_id}")
+            print(f"{'='*50}\n")
+            return
+        
+        print(f"✅ Caption template found")
+        print(f"✅ Adding to bulk bucket...")
+        
+        async with LOCK:
+            bulk_bucket[chat_id].append(message)
+            print(f"📦 Bucket size: {len(bulk_bucket[chat_id])} message(s)")
+            
+            # Cancel existing task and create new one
+            if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
+                print(f"⏳ Cancelling previous flush task")
+                bulk_tasks[chat_id].cancel()
+            
+            print(f"⏱️ Starting new flush task (wait: {BULK_WAIT}s)")
+            bulk_tasks[chat_id] = asyncio.create_task(
+                _flush_bulk(client, chat_id, BULK_WAIT)
+            )
+        
+        print(f"{'='*50}\n")
+        
+    except Exception as e:
+        print(f"❌ CRITICAL ERROR in handle_bulk_channel: {e}")
+        import traceback
+        traceback.print_exc()
 
 async def _flush_bulk(client, chat_id: str, delay: int):
     """Process and reorder bulk messages"""
     try:
+        print(f"\n🔄 Flush task started for {chat_id}, waiting {delay}s...")
         await asyncio.sleep(delay)
+        print(f"✅ Wait completed, processing now...")
     except asyncio.CancelledError:
         print(f"⚠️ Flush task cancelled for {chat_id}")
         return
@@ -656,7 +705,11 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         print(f"⚠️ No caption template for {chat_id}")
         return
 
-    print(f"🔄 Processing {len(messages)} message(s) in channel {chat_id}")
+    print(f"\n{'='*50}")
+    print(f"🔄 BULK PROCESSING STARTED")
+    print(f"Channel: {chat_id}")
+    print(f"Messages: {len(messages)}")
+    print(f"{'='*50}\n")
 
     # Group by episode
     episodes = defaultdict(list)
@@ -674,11 +727,17 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         if fname:
             ep_num = _int_episode(fname)
             episodes[ep_num].append(msg)
+            print(f"📁 File: {fname} → Episode {ep_num}")
 
     # Sort episodes
     sorted_episodes = sorted(episodes.items())
+    print(f"\n📊 Found {len(sorted_episodes)} episode(s)\n")
 
     for ep_num, msgs_in_episode in sorted_episodes:
+        print(f"\n{'─'*50}")
+        print(f"📺 Processing Episode {ep_num} ({len(msgs_in_episode)} file(s))")
+        print(f"{'─'*50}")
+        
         # Sort by quality within episode (lowest to highest)
         sorted_msgs = sorted(msgs_in_episode, key=lambda m: _quality_val(
             m.document.file_name if m.document else
@@ -703,7 +762,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 print(f"❌ Failed to send episode header: {e}")
 
         # Process all qualities for this episode
-        for msg in sorted_msgs:
+        for idx, msg in enumerate(sorted_msgs, 1):
             filename = filesize = duration = None
             
             if msg.document:
@@ -723,6 +782,8 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             if not filename:
                 continue
 
+            print(f"  {idx}. Processing: {filename}")
+
             # Format caption
             cap = (caption_template
                    .replace("{filename}", html.escape(filename.rsplit('.', 1)[0]))
@@ -739,16 +800,16 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                     caption=cap, 
                     parse_mode=ParseMode.HTML
                 )
-                print(f"✅ Copied: {filename}")
+                print(f"     ✅ Copied with new caption")
                 await asyncio.sleep(0.5)
                 
                 # Delete original message
                 await msg.delete()
-                print(f"✅ Deleted original: {filename}")
+                print(f"     ✅ Deleted original")
                 await asyncio.sleep(0.5)
                 
             except FloodWait as fw:
-                print(f"⚠️ FloodWait {fw.value}s for {filename}")
+                print(f"     ⚠️ FloodWait {fw.value}s")
                 await asyncio.sleep(fw.value)
                 try:
                     await msg.copy(
@@ -757,10 +818,11 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                         parse_mode=ParseMode.HTML
                     )
                     await msg.delete()
+                    print(f"     ✅ Retry successful")
                 except Exception as retry_err:
-                    print(f"❌ Retry failed: {retry_err}")
+                    print(f"     ❌ Retry failed: {retry_err}")
             except Exception as e:
-                print(f"❌ Reorder failed for {filename}: {e}")
+                print(f"     ❌ Failed: {e}")
 
         # Send sticker separator after all qualities of this episode
         if ep_num != 9999:
@@ -769,12 +831,10 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                     int(chat_id),
                     sticker_id
                 )
-                print(f"✅ Sent separator sticker after episode {ep_num}")
+                print(f"✅ Sent separator sticker")
                 await asyncio.sleep(1)
             except FloodWait as fw:
                 print(f"⚠️ FloodWait {fw.value}s for sticker")
                 await asyncio.sleep(fw.value)
             except Exception as e:
                 print(f"❌ Failed to send sticker: {e}")
-
-    print(f"✅ Bulk processing completed for channel {chat_id}")
