@@ -133,18 +133,20 @@ async def load_caption(chat_id: str):
     print(f"📝 Database: Caption for {chat_id} = {'Found' if caption else 'Not found'}")
     return caption
 
-async def save_caption(chat_id: str, caption: str, sticker_id: str = None):
-    """Save caption and optionally sticker for a channel"""
+async def save_caption(chat_id: str, caption: str, sticker_id: str = None, episode_header: bool = None):
+    """Save caption, sticker, and episode header setting for a channel"""
     update_data = {"caption": caption}
     if sticker_id:
         update_data["sticker_id"] = sticker_id
+    if episode_header is not None:
+        update_data["episode_header"] = episode_header
     
     await captiondb.update_one(
         {"chat_id": chat_id}, 
         {"$set": update_data}, 
         upsert=True
     )
-    print(f"✅ Database: Caption{' and sticker' if sticker_id else ''} saved for {chat_id}")
+    print(f"✅ Database: Caption saved for {chat_id} (ep_header: {episode_header})")
 
 async def load_sticker(chat_id: str):
     """Load sticker for a channel"""
@@ -153,14 +155,12 @@ async def load_sticker(chat_id: str):
     print(f"🎨 Database: Sticker for {chat_id} = {sticker[:20]}...")
     return sticker
 
-async def save_sticker(chat_id: str, sticker_id: str):
-    """Save sticker for a channel"""
-    await captiondb.update_one(
-        {"chat_id": chat_id}, 
-        {"$set": {"sticker_id": sticker_id}}, 
-        upsert=True
-    )
-    print(f"✅ Database: Sticker saved for {chat_id}")
+async def load_episode_header_setting(chat_id: str) -> bool:
+    """Load episode header setting for a channel (default: True)"""
+    data = await captiondb.find_one({"chat_id": chat_id})
+    enabled = data.get("episode_header", True) if data else True
+    print(f"📺 Database: Episode header for {chat_id} = {enabled}")
+    return enabled
 
 async def remove_caption(chat_id: str):
     """Remove caption for a channel"""
@@ -218,18 +218,21 @@ async def auth_channel_cmd(client, message: Message):
         # Add to auth list
         await add_auth_channel(channel_id)
         
-        # Set default caption and sticker
-        await save_caption(channel_id, DEFAULT_CAPTION, DEFAULT_STICKER)
+        # Set default caption, sticker, and episode header (ON by default)
+        await save_caption(channel_id, DEFAULT_CAPTION, DEFAULT_STICKER, True)
         
         await message.reply_text(
             f"✅ <b>Channel Authorized!</b>\n\n"
             f"📺 <b>Channel:</b> {html.escape(chat_name)}\n"
             f"🆔 <b>ID:</b> <code>{channel_id}</code>\n\n"
-            f"✅ Default caption & sticker set!\n\n"
+            f"✅ Default settings applied:\n"
+            f"• Caption: Set ✅\n"
+            f"• Sticker: Set ✅\n"
+            f"• Episode Header: ON ✅\n\n"
             f"<b>Next Steps:</b>\n"
             f"• Upload media to channel to test\n"
             f"• Use <code>/gc {channel_id}</code> to view caption\n"
-            f"• Use <code>/sc {channel_id} &lt;caption&gt; -s &lt;sticker_id&gt;</code> to customize",
+            f"• Use <code>/sc {channel_id} &lt;caption&gt; -ep off</code> to disable episode headers",
             parse_mode=ParseMode.HTML
         )
         
@@ -321,19 +324,23 @@ async def list_auth_channels_cmd(client, message: Message):
 # ---------------- Caption Commands ----------------
 @app.on_message(filters.command(["setcaption", "sc"]))
 async def set_caption_cmd(client, message: Message):
-    """Set caption and optionally sticker for a channel"""
+    """Set caption, sticker, and episode header setting for a channel"""
     print(f"🔧 setcaption command received from user {message.from_user.id}")
     
     try:
         # Get channel_id from command
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/sc &lt;channel_id&gt; &lt;caption&gt; -s &lt;sticker_id&gt;</code>\n\n"
+                "❌ <b>Usage:</b> <code>/sc &lt;channel_id&gt; &lt;caption&gt; -s &lt;sticker_id&gt; -ep on/off</code>\n\n"
                 "<b>Examples:</b>\n"
                 "1. Caption only:\n"
                 "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt;</code>\n\n"
-                "2. Caption + Sticker:\n"
+                "2. Caption + disable episode header:\n"
+                "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -ep off</code>\n\n"
+                "3. Caption + sticker:\n"
                 "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA...</code>\n\n"
+                "4. Caption + sticker + disable episode header:\n"
+                "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA... -ep off</code>\n\n"
                 "<b>Available variables:</b>\n"
                 "<code>{filename}</code> - File name without extension\n"
                 "<code>{filesize}</code> - File size (e.g., 1.23 GB)\n"
@@ -361,7 +368,7 @@ async def set_caption_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
         
-        # Extract caption and sticker
+        # Extract caption, sticker, and episode header setting
         text = message.text or ""
         parts = text.split(None, 2)
         
@@ -375,32 +382,55 @@ async def set_caption_cmd(client, message: Message):
         
         full_text = parts[2].strip()
         
-        # Check for -s flag (sticker)
+        # Parse flags
         sticker_id = None
+        episode_header = None
         caption = full_text
         
+        # Check for -s flag (sticker)
         if " -s " in full_text:
             split_parts = full_text.split(" -s ", 1)
             caption = split_parts[0].strip()
-            sticker_id = split_parts[1].strip()
+            remaining = split_parts[1].strip()
+            
+            # Check if there's -ep flag after -s
+            if " -ep " in remaining:
+                ep_split = remaining.split(" -ep ", 1)
+                sticker_id = ep_split[0].strip()
+                ep_value = ep_split[1].strip().lower()
+                episode_header = ep_value == "on"
+            else:
+                sticker_id = remaining
+            
             print(f"📌 Sticker ID provided: {sticker_id}")
         
-        # Save caption and sticker
-        await save_caption(channel_id, caption, sticker_id)
+        # Check for -ep flag (without -s)
+        elif " -ep " in full_text:
+            split_parts = full_text.split(" -ep ", 1)
+            caption = split_parts[0].strip()
+            ep_value = split_parts[1].strip().lower()
+            episode_header = ep_value == "on"
         
-        response = f"✅ <b>Caption Updated!</b>\n\n" \
+        if episode_header is not None:
+            print(f"📺 Episode header set to: {'ON' if episode_header else 'OFF'}")
+        
+        # Save caption, sticker, and episode header setting
+        await save_caption(channel_id, caption, sticker_id, episode_header)
+        
+        response = f"✅ <b>Settings Updated!</b>\n\n" \
                    f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
         
         if sticker_id:
-            response += f"🎨 <b>Sticker:</b> Custom sticker set!\n\n"
-        else:
-            response += f"🎨 <b>Sticker:</b> Using default sticker\n\n"
+            response += f"🎨 <b>Sticker:</b> Custom sticker set!\n"
         
-        response += f"Use <code>/gc {channel_id}</code> to preview."
+        if episode_header is not None:
+            response += f"📺 <b>Episode Header:</b> {'ON ✅' if episode_header else 'OFF ❌'}\n"
+        
+        response += f"\nUse <code>/gc {channel_id}</code> to preview."
         
         await message.reply_text(response, parse_mode=ParseMode.HTML)
         
-        print(f"✅ Caption{' and sticker' if sticker_id else ''} set for channel {channel_id}")
+        print(f"✅ Settings updated for channel {channel_id}")
         
     except Exception as e:
         print(f"❌ Error in setcaption: {e}")
@@ -411,7 +441,7 @@ async def set_caption_cmd(client, message: Message):
 
 @app.on_message(filters.command(["getcaption", "gc"]))
 async def get_caption_cmd(client, message: Message):
-    """Get current caption for a channel"""
+    """Get current caption and settings for a channel"""
     print(f"🔍 getcaption command received from user {message.from_user.id}")
     
     try:
@@ -446,6 +476,7 @@ async def get_caption_cmd(client, message: Message):
             )
         
         sticker_id = await load_sticker(channel_id)
+        episode_header = await load_episode_header_setting(channel_id)
         
         preview = (caption
                    .replace("{filename}", "Example_Filename")
@@ -455,12 +486,13 @@ async def get_caption_cmd(client, message: Message):
                    .replace("{season}", "01")
                    .replace("{episode}", "01 (123)"))
         
-        response = f"📝 <b>Current Caption Preview</b>\n\n" \
-                   f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n" \
-                   f"━━━━━━━━━━━━━━━━━━\n\n" \
-                   f"{preview}\n\n" \
-                   f"━━━━━━━━━━━━━━━━━━\n\n" \
-                   f"🎨 <b>Sticker ID:</b> <code>{sticker_id}</code>"
+        response = f"📝 <b>Current Settings</b>\n\n" \
+                   f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n" \
+                   f"📺 <b>Episode Header:</b> {'ON ✅' if episode_header else 'OFF ❌'}\n" \
+                   f"🎨 <b>Sticker ID:</b> <code>{sticker_id}</code>\n\n" \
+                   f"━━━━━━━━━━━━━━━━━━\n" \
+                   f"<b>Caption Preview:</b>\n\n" \
+                   f"{preview}"
         
         await message.reply_text(response, parse_mode=ParseMode.HTML)
         
@@ -470,7 +502,7 @@ async def get_caption_cmd(client, message: Message):
         except Exception as e:
             print(f"⚠️ Could not send sticker preview: {e}")
         
-        print(f"✅ Caption shown for channel {channel_id}")
+        print(f"✅ Settings shown for channel {channel_id}")
         
     except Exception as e:
         print(f"❌ Error in getcaption: {e}")
@@ -539,7 +571,7 @@ async def remove_caption_cmd(client, message: Message):
     try:
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/rc &lt;channel_id&gt;</code>\n\n"
+                "❌ <b>Usage:</b> odede>/rc &lt;channel_id&gt;</code>\n\n"
                 "<b>Example:</b> <code>/rc -1001234567890</code>",
                 parse_mode=ParseMode.HTML
             )
@@ -610,7 +642,7 @@ def _int_episode(fname: str) -> int:
         pass
     return 9999
 
-# Media handler for channels - IMPROVED WITH BETTER LOGGING
+# Media handler for channels
 @app.on_message(
     (filters.document | filters.video | filters.audio | filters.photo) & 
     filters.channel,
@@ -700,6 +732,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
     caption_template = await load_caption(chat_id)
     sticker_id = await load_sticker(chat_id)
+    episode_header_enabled = await load_episode_header_setting(chat_id)
     
     if not caption_template:
         print(f"⚠️ No caption template for {chat_id}")
@@ -709,6 +742,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
     print(f"🔄 BULK PROCESSING STARTED")
     print(f"Channel: {chat_id}")
     print(f"Messages: {len(messages)}")
+    print(f"Episode Header: {'ON' if episode_header_enabled else 'OFF'}")
     print(f"{'='*50}\n")
 
     # Group by episode
@@ -745,8 +779,8 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             m.audio.file_name if m.audio else "Photo"
         ))
 
-        # Send episode header only if valid episode number
-        if ep_num != 9999:
+        # Send episode header only if enabled AND valid episode number
+        if episode_header_enabled and ep_num != 9999:
             try:
                 await client.send_message(
                     int(chat_id),
@@ -760,6 +794,8 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 await asyncio.sleep(fw.value)
             except Exception as e:
                 print(f"❌ Failed to send episode header: {e}")
+        elif not episode_header_enabled:
+            print(f"⏭️ Episode header DISABLED - skipping")
 
         # Process all qualities for this episode
         for idx, msg in enumerate(sorted_msgs, 1):
@@ -824,8 +860,8 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             except Exception as e:
                 print(f"     ❌ Failed: {e}")
 
-        # Send sticker separator after all qualities of this episode
-        if ep_num != 9999:
+        # Send sticker separator after all qualities of this episode (only if episode header was sent)
+        if episode_header_enabled and ep_num != 9999:
             try:
                 await client.send_sticker(
                     int(chat_id),
@@ -838,3 +874,4 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 await asyncio.sleep(fw.value)
             except Exception as e:
                 print(f"❌ Failed to send sticker: {e}")
+
