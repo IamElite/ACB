@@ -33,7 +33,6 @@ async def is_channel_authed(chat_id: int) -> bool:
 async def auth_channel_cmd(client, message: Message):
     if len(message.command) == 2:
         try:
-            # Handle username links like @channelname
             if message.command[1].startswith("@"):
                 chat = await client.get_chat(message.command[1])
                 chat_id = chat.id
@@ -42,7 +41,6 @@ async def auth_channel_cmd(client, message: Message):
         except (ValueError, Exception):
             return await message.reply_text("❌ Invalid channel_id or username!")
     elif message.reply_to_message and message.reply_to_message.forward_from_chat:
-        # FIX: Use forward_from_chat instead of forward_origin
         chat_id = message.reply_to_message.forward_from_chat.id
     else:
         return await message.reply_text("❌ Usage: /auth <channel_id> or reply to a channel forwarded post.")
@@ -50,8 +48,8 @@ async def auth_channel_cmd(client, message: Message):
     try:
         member = await client.get_chat_member(chat_id, "me")
         priv = getattr(member, "privileges", None)
-        if not priv or not getattr(priv, "can_edit_messages", False):
-            return await message.reply_text("❌ Bot must be admin with edit messages rights in that channel.")
+        if not priv or not getattr(priv, "can_post_messages", False):
+            return await message.reply_text("❌ Bot must be admin with post messages rights in that channel.")
     except Exception as e:
         return await message.reply_text(f"⚠️ Error: {e}")
     
@@ -62,7 +60,6 @@ async def auth_channel_cmd(client, message: Message):
 async def unauth_channel_cmd(client, message: Message):
     if len(message.command) == 2:
         try:
-            # Handle username links like @channelname
             if message.command[1].startswith("@"):
                 chat = await client.get_chat(message.command[1])
                 chat_id = chat.id
@@ -71,7 +68,6 @@ async def unauth_channel_cmd(client, message: Message):
         except (ValueError, Exception):
             return await message.reply_text("❌ Invalid channel_id or username!")
     elif message.reply_to_message and message.reply_to_message.forward_from_chat:
-        # FIX: Use forward_from_chat instead of forward_origin
         chat_id = message.reply_to_message.forward_from_chat.id
     else:
         return await message.reply_text("❌ Usage: /unauth <channel_id> or reply to a channel forwarded post.")
@@ -108,7 +104,6 @@ def parse_buttons(text: str) -> InlineKeyboardMarkup | None:
 
     for line in lines:
         btns = []
-        # Improved regex for better parsing
         matches = re.findall(r"\[([^\]]+?)\s*\+\s*(https?://\S+)\]", line)
         for label, link in matches:
             btns.append(InlineKeyboardButton(label.strip(), url=link.strip()))
@@ -130,12 +125,10 @@ async def change_button_with_link(client, message: Message):
 
     link = message.command[1]
     
-    # FIX: Check for both public and private link formats
     public_match = re.match(r"https?://t\.me/([a-zA-Z0-9_]{5,})/(\d+)", link)
     private_match = re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", link)
 
     if public_match:
-        # It's a public channel link
         chat_username = public_match.group(1)
         msg_id = int(public_match.group(2))
         try:
@@ -144,7 +137,6 @@ async def change_button_with_link(client, message: Message):
         except Exception as e:
             return await message.reply_text(f"❌ Could not find the public channel: {e}")
     elif private_match:
-        # It's a private channel link
         channel_id = int("-100" + private_match.group(1))
         msg_id = int(private_match.group(2))
     else:
@@ -170,52 +162,79 @@ async def change_button_with_link(client, message: Message):
 
 # -------------------- FORWARD TAG REMOVER -------------------- #
 
+def is_forwarded(message: Message) -> bool:
+    """Check if message is forwarded using all possible indicators"""
+    return bool(
+        message.forward_from or 
+        message.forward_from_chat or 
+        message.forward_sender_name or
+        message.forward_date or
+        getattr(message, 'forward_origin', None)
+    )
+
 async def safe_copy_and_delete(msg: Message, chat_id: int):
+    """Copy message without forward tag and delete original"""
     try:
+        # Copy message based on its type
         if msg.text:
-            await msg.copy(
+            sent = await msg.copy(
                 chat_id,
-                entities=msg.entities,
-                reply_markup=msg.reply_markup
+                caption=None,
+                reply_markup=msg.reply_markup,
+                disable_notification=True
+            )
+        elif msg.caption:
+            sent = await msg.copy(
+                chat_id,
+                reply_markup=msg.reply_markup,
+                disable_notification=True
             )
         else:
-            await msg.copy(
+            # For media without caption
+            sent = await msg.copy(
                 chat_id,
-                caption=msg.caption,
-                caption_entities=msg.caption_entities,
-                reply_markup=msg.reply_markup
+                reply_markup=msg.reply_markup,
+                disable_notification=True
             )
+        
+        # Delete original forwarded message
+        await asyncio.sleep(0.5)  # Small delay before deletion
         await msg.delete()
+        
+        return sent
+        
     except Exception as e:
-        if "FLOOD_WAIT" in str(e):
-            wait = int(str(e).split("wait ")[1].split()[0])
-            await asyncio.sleep(wait)
+        error_msg = str(e)
+        
+        # Handle flood wait
+        if "FLOOD_WAIT" in error_msg or "FloodWait" in error_msg:
             try:
-                if msg.text:
-                    await msg.copy(
-                        chat_id,
-                        entities=msg.entities,
-                        reply_markup=msg.reply_markup
-                    )
-                else:
-                    await msg.copy(
-                        chat_id,
-                        caption=msg.caption,
-                        caption_entities=msg.caption_entities,
-                        reply_markup=msg.reply_markup
-                    )
-                await msg.delete()
+                wait = int(re.search(r'(\d+)', error_msg).group(1))
+                print(f"⏳ FloodWait: Waiting {wait} seconds...")
+                await asyncio.sleep(wait + 2)
+                return await safe_copy_and_delete(msg, chat_id)
             except:
                 pass
-        else:
-            print("safe_copy_and_delete failed:", e)
-    await asyncio.sleep(1)
+        
+        # Handle other errors
+        print(f"❌ Error in safe_copy_and_delete: {error_msg}")
+        return None
 
 
-@app.on_message(filters.channel)
+@app.on_message(filters.channel & ~filters.service)
 async def remove_forward_tag_handler(client, message: Message):
-    if not (message.forward_from_chat or message.via_bot):
-        return
+    """Automatically remove forward tag from authorized channels"""
+    
+    # Check if channel is authorized
     if not await is_channel_authed(message.chat.id):
         return
+    
+    # Check if message is forwarded
+    if not is_forwarded(message):
+        return
+    
+    # Small delay to ensure message is fully received
+    await asyncio.sleep(0.3)
+    
+    # Copy and delete the forwarded message
     await safe_copy_and_delete(message, message.chat.id)
