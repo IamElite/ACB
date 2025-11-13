@@ -177,11 +177,14 @@ async def safe_copy_and_delete(msg: Message, chat_id: int):
     try:
         # Copy message based on its type
         if msg.text:
-            sent = await msg.copy(
-                chat_id,
-                caption=None,
+            # For text messages, send manually to preserve link preview
+            sent = await app.send_message(
+                chat_id=chat_id,
+                text=msg.text,
+                entities=msg.entities,
                 reply_markup=msg.reply_markup,
-                disable_notification=True
+                disable_notification=True,
+                disable_web_page_preview=False  # Keep link preview
             )
         elif msg.caption:
             sent = await msg.copy(
