@@ -175,17 +175,31 @@ def is_forwarded(message: Message) -> bool:
 async def safe_copy_and_delete(msg: Message, chat_id: int):
     """Copy message without forward tag and delete original"""
     try:
+        # Extract link preview if exists
+        web_preview = None
+        if msg.web_page:
+            web_preview = msg.web_page
+        
         # Copy message based on its type
         if msg.text:
-            # For text messages, send manually to preserve link preview
-            sent = await app.send_message(
-                chat_id=chat_id,
-                text=msg.text,
-                entities=msg.entities,
-                reply_markup=msg.reply_markup,
-                disable_notification=True,
-                disable_web_page_preview=False  # Keep link preview
-            )
+            # Check if message has link preview (web_page)
+            if web_preview:
+                # If has preview, use copy to maintain structure
+                sent = await msg.copy(
+                    chat_id,
+                    reply_markup=msg.reply_markup,
+                    disable_notification=True
+                )
+            else:
+                # No preview, just send text
+                sent = await app.send_message(
+                    chat_id=chat_id,
+                    text=msg.text,
+                    entities=msg.entities,
+                    reply_markup=msg.reply_markup,
+                    disable_notification=True,
+                    disable_web_page_preview=False
+                )
         elif msg.caption:
             sent = await msg.copy(
                 chat_id,
