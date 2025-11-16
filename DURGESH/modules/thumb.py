@@ -59,7 +59,7 @@ async def send_thumb(_, m):
     await _process_and_send(m, data)
     await wait.delete()
 
-# getall / ga — reply to a message that contains many links
+# getall / ga — reply to a message that contains many links (now supports HTML <a href="..."> too)
 @app.on_message(filters.command(["getall","ga"], prefixes=["/","!",".",""]))
 async def get_all_images(_, m):
     if not m.reply_to_message or not (m.reply_to_message.text or m.reply_to_message.caption):
@@ -86,10 +86,16 @@ async def get_all_images(_, m):
             except:
                 pass
 
-    # also extract markdown-style [text](url)
+    # markdown-style [text](url)
     md_links = re.findall(r'\[[^\]]+\]\s*\(\s*(https?://[^\s)]+)\s*\)', msg_text)
     if md_links:
         urls.extend(md_links)
+
+    # HTML <a href="..."> or <a href='...'>
+    html_links = re.findall(r'<a\s+[^>]*?href\s*=\s*([\'"])(https?://.*?)\1', msg_text, flags=re.IGNORECASE)
+    if html_links:
+        # html_links is list of tuples (quote, url)
+        urls.extend([u for _, u in html_links])
 
     # fallback regex for plain URLs
     if not urls:
@@ -98,14 +104,16 @@ async def get_all_images(_, m):
     # dedupe while preserving order
     seen = set(); final_urls = []
     for u in urls:
-        u = u.strip('.,;:()[]<>')
+        u = u.strip(' \n\r\t\0\x0b\x1b.,;:()[]<>')
+        # sometimes Telegram encodes &amp; in HTML — unescape common entities
+        u = u.replace("&amp;", "&")
         if u not in seen:
             seen.add(u); final_urls.append(u)
 
     if not final_urls:
         return await m.reply_text("koi url nahi mila us message mein")
 
-    MAX = 15
+    MAX = 25
     if len(final_urls) > MAX:
         final_urls = final_urls[:MAX]
         await m.reply_text(f"zyaada links — pehle {MAX} hi process kar raha hoon")
@@ -113,7 +121,6 @@ async def get_all_images(_, m):
     wait = await m.reply_text(f"found {len(final_urls)} links — processing...")
     for idx, raw in enumerate(final_urls, 1):
         url = _extract_imgurl(raw)
-        # quick sanity
         if not re.match(r"https?://", url):
             await m.reply_text(f"[{idx}] invalid: {url}"); continue
         try:
@@ -124,7 +131,7 @@ async def get_all_images(_, m):
                     continue
                 data = r.read()
             await _process_and_send(m, data)
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.5)
         except Exception:
             await m.reply_text(f"[{idx}] failed: {url}")
     await wait.delete()
