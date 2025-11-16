@@ -165,7 +165,7 @@ class AnimePosterGenerator:
 
 
 # ---- Handler ----
-@app.on_message(filters.command("anime") & ~filters.edited)
+@app.on_message(filters.command("anime"))
 async def anime_command_handler(client, message: Message):
     """
     Usage:
