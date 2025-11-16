@@ -5,11 +5,12 @@ from collections import defaultdict
 from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
+from pyrogram.errors import FloodWait
 from DURGESH import app
 from DURGESH.database import db
 
 captiondb = db.captions
-authchanneldb = db.auth_channels
+authchanneldb = db.capauth_channels
 
 # Default caption
 DEFAULT_CAPTION = """<blockquote>
@@ -21,62 +22,70 @@ DEFAULT_CAPTION = """<blockquote>
 ╰────────────────────⦿
 </blockquote>"""
 
+# Default sticker file_id for episode separator
+DEFAULT_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
+
 # ---------------- Helpers ----------------
 def extract_episode(fname: str) -> str:
+    """Extract episode number from filename"""
     for pat, grp in (
         (r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', (2, 3)),
         (r'S(\d+)\s*(?:E|EP)(\d+)\s*\((\d+)\)', (2, 3)),
         (r'S(\d+)\s*(?:E|EP)(\d+)', (2,)),
         (r'(?:E|EP)\s*\((\d+)\)', (1,)),
+        (r'(?:E|EP)(\d+)', (1,)),
         (r'-\s*(\d+)', (1,))
     ):
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
             if len(grp) == 2:
                 return f"{m.group(grp[0]).zfill(2)} ({m.group(grp[1])})"
-            return f"{m.group(grp[0]).zfill(2)}" if grp[0] == 2 else f"({m.group(grp[0])})"
+            return f"{m.group(grp[0]).zfill(2)}"
     return "N/A"
 
 def extract_season(fname: str) -> str:
+    """Extract season number from filename"""
     for pat in (r'S(\d+)(?:E|EP)(\d+)', r'S(\d+)\s*(?:E|EP|-\s*EP)(\d+)',
                 r'S(\d+)[^\d]*(\d+)', r'\bseason\s*(\d+)\b', r'\bs(\d+)\b'):
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
-            return m.group(1)
+            return m.group(1).zfill(2)
     return "N/A"
 
 def extract_quality(text: str) -> str:
+    """Extract quality from filename"""
     qpats = [
-        (r'[([{<]?\s*4k\s*[)\]}>]?', "4k"),
-        (r'[([{<]?\s*2k\s*[)\]}>]?', "2k"),
-        (r'[([{<]?\s*4kX264\s*[)\]}>]?', "4kX264"),
-        (r'[([{<]?\s*4kx265\s*[)\]}>]?', "4kx265"),
+        (r'[(\[{<]?\s*4k\s*[)\]}>]?', "4K"),
+        (r'[(\[{<]?\s*2k\s*[)\]}>]?', "2K"),
+        (r'[(\[{<]?\s*4kX264\s*[)\]}>]?', "4K X264"),
+        (r'[(\[{<]?\s*4kx265\s*[)\]}>]?', "4K X265"),
         (r'\bWEB[.\- ]*DL\b', "WEB-DL"),
-        (r'[([{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', "HdRip"),
-        (r'\b(?:.*?(\d{3,4}[^\dp]*p).*?|.*?(\d{3,4}p))\b', None)
+        (r'[(\[{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', "HDRip"),
+        (r'(\d{3,4})[pP]', None),
     ]
     for pat, repl in qpats:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            q = repl if repl else (m.group(1) or m.group(2))
-            if q:
-                q = q.lower()
-                if "360" in q:
-                    return "480p"
-                return q
+            q = repl if repl else m.group(1) + "p"
+            if q and "360" in q.lower():
+                return "480p"
+            return q
     return "N/A"
 
 def get_readable_file_size(size_in_bytes) -> str:
+    """Convert bytes to readable format"""
     if not size_in_bytes:
         return "0 B"
     units = ["B", "KB", "MB", "GB", "TB"]
     idx = 0
-    while size_in_bytes >= 1024 and idx < len(units) - 1:
-        size_in_bytes /= 1024
+    size = float(size_in_bytes)
+    while size >= 1024 and idx < len(units) - 1:
+        size /= 1024
         idx += 1
-    return f"{size_in_bytes:.2f} {units[idx]}"
+    return f"{size:.2f} {units[idx]}"
 
 def format_duration(duration) -> str:
+    """Format duration in HH:MM:SS"""
     if not duration:
         return "N/A"
     try:
@@ -106,13 +115,31 @@ async def get_all_auth_channels():
     cursor = authchanneldb.find({})
     return [doc["chat_id"] async for doc in cursor]
 
-# ---------------- Caption Database ----------------
+# ---------------- Caption & Sticker Database ----------------
 async def load_caption(chat_id: str):
     data = await captiondb.find_one({"chat_id": chat_id})
     return data["caption"] if data else None
 
-async def save_caption(chat_id: str, caption: str):
-    await captiondb.update_one({"chat_id": chat_id}, {"$set": {"caption": caption}}, upsert=True)
+async def save_caption(chat_id: str, caption: str, sticker_id: str = None, episode_header: bool = None):
+    update_data = {"caption": caption}
+    if sticker_id:
+        update_data["sticker_id"] = sticker_id
+    if episode_header is not None:
+        update_data["episode_header"] = episode_header
+    
+    await captiondb.update_one(
+        {"chat_id": chat_id}, 
+        {"$set": update_data}, 
+        upsert=True
+    )
+
+async def load_sticker(chat_id: str):
+    data = await captiondb.find_one({"chat_id": chat_id})
+    return data.get("sticker_id", DEFAULT_STICKER) if data else DEFAULT_STICKER
+
+async def load_episode_header_setting(chat_id: str) -> bool:
+    data = await captiondb.find_one({"chat_id": chat_id})
+    return data.get("episode_header", True) if data else True
 
 async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": chat_id})
@@ -120,12 +147,7 @@ async def remove_caption(chat_id: str):
 # ---------------- Auth Commands ----------------
 @app.on_message(filters.command(["capauth", "ca"]))
 async def auth_channel_cmd(client, message: Message):
-    """Authorize a channel for caption management"""
-    
-    print(f"🔧 capauth command received from user {message.from_user.id}")
-    
     try:
-        # Extract channel_id from command or reply
         if len(message.command) == 2:
             channel_id = message.command[1]
             if not channel_id.startswith('-100'):
@@ -133,69 +155,51 @@ async def auth_channel_cmd(client, message: Message):
                     channel_id = f"-100{channel_id.lstrip('-')}"
                 else:
                     channel_id = f"-100{channel_id}"
-            print(f"📝 Processing channel ID: {channel_id}")
         elif message.reply_to_message and message.reply_to_message.forward_from_chat:
             channel_id = str(message.reply_to_message.forward_from_chat.id)
-            print(f"📝 Got channel ID from forwarded message: {channel_id}")
         else:
             return await message.reply_text(
                 "❌ <b>Usage:</b>\n\n"
-                "<code>/capauth &lt;channel_id&gt;</code>\n"
-                "or\n"
-                "<code>/ca &lt;channel_id&gt;</code>\n\n"
-                "<b>Example:</b> <code>/ca -1001234567890</code>\n\n"
-                "Or reply to a forwarded channel message with <code>/ca</code>",
+                "<code>/capauth &lt;channel_id&gt;</code> or <code>/ca &lt;channel_id&gt;</code>\n\n"
+                "<b>Example:</b> <code>/ca -1001234567890</code>",
                 parse_mode=ParseMode.HTML
             )
         
-        # Try to get chat info to verify
         try:
             chat = await client.get_chat(channel_id)
             chat_name = chat.title or "Unknown"
-            print(f"✅ Channel found: {chat_name} ({channel_id})")
         except Exception as e:
-            print(f"❌ Error accessing channel: {e}")
             return await message.reply_text(
                 f"⚠️ <b>Error:</b> Cannot access channel!\n\n"
                 f"<b>Channel ID:</b> <code>{channel_id}</code>\n\n"
                 f"<b>Reason:</b> {html.escape(str(e))}\n\n"
-                f"<b>Solution:</b>\n"
-                f"1. Make sure bot is added as admin in the channel\n"
-                f"2. Bot needs 'Post Messages' and 'Delete Messages' permissions\n"
-                f"3. Check if channel ID is correct",
+                f"Make sure bot is admin in the channel.",
                 parse_mode=ParseMode.HTML
             )
         
-        # Add to auth list
         await add_auth_channel(channel_id)
-        print(f"✅ Channel {channel_id} added to auth list")
-        
-        # Set default caption
-        await save_caption(channel_id, DEFAULT_CAPTION)
-        print(f"✅ Default caption set for {channel_id}")
+        await save_caption(channel_id, DEFAULT_CAPTION, DEFAULT_STICKER, True)
         
         await message.reply_text(
             f"✅ <b>Channel Authorized!</b>\n\n"
             f"📺 <b>Channel:</b> {html.escape(chat_name)}\n"
             f"🆔 <b>ID:</b> <code>{channel_id}</code>\n\n"
-            f"✅ Default caption has been set!\n\n"
-            f"<b>Next Steps:</b>\n"
-            f"• Upload media to channel to test\n"
-            f"• Use <code>/gc {channel_id}</code> to view caption\n"
-            f"• Use <code>/sc {channel_id} &lt;new_caption&gt;</code> to change caption",
+            f"✅ Default settings applied\n"
+            f"• Episode Header: ON ✅\n\n"
+            f"<b>Commands:</b>\n"
+            f"• <code>/gc {channel_id}</code> - View settings\n"
+            f"• <code>/sc {channel_id} &lt;caption&gt; -ep off</code> - Disable headers",
             parse_mode=ParseMode.HTML
         )
         
     except Exception as e:
-        print(f"❌ Unexpected error in capauth: {e}")
-        await message.reply_text(f"❌ <b>Unexpected Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
 
 @app.on_message(filters.command(["capunauth", "cua"]))
 async def unauth_channel_cmd(client, message: Message):
-    """Remove channel authorization"""
-    
-    print(f"🗑️ capunauth command received from user {message.from_user.id}")
-    
     try:
         if len(message.command) == 2:
             channel_id = message.command[1]
@@ -208,8 +212,7 @@ async def unauth_channel_cmd(client, message: Message):
             channel_id = str(message.reply_to_message.forward_from_chat.id)
         else:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/capunauth &lt;channel_id&gt;</code> or <code>/cua &lt;channel_id&gt;</code>\n\n"
-                "<b>Example:</b> <code>/cua -1001234567890</code>",
+                "❌ <b>Usage:</b> <code>/capunauth &lt;channel_id&gt;</code>",
                 parse_mode=ParseMode.HTML
             )
         
@@ -218,29 +221,25 @@ async def unauth_channel_cmd(client, message: Message):
         
         await message.reply_text(
             f"✅ <b>Channel Unauthorized!</b>\n\n"
-            f"🆔 <b>ID:</b> <code>{channel_id}</code>\n\n"
-            f"Caption removed and auto-captioning disabled.",
+            f"🆔 <code>{channel_id}</code>",
             parse_mode=ParseMode.HTML
         )
         
-        print(f"✅ Channel {channel_id} unauthorized")
-        
     except Exception as e:
-        print(f"❌ Error in capunauth: {e}")
-        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
 
-@app.on_message(filters.command(["authlist", "al"]))
+@app.on_message(filters.command(["capauthlist", "cal"]))
 async def list_auth_channels_cmd(client, message: Message):
-    """List all authorized channels"""
-    
-    print(f"📋 authlist command received from user {message.from_user.id}")
-    
     try:
         channels = await get_all_auth_channels()
         
         if not channels:
             return await message.reply_text(
-                "⚠️ <b>No channels authorized yet.</b>\n\nUse <code>/capauth &lt;channel_id&gt;</code> to authorize a channel.",
+                "⚠️ <b>No channels authorized yet.</b>\n\n"
+                "Use <code>/capauth &lt;channel_id&gt;</code> to authorize a channel.",
                 parse_mode=ParseMode.HTML
             )
         
@@ -251,39 +250,30 @@ async def list_auth_channels_cmd(client, message: Message):
                 name = chat.title or "Unknown"
                 text += f"<b>{i}.</b> {html.escape(name)}\n🆔 <code>{ch_id}</code>\n\n"
             except:
-                text += f"<b>{i}.</b> <code>{ch_id}</code> ⚠️ (Not accessible)\n\n"
+                text += f"<b>{i}.</b> <code>{ch_id}</code> ⚠️\n\n"
         
-        text += f"\n<b>Total:</b> {len(channels)} channel(s)"
-        
+        text += f"<b>Total:</b> {len(channels)} channel(s)"
         await message.reply_text(text, parse_mode=ParseMode.HTML)
         
-        print(f"✅ Showed {len(channels)} authorized channels")
-        
     except Exception as e:
-        print(f"❌ Error in authlist: {e}")
-        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
 
 # ---------------- Caption Commands ----------------
 @app.on_message(filters.command(["setcaption", "sc"]))
 async def set_caption_cmd(client, message: Message):
-    """Set caption for a channel"""
-    
-    print(f"🔧 setcaption command received from user {message.from_user.id}")
-    
     try:
-        # Get channel_id from command
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/sc &lt;channel_id&gt; &lt;caption&gt;</code>\n\n"
-                "<b>Example:</b>\n"
-                "<code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt;</code>\n\n"
-                "<b>Available variables:</b>\n"
-                "<code>{filename}</code> - File name without extension\n"
-                "<code>{filesize}</code> - File size (e.g., 1.23 GB)\n"
-                "<code>{duration}</code> - Video duration\n"
-                "<code>{quality}</code> - Video quality (e.g., 720p)\n"
-                "<code>{season}</code> - Season number\n"
-                "<code>{episode}</code> - Episode number",
+                "❌ <b>Usage:</b> <code>/sc &lt;channel_id&gt; &lt;caption&gt; -s &lt;sticker_id&gt; -ep on/off</code>\n\n"
+                "<b>Examples:</b>\n"
+                "1. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt;</code>\n"
+                "2. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -ep off</code>\n"
+                "3. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA...</code>\n"
+                "4. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA... -ep off</code>\n\n"
+                "<b>Variables:</b> {filename}, {filesize}, {duration}, {quality}, {season}, {episode}",
                 parse_mode=ParseMode.HTML
             )
         
@@ -294,54 +284,73 @@ async def set_caption_cmd(client, message: Message):
             else:
                 channel_id = f"-100{channel_id}"
         
-        # Check if authorized
         if not await is_channel_authed(channel_id):
             return await message.reply_text(
                 f"❌ <b>Channel not authorized!</b>\n\n"
-                f"🆔 <code>{channel_id}</code>\n\n"
-                f"Use <code>/capauth {channel_id}</code> first to authorize this channel.",
+                f"Use <code>/capauth {channel_id}</code> first.",
                 parse_mode=ParseMode.HTML
             )
         
-        # Extract caption
         text = message.text or ""
         parts = text.split(None, 2)
         
         if len(parts) < 3:
             return await message.reply_text(
-                "❌ <b>Please provide caption after channel_id</b>\n\n"
-                "<b>Example:</b>\n"
-                f"<code>/sc {channel_id} &lt;b&gt;{{filename}}&lt;/b&gt;</code>",
+                "❌ <b>Please provide caption</b>",
                 parse_mode=ParseMode.HTML
             )
         
-        caption = parts[2].strip()
-        await save_caption(channel_id, caption)
+        full_text = parts[2].strip()
+        sticker_id = None
+        episode_header = None
+        caption = full_text
         
-        await message.reply_text(
-            f"✅ <b>Caption Updated!</b>\n\n"
-            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
-            f"Use <code>/gc {channel_id}</code> to preview the caption.",
-            parse_mode=ParseMode.HTML
-        )
+        # Parse -s flag
+        if " -s " in full_text:
+            split_parts = full_text.split(" -s ", 1)
+            caption = split_parts[0].strip()
+            remaining = split_parts[1].strip()
+            
+            if " -ep " in remaining:
+                ep_split = remaining.split(" -ep ", 1)
+                sticker_id = ep_split[0].strip()
+                ep_value = ep_split[1].strip().lower()
+                episode_header = ep_value == "on"
+            else:
+                sticker_id = remaining
         
-        print(f"✅ Caption set for channel {channel_id}")
+        # Parse -ep flag (without -s)
+        elif " -ep " in full_text:
+            split_parts = full_text.split(" -ep ", 1)
+            caption = split_parts[0].strip()
+            ep_value = split_parts[1].strip().lower()
+            episode_header = ep_value == "on"
+        
+        await save_caption(channel_id, caption, sticker_id, episode_header)
+        
+        response = f"✅ <b>Settings Updated!</b>\n\n🆔 <code>{channel_id}</code>\n\n"
+        
+        if sticker_id:
+            response += f"🎨 Custom sticker set\n"
+        if episode_header is not None:
+            response += f"📺 Episode Header: {'ON' if episode_header else 'OFF'}\n"
+        
+        response += f"\n<code>/gc {channel_id}</code> to preview"
+        
+        await message.reply_text(response, parse_mode=ParseMode.HTML)
         
     except Exception as e:
-        print(f"❌ Error in setcaption: {e}")
-        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
 
 @app.on_message(filters.command(["getcaption", "gc"]))
 async def get_caption_cmd(client, message: Message):
-    """Get current caption for a channel"""
-    
-    print(f"🔍 getcaption command received from user {message.from_user.id}")
-    
     try:
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/gc &lt;channel_id&gt;</code>\n\n"
-                "<b>Example:</b> <code>/gc -1001234567890</code>",
+                "❌ <b>Usage:</b> <code>/gc &lt;channel_id&gt;</code>",
                 parse_mode=ParseMode.HTML
             )
         
@@ -352,54 +361,55 @@ async def get_caption_cmd(client, message: Message):
             else:
                 channel_id = f"-100{channel_id}"
         
-        # Check if authorized
         if not await is_channel_authed(channel_id):
             return await message.reply_text(
-                f"❌ <b>Channel not authorized!</b>\n\n"
-                f"🆔 <code>{channel_id}</code>",
+                f"❌ <b>Channel not authorized!</b>",
                 parse_mode=ParseMode.HTML
             )
         
         caption = await load_caption(channel_id)
         if not caption:
             return await message.reply_text(
-                f"❌ <b>No caption set for this channel</b>\n\n"
-                f"🆔 <code>{channel_id}</code>",
+                f"❌ <b>No caption set</b>",
                 parse_mode=ParseMode.HTML
             )
         
-        preview = (caption.replace("{filename}", "Example_Filename")
-                         .replace("{filesize}", "1.23 GB")
-                         .replace("{duration}", "1:23:45")
-                         .replace("{quality}", "480p")
-                         .replace("{season}", "1")
-                         .replace("{episode}", "01 (123)"))
+        sticker_id = await load_sticker(channel_id)
+        episode_header = await load_episode_header_setting(channel_id)
         
-        await message.reply_text(
-            f"📝 <b>Current Caption Preview</b>\n\n"
-            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"{preview}",
-            parse_mode=ParseMode.HTML
-        )
+        preview = (caption
+                   .replace("{filename}", "Example_Filename")
+                   .replace("{filesize}", "1.23 GB")
+                   .replace("{duration}", "1:23:45")
+                   .replace("{quality}", "480p")
+                   .replace("{season}", "01")
+                   .replace("{episode}", "01 (123)"))
         
-        print(f"✅ Caption shown for channel {channel_id}")
+        response = f"📝 <b>Current Settings</b>\n\n" \
+                   f"🆔 <code>{channel_id}</code>\n" \
+                   f"📺 Episode Header: {'ON ✅' if episode_header else 'OFF ❌'}\n\n" \
+                   f"━━━━━━━━━━━━━━━━\n" \
+                   f"{preview}"
+        
+        await message.reply_text(response, parse_mode=ParseMode.HTML)
+        
+        try:
+            await message.reply_sticker(sticker_id)
+        except:
+            pass
         
     except Exception as e:
-        print(f"❌ Error in getcaption: {e}")
-        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
 
-@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]))
-async def remove_caption_cmd(client, message: Message):
-    """Remove caption for a channel"""
-    
-    print(f"🗑️ removecaption command received from user {message.from_user.id}")
-    
+@app.on_message(filters.command(["getsticker", "gs"]))
+async def get_sticker_cmd(client, message: Message):
     try:
         if len(message.command) < 2:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/rc &lt;channel_id&gt;</code>\n\n"
-                "<b>Example:</b> <code>/rc -1001234567890</code>",
+                "❌ <b>Usage:</b> <code>/gs &lt;channel_id&gt;</code>",
                 parse_mode=ParseMode.HTML
             )
         
@@ -410,11 +420,51 @@ async def remove_caption_cmd(client, message: Message):
             else:
                 channel_id = f"-100{channel_id}"
         
-        # Check if authorized
         if not await is_channel_authed(channel_id):
             return await message.reply_text(
-                f"❌ <b>Channel not authorized!</b>\n\n"
-                f"🆔 <code>{channel_id}</code>",
+                f"❌ <b>Channel not authorized!</b>",
+                parse_mode=ParseMode.HTML
+            )
+        
+        sticker_id = await load_sticker(channel_id)
+        
+        await message.reply_text(
+            f"🎨 <b>Current Sticker</b>\n\n"
+            f"🆔 <code>{channel_id}</code>\n"
+            f"🎨 <code>{sticker_id}</code>",
+            parse_mode=ParseMode.HTML
+        )
+        
+        try:
+            await message.reply_sticker(sticker_id)
+        except Exception as e:
+            await message.reply_text(f"⚠️ {html.escape(str(e))}")
+        
+    except Exception as e:
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
+
+@app.on_message(filters.command(["removecaption", "rc", "rmcaption"]))
+async def remove_caption_cmd(client, message: Message):
+    try:
+        if len(message.command) < 2:
+            return await message.reply_text(
+                "❌ <b>Usage:</b> <code>/rc &lt;channel_id&gt;</code>",
+                parse_mode=ParseMode.HTML
+            )
+        
+        channel_id = message.command[1]
+        if not channel_id.startswith('-100'):
+            if channel_id.startswith('-'):
+                channel_id = f"-100{channel_id.lstrip('-')}"
+            else:
+                channel_id = f"-100{channel_id}"
+        
+        if not await is_channel_authed(channel_id):
+            return await message.reply_text(
+                f"❌ <b>Channel not authorized!</b>",
                 parse_mode=ParseMode.HTML
             )
         
@@ -422,138 +472,192 @@ async def remove_caption_cmd(client, message: Message):
         
         await message.reply_text(
             f"✅ <b>Caption Removed!</b>\n\n"
-            f"🆔 <b>Channel:</b> <code>{channel_id}</code>\n\n"
-            f"Auto-captioning disabled for this channel.",
+            f"🆔 <code>{channel_id}</code>",
             parse_mode=ParseMode.HTML
         )
         
-        print(f"✅ Caption removed for channel {channel_id}")
-        
     except Exception as e:
-        print(f"❌ Error in removecaption: {e}")
-        await message.reply_text(f"❌ <b>Error:</b> {html.escape(str(e))}", parse_mode=ParseMode.HTML)
-
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}", 
+            parse_mode=ParseMode.HTML
+        )
 
 # ---------------- Bulk Handler ----------------
-bulk_bucket: dict[str, dict[tuple[int,int], list[Message]]] = defaultdict(dict)
+bulk_bucket: dict[str, list[Message]] = defaultdict(list)
 bulk_tasks: dict[str, asyncio.Task] = {}
 BULK_WAIT = 3
 LOCK = asyncio.Lock()
 
 def _quality_val(fname: str) -> int:
     txt = fname.upper()
-    if "360" in txt: return 360
-    if "480" in txt: return 480
-    if "720" in txt: return 720
-    if "1080" in txt or "FHD" in txt: return 1080
-    if "4K" in txt or "2160" in txt: return 2160
+    if "360" in txt or "360P" in txt:
+        return 360
+    if "480" in txt or "480P" in txt:
+        return 480
+    if "720" in txt or "720P" in txt:
+        return 720
+    if "1080" in txt or "1080P" in txt or "FHD" in txt:
+        return 1080
+    if "4K" in txt or "2160" in txt or "2160P" in txt:
+        return 2160
     return 9999
 
 def _int_episode(fname: str) -> int:
     try:
         raw = extract_episode(fname)
-        return int(re.search(r'\d+', raw).group())
-    except: return 9999
+        match = re.search(r'(\d+)', raw)
+        if match:
+            return int(match.group(1))
+    except:
+        pass
+    return 9999
 
-# Media handler for channels
-@app.on_message((filters.document | filters.video | filters.audio | filters.photo) & filters.channel)
+@app.on_message(
+    (filters.document | filters.video | filters.audio | filters.photo) & 
+    filters.channel,
+    group=10
+)
 async def handle_bulk_channel(client, message: Message):
-    """Handler for media messages in authorized channels"""
-    chat_id = str(message.chat.id)
-    
-    # Debug logging
-    print(f"📥 Media received in channel (ID: {chat_id}): {message.chat.title}")
-    
-    # Check if channel is authorized
-    if not await is_channel_authed(chat_id):
-        print(f"⚠️ Channel {chat_id} not authorized - skipping")
-        return
-    
-    caption = await load_caption(chat_id)
-    if not caption:
-        print(f"⚠️ No caption set for channel {chat_id}")
-        return
+    try:
+        chat_id = str(message.chat.id)
+        
+        if not await is_channel_authed(chat_id):
+            return
+        
+        caption_template = await load_caption(chat_id)
+        if not caption_template:
+            return
+        
+        async with LOCK:
+            bulk_bucket[chat_id].append(message)
+            
+            if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
+                bulk_tasks[chat_id].cancel()
+            
+            bulk_tasks[chat_id] = asyncio.create_task(
+                _flush_bulk(client, chat_id, BULK_WAIT)
+            )
+        
+    except Exception as e:
+        print(f"❌ Handler error: {e}")
 
-    fname = (message.document.file_name if message.document else
-             message.video.file_name if message.video else
-             message.audio.file_name if message.audio else
-             "Photo")
-    
-    print(f"📝 Processing file: {fname}")
-    
-    ep_num = _int_episode(fname)
-    qual = _quality_val(fname)
-
-    async with LOCK:
-        bucket = bulk_bucket[chat_id]
-        bucket.setdefault((ep_num, qual), []).append(message)
-        if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
-            bulk_tasks[chat_id].cancel()
-        bulk_tasks[chat_id] = asyncio.create_task(_flush_bulk(chat_id, BULK_WAIT))
-
-async def _flush_bulk(chat_id: str, delay: int):
-    try: 
+async def _flush_bulk(client, chat_id: str, delay: int):
+    try:
         await asyncio.sleep(delay)
-    except asyncio.CancelledError: 
+    except asyncio.CancelledError:
         return
 
     async with LOCK:
-        bucket = bulk_bucket.pop(chat_id, {})
+        messages = bulk_bucket.pop(chat_id, [])
 
-    if not bucket: 
+    if not messages:
         return
 
-    caption = await load_caption(chat_id)
-    if not caption: 
+    caption_template = await load_caption(chat_id)
+    sticker_id = await load_sticker(chat_id)
+    episode_header_enabled = await load_episode_header_setting(chat_id)
+    
+    if not caption_template:
         return
 
-    ordered = []
-    for (ep, qual), msgs in sorted(bucket.items()):
-        ordered.extend(msgs)
-
-    print(f"🔄 Reordering {len(ordered)} messages in channel {chat_id}")
-
-    for msg in ordered:
-        filename = filesize = duration = None
+    # Group by episode
+    episodes = defaultdict(list)
+    for msg in messages:
+        fname = None
         if msg.document:
-            filename = msg.document.file_name
-            filesize = msg.document.file_size
+            fname = msg.document.file_name
         elif msg.video:
-            filename = msg.video.file_name or "Video"
-            filesize = msg.video.file_size
-            duration = msg.video.duration
+            fname = msg.video.file_name or "Video"
         elif msg.audio:
-            filename = msg.audio.file_name or "Audio"
-            filesize = msg.audio.file_size
-            duration = msg.audio.duration
+            fname = msg.audio.file_name or "Audio"
         elif msg.photo:
-            filename = "Photo"
+            fname = "Photo"
+        
+        if fname:
+            ep_num = _int_episode(fname)
+            episodes[ep_num].append(msg)
 
-        if not filename: 
-            continue
+    # Sort episodes
+    sorted_episodes = sorted(episodes.items())
 
-        cap = (caption
-               .replace("{filename}", html.escape(filename.rsplit('.',1)[0]))
-               .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
-               .replace("{duration}", html.escape(format_duration(duration)))
-               .replace("{quality}", html.escape(extract_quality(filename)))
-               .replace("{season}", html.escape(extract_season(filename)))
-               .replace("{episode}", html.escape(extract_episode(filename))))
+    for ep_num, msgs_in_episode in sorted_episodes:
+        # Sort by quality within episode
+        sorted_msgs = sorted(msgs_in_episode, key=lambda m: _quality_val(
+            m.document.file_name if m.document else
+            m.video.file_name if m.video else
+            m.audio.file_name if m.audio else "Photo"
+        ))
 
-        try:
-            await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
-            await msg.delete()
-            print(f"✅ Reordered: {filename}")
-        except Exception as e:
-            if "FLOOD_WAIT" in str(e):
-                wait = int(str(e).split("wait ")[1].split()[0])
-                print(f"⚠️ Flood wait {wait}s")
-                await asyncio.sleep(wait)
-                try: 
+        # Send episode header at START (if enabled and valid episode)
+        if episode_header_enabled and ep_num != 9999:
+            try:
+                await client.send_message(
+                    int(chat_id),
+                    f"<b>━━━ Episode {ep_num:02d} ━━━</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                await asyncio.sleep(1)
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value)
+            except Exception as e:
+                print(f"❌ Header error: {e}")
+
+        # Process all files
+        for msg in sorted_msgs:
+            filename = filesize = duration = None
+            
+            if msg.document:
+                filename = msg.document.file_name
+                filesize = msg.document.file_size
+            elif msg.video:
+                filename = msg.video.file_name or "Video"
+                filesize = msg.video.file_size
+                duration = msg.video.duration
+            elif msg.audio:
+                filename = msg.audio.file_name or "Audio"
+                filesize = msg.audio.file_size
+                duration = msg.audio.duration
+            elif msg.photo:
+                filename = "Photo"
+
+            if not filename:
+                continue
+
+            cap = (caption_template
+                   .replace("{filename}", html.escape(filename.rsplit('.', 1)[0]))
+                   .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
+                   .replace("{duration}", html.escape(format_duration(duration)))
+                   .replace("{quality}", html.escape(extract_quality(filename)))
+                   .replace("{season}", html.escape(extract_season(filename)))
+                   .replace("{episode}", html.escape(extract_episode(filename))))
+
+            try:
+                await msg.copy(
+                    int(chat_id), 
+                    caption=cap, 
+                    parse_mode=ParseMode.HTML
+                )
+                await asyncio.sleep(0.5)
+                
+                await msg.delete()
+                await asyncio.sleep(0.5)
+                
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value)
+                try:
                     await msg.copy(int(chat_id), caption=cap, parse_mode=ParseMode.HTML)
                     await msg.delete()
-                except Exception as retry_err:
-                    print(f"❌ Retry failed: {retry_err}")
-            else: 
-                print(f"❌ Reorder failed: {e}")
-        await asyncio.sleep(1)
+                except:
+                    pass
+            except Exception as e:
+                print(f"❌ Copy error: {e}")
+
+        # Send sticker separator at END (always send if valid episode)
+        if ep_num != 9999:
+            try:
+                await client.send_sticker(int(chat_id), sticker_id)
+                await asyncio.sleep(1)
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value)
+            except Exception as e:
+                print(f"❌ Sticker error: {e}")
