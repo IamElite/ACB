@@ -692,36 +692,104 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 @app.on_message(filters.private & filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
     try:
-        # /ac <start_msg_id> <end_msg_id> <channel_id>
+        # /ac <start> <end> <channel>
         if len(message.command) != 4:
             return await message.reply_text(
-                "❌ <b>Usage:</b> <code>/ac &lt;start_msg_id&gt; &lt;end_msg_id&gt; &lt;channel_id&gt;</code>\n\n"
-                "👉 <b>Note:</b> Is command ko <b>source channel se forwarded message</b> pe reply karke use karein.",
+                "❌ <b>Usage:</b>\n"
+                "• <code>/ac &lt;start_msg_id&gt; &lt;end_msg_id&gt; &lt;channel_id&gt;</code>\n"
+                "• <code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;channel_link&gt;</code>",
                 parse_mode=ParseMode.HTML
             )
 
-        start_id = int(message.command[1])
-        end_id = int(message.command[2])
-        to_channel = message.command[3]
+        arg1 = message.command[1]
+        arg2 = message.command[2]
+        arg3 = message.command[3]
 
-        # Must be reply to forwarded msg (to detect source channel)
-        if not message.reply_to_message or not message.reply_to_message.forward_from_chat:
-            return await message.reply_text(
-                "❌ <b>Reply required!</b>\n\n"
-                "Please <b>source channel se koi message forward</b> karein aur "
-                "us par reply karke <code>/ac start end channel_id</code> bhejein.",
-                parse_mode=ParseMode.HTML
-            )
+        # Helpers for parsing links/ids
+        def parse_msg_id_or_link(arg: str):
+            """
+            Agar arg t.me/c link hai to uska message_id nikalega,
+            warna simple int(arg) karega.
+            Example: https://t.me/c/2906536289/1824 -> 1824
+            """
+            m = re.search(r'(?:https?://)?t\.me/c/\d+/(\d+)', arg)
+            if m:
+                return int(m.group(1))
+            return int(arg)
 
-        from_channel = str(message.reply_to_message.forward_from_chat.id)
+        def parse_channel_from_link(arg: str) -> str | None:
+            """
+            t.me/c link se private channel ka chat_id banata hai.
+            Example: https://t.me/c/2906536289/1824 -> -1002906536289
+            """
+            m = re.search(r'(?:https?://)?t\.me/c/(\d+)/\d+', arg)
+            if not m:
+                return None
+            internal_id = m.group(1)
+            return f"-100{internal_id}"
 
-        # Normalize destination channel id to -100
-        if not to_channel.startswith("-100"):
-            if to_channel.startswith("-"):
-                to_channel = f"-100{to_channel.lstrip('-')}"
-            else:
-                to_channel = f"-100{to_channel}"
+        # --------- MODE 1: sab arguments links hain (tera current case) ---------
+        if "t.me/" in arg1 or arg1.startswith("http"):
+            # Start + end links must be same source channel
+            m1 = re.search(r'(?:https?://)?t\.me/c/(\d+)/(\d+)', arg1)
+            m2 = re.search(r'(?:https?://)?t\.me/c/(\d+)/(\d+)', arg2)
+            md = re.search(r'(?:https?://)?t\.me/c/(\d+)/(\d+)', arg3)
 
+            if not (m1 and m2 and md):
+                return await message.reply_text(
+                    "❌ <b>Invalid link format.</b>\n"
+                    "Example:\n"
+                    "<code>/ac https://t.me/c/2906536289/1824 "
+                    "https://t.me/c/2906536289/1995 "
+                    "https://t.me/c/2572090742/4261</code>",
+                    parse_mode=ParseMode.HTML
+                )
+
+            src_internal_1, start_id_str = m1.group(1), m1.group(2)
+            src_internal_2, end_id_str = m2.group(1), m2.group(2)
+            dst_internal, _ = md.group(1), md.group(2)
+
+            # Source links must be same channel
+            if src_internal_1 != src_internal_2:
+                return await message.reply_text(
+                    "❌ <b>Start aur end links alag channel ke hain.</b>\n"
+                    "Dono links same source channel se lo.",
+                    parse_mode=ParseMode.HTML
+                )
+
+            from_channel = f"-100{src_internal_1}"
+            to_channel = f"-100{dst_internal}"
+            start_id = int(start_id_str)
+            end_id = int(end_id_str)
+
+        # --------- MODE 2: IDs + reply to forwarded msg (purana tareeka) ---------
+        else:
+            # yaha first 2 arguments plain IDs honge
+            start_id = parse_msg_id_or_link(arg1)
+            end_id = parse_msg_id_or_link(arg2)
+            to_channel = arg3
+
+            # Source channel reply_to_message se nikaalenge
+            if not message.reply_to_message or not message.reply_to_message.forward_from_chat:
+                return await message.reply_text(
+                    "❌ <b>Reply required!</b>\n\n"
+                    "IDs use kar rahe ho to <b>source channel se koi message forward</b> karo "
+                    "aur us par reply karke <code>/ac start_id end_id channel_id</code> bhejo.\n\n"
+                    "Ya phir direct links ka use karo:\n"
+                    "<code>/ac https://t.me/c/.../... https://t.me/c/.../... https://t.me/c/.../...</code>",
+                    parse_mode=ParseMode.HTML
+                )
+
+            from_channel = str(message.reply_to_message.forward_from_chat.id)
+
+            # Normalize destination id
+            if not to_channel.startswith("-100"):
+                if to_channel.startswith("-"):
+                    to_channel = f"-100{to_channel.lstrip('-')}"
+                else:
+                    to_channel = f"-100{to_channel}"
+
+        # --------- Common part for both modes ---------
         if start_id > end_id:
             start_id, end_id = end_id, start_id
 
@@ -733,7 +801,6 @@ async def auto_cap_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
 
-        # Load settings from destination
         caption_template = await load_caption(to_channel)
         if not caption_template:
             return await message.reply_text(
@@ -745,7 +812,7 @@ async def auto_cap_cmd(client, message: Message):
         sticker_id = await load_sticker(to_channel)
         episode_header_enabled = await load_episode_header_setting(to_channel)
 
-        # Validate access to both chats
+        # Check access dono channel pe
         try:
             await client.get_chat(from_channel)
             await client.get_chat(to_channel)
@@ -771,7 +838,6 @@ async def auto_cap_cmd(client, message: Message):
         for i in range(0, len(msg_ids), CHUNK):
             chunk_ids = msg_ids[i:i + CHUNK]
 
-            # Fetch from source channel
             try:
                 msgs = await client.get_messages(int(from_channel), chunk_ids)
             except FloodWait as fw:
@@ -798,6 +864,7 @@ async def auto_cap_cmd(client, message: Message):
                     fname = msg.document.file_name
                 elif msg.video:
                     fname = msg.video.file_name or "Video"
+                    # duration from msg.video.duration if needed
                 elif msg.audio:
                     fname = msg.audio.file_name or "Audio"
                 else:
@@ -806,7 +873,6 @@ async def auto_cap_cmd(client, message: Message):
                 ep_num = _int_episode(fname)
                 episodes[ep_num].append(msg)
 
-            # Episode-wise sorting
             sorted_episodes = sorted(episodes.items())
 
             for ep_num, msgs_in_episode in sorted_episodes:
@@ -833,7 +899,6 @@ async def auto_cap_cmd(client, message: Message):
                     except Exception as e:
                         print(f"❌ Header error (ac): {e}")
 
-                # Copy each media with formatted caption
                 for msg in sorted_msgs:
                     filename = filesize = duration = None
 
@@ -884,7 +949,6 @@ async def auto_cap_cmd(client, message: Message):
                     except Exception as e:
                         print(f"❌ Copy error (ac): {e}")
 
-                # Sticker separator
                 if ep_num != 9999:
                     try:
                         await client.send_sticker(int(to_channel), sticker_id)
@@ -904,3 +968,4 @@ async def auto_cap_cmd(client, message: Message):
             f"❌ <b>Error:</b> {html.escape(str(e))}",
             parse_mode=ParseMode.HTML
         )
+
