@@ -1,4 +1,4 @@
-import re, subprocess, os, urllib.request, tempfile, asyncio
+import re, subprocess, os, urllib.request, tempfile, asyncio, html
 from io import BytesIO
 from urllib.parse import urlparse, parse_qs, unquote
 from pyrogram import filters
@@ -40,7 +40,7 @@ async def _process_and_send(m_target, data):
 async def send_thumb(_, m):
     url = _get(m)
     if not url: return await m.reply_text("give me image url")
-    url = _extract_imgurl(url.strip('.,;:()[]<>'))
+    url = _extract_imgurl(url.strip(' \n\r\t\0\x0b\x1b.,;:()[]<>'))
     if not re.match(r"https?://", url): return await m.reply_text("invalid url")
 
     try:
@@ -59,15 +59,17 @@ async def send_thumb(_, m):
     await _process_and_send(m, data)
     await wait.delete()
 
-# getall / ga — reply to a message that contains many links (now supports HTML <a href="..."> too)
+# getall / ga — improved extraction
 @app.on_message(filters.command(["getall","ga"], prefixes=["/","!",".",""]))
 async def get_all_images(_, m):
     if not m.reply_to_message or not (m.reply_to_message.text or m.reply_to_message.caption):
         return await m.reply_text("reply karo us message ko jisme links hain")
 
-    msg_text = m.reply_to_message.text or m.reply_to_message.caption or ""
+    raw_text = m.reply_to_message.text or m.reply_to_message.caption or ""
+    # unescape HTML entities (like &amp;)
+    msg_text = html.unescape(raw_text)
 
-    # collect from Telegram entity objects first (handles clickable text_link/url)
+    # 1) Telegram entities (text_link/url)
     entities = []
     if getattr(m.reply_to_message, "entities", None):
         entities += m.reply_to_message.entities
@@ -86,26 +88,30 @@ async def get_all_images(_, m):
             except:
                 pass
 
-    # markdown-style [text](url)
+    # 2) markdown-style [text]( url ) with optional spaces/newlines between ] and (
     md_links = re.findall(r'\[[^\]]+\]\s*\(\s*(https?://[^\s)]+)\s*\)', msg_text)
     if md_links:
         urls.extend(md_links)
 
-    # HTML <a href="..."> or <a href='...'>
+    # 3) HTML <a ... href="..."> or href='...'
     html_links = re.findall(r'<a\s+[^>]*?href\s*=\s*([\'"])(https?://.*?)\1', msg_text, flags=re.IGNORECASE)
     if html_links:
-        # html_links is list of tuples (quote, url)
         urls.extend([u for _, u in html_links])
 
-    # fallback regex for plain URLs
-    if not urls:
-        urls = re.findall(r'https?://[^\s)>\]]+', msg_text)
+    # 4) plain URLs fallback (captures urls inside () too)
+    plain = re.findall(r'https?://[^\s)>\]]+', msg_text)
+    if plain:
+        urls.extend(plain)
 
-    # dedupe while preserving order
+    # sanitize & dedupe while preserving order
     seen = set(); final_urls = []
     for u in urls:
-        u = u.strip(' \n\r\t\0\x0b\x1b.,;:()[]<>')
-        # sometimes Telegram encodes &amp; in HTML — unescape common entities
+        if not u: continue
+        u = u.strip(' \n\r\t\0\x0b\x1b')
+        # remove numbering prefixes like "1." or "1)" at start
+        u = re.sub(r'^[0-9]{1,3}[\.\)]\s*', '', u)
+        # strip wrapping <> or trailing punctuation
+        u = u.strip('<>.,;:()[]')
         u = u.replace("&amp;", "&")
         if u not in seen:
             seen.add(u); final_urls.append(u)
@@ -113,12 +119,15 @@ async def get_all_images(_, m):
     if not final_urls:
         return await m.reply_text("koi url nahi mila us message mein")
 
+    # debug: show what we found
+    dbg = "\n".join(f"{i+1}. {u}" for i,u in enumerate(final_urls))
+    wait = await m.reply_text(f"found {len(final_urls)} links:\n{dbg}\n\nprocessing...")
+
     MAX = 25
     if len(final_urls) > MAX:
         final_urls = final_urls[:MAX]
         await m.reply_text(f"zyaada links — pehle {MAX} hi process kar raha hoon")
 
-    wait = await m.reply_text(f"found {len(final_urls)} links — processing...")
     for idx, raw in enumerate(final_urls, 1):
         url = _extract_imgurl(raw)
         if not re.match(r"https?://", url):
