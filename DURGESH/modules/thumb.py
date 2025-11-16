@@ -57,10 +57,33 @@ async def send_thumb(_, m):
 async def get_all_images(_, m):
     if not m.reply_to_message or not (m.reply_to_message.text or m.reply_to_message.caption):
         return await m.reply_text("reply karo us message ko jisme links hain")
-    text = (m.reply_to_message.text or m.reply_to_message.caption)
-    # rough url extractor, strips trailing punctuation
-    urls = re.findall(r'https?://[^\s)>\]]+', text)
-    if not urls: return await m.reply_text("koi url nahi mila us message mein")
+
+    # collect text + entities (works for text and caption)
+    msg_text = m.reply_to_message.text or m.reply_to_message.caption or ""
+    entities = []
+    if getattr(m.reply_to_message, "entities", None):
+        entities += m.reply_to_message.entities
+    if getattr(m.reply_to_message, "caption_entities", None):
+        entities += m.reply_to_message.caption_entities
+
+    urls = []
+    # first extract from entity objects (handles clickable hyperlinks)
+    for ent in entities:
+        t = ent.type
+        if t == "text_link" and getattr(ent, "url", None):
+            urls.append(ent.url)
+        elif t == "url":
+            # offset/length give substring
+            off, length = ent.offset, ent.length
+            urls.append(msg_text[off:off+length])
+
+    # fallback: regex to catch plain links in visible text
+    if not urls:
+        urls = re.findall(r'https?://[^\s)>\]]+', msg_text)
+
+    if not urls:
+        return await m.reply_text("koi url nahi mila us message mein")
+
     MAX = 10
     if len(urls) > MAX:
         urls = urls[:MAX]
@@ -77,7 +100,6 @@ async def get_all_images(_, m):
                     continue
                 data = r.read()
             await _process_and_send(m, data)
-            # slight pause to avoid hitting rate limits
             await asyncio.sleep(0.7)
         except Exception:
             await m.reply_text(f"[{idx}] failed: {url}")
