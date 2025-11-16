@@ -1,3 +1,6 @@
+# anime_tool.py
+# Pyrogram tool for existing bot (imports `app` from DURGESH)
+# Adds /anime command which fetches AniList and generates a poster
 
 import asyncio
 import requests
@@ -196,8 +199,9 @@ async def anime_command_handler(client, message: Message):
         bio.seek(0)
 
         title = anime_data['title'].get('english') or anime_data['title'].get('romaji') or "Anime Poster"
+        caption = ""
 
-        await message.reply_photo(photo=bio)
+        await message.reply_photo(photo=bio, caption=caption)
         await status_msg.delete()
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: {e}")
