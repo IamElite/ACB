@@ -4,14 +4,19 @@ from urllib.parse import urlparse, parse_qs, unquote
 from pyrogram import filters
 from DURGESH import app
 
-# tiny helpers
+# helpers
 def _get(m):
     return (m.reply_to_message.text.strip() if m.reply_to_message and m.reply_to_message.text
             else m.text.split(maxsplit=1)[1].strip() if len(m.command) >= 2 else None)
 
-def _extract(u):
-    q = parse_qs(urlparse(u).query)
-    return unquote(q["imgurl"][0]) if "imgurl" in q else u
+def _extract_imgurl(u):
+    try:
+        q = parse_qs(urlparse(u).query)
+        if "imgurl" in q:
+            return unquote(q["imgurl"][0])
+    except:
+        pass
+    return u
 
 def _is_image_resp(r): return r.getheader("Content-Type","").startswith("image/")
 
@@ -30,17 +35,19 @@ async def _process_and_send(m_target, data):
         for p in (in_f.name, out_f.name):
             if p and os.path.exists(p): os.remove(p)
 
-# single-url command (same as before)
+# single-url command
 @app.on_message(filters.command(["thumbnail","thumb","t"], prefixes=["/","!",".",""]))
 async def send_thumb(_, m):
     url = _get(m)
     if not url: return await m.reply_text("give me image url")
-    url = _extract(url)
+    url = _extract_imgurl(url.strip('.,;:()[]<>'))
     if not re.match(r"https?://", url): return await m.reply_text("invalid url")
+
     try:
         await m.delete()
         if m.reply_to_message: await m.reply_to_message.delete()
     except: pass
+
     wait = await m.reply_text("processing...")
     req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
     try:
@@ -52,14 +59,15 @@ async def send_thumb(_, m):
     await _process_and_send(m, data)
     await wait.delete()
 
-# new: getall / ga — reply to a message that contains many links
+# getall / ga — reply to a message that contains many links
 @app.on_message(filters.command(["getall","ga"], prefixes=["/","!",".",""]))
 async def get_all_images(_, m):
     if not m.reply_to_message or not (m.reply_to_message.text or m.reply_to_message.caption):
         return await m.reply_text("reply karo us message ko jisme links hain")
 
-    # collect text + entities (works for text and caption)
     msg_text = m.reply_to_message.text or m.reply_to_message.caption or ""
+
+    # collect from Telegram entity objects first (handles clickable text_link/url)
     entities = []
     if getattr(m.reply_to_message, "entities", None):
         entities += m.reply_to_message.entities
@@ -67,31 +75,47 @@ async def get_all_images(_, m):
         entities += m.reply_to_message.caption_entities
 
     urls = []
-    # first extract from entity objects (handles clickable hyperlinks)
     for ent in entities:
         t = ent.type
         if t == "text_link" and getattr(ent, "url", None):
             urls.append(ent.url)
         elif t == "url":
-            # offset/length give substring
             off, length = ent.offset, ent.length
-            urls.append(msg_text[off:off+length])
+            try:
+                urls.append(msg_text[off:off+length])
+            except:
+                pass
 
-    # fallback: regex to catch plain links in visible text
+    # also extract markdown-style [text](url)
+    md_links = re.findall(r'\[[^\]]+\]\s*\(\s*(https?://[^\s)]+)\s*\)', msg_text)
+    if md_links:
+        urls.extend(md_links)
+
+    # fallback regex for plain URLs
     if not urls:
         urls = re.findall(r'https?://[^\s)>\]]+', msg_text)
 
-    if not urls:
+    # dedupe while preserving order
+    seen = set(); final_urls = []
+    for u in urls:
+        u = u.strip('.,;:()[]<>')
+        if u not in seen:
+            seen.add(u); final_urls.append(u)
+
+    if not final_urls:
         return await m.reply_text("koi url nahi mila us message mein")
 
-    MAX = 10
-    if len(urls) > MAX:
-        urls = urls[:MAX]
+    MAX = 15
+    if len(final_urls) > MAX:
+        final_urls = final_urls[:MAX]
         await m.reply_text(f"zyaada links — pehle {MAX} hi process kar raha hoon")
 
-    wait = await m.reply_text(f"found {len(urls)} links — processing...")
-    for idx, raw in enumerate(urls, 1):
-        url = _extract(raw.strip('.,;:()[]<>'))
+    wait = await m.reply_text(f"found {len(final_urls)} links — processing...")
+    for idx, raw in enumerate(final_urls, 1):
+        url = _extract_imgurl(raw)
+        # quick sanity
+        if not re.match(r"https?://", url):
+            await m.reply_text(f"[{idx}] invalid: {url}"); continue
         try:
             req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=15) as r:
@@ -100,7 +124,7 @@ async def get_all_images(_, m):
                     continue
                 data = r.read()
             await _process_and_send(m, data)
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(0.6)
         except Exception:
             await m.reply_text(f"[{idx}] failed: {url}")
     await wait.delete()
