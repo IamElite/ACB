@@ -5,21 +5,13 @@ from typing import Dict, List
 from pyrogram import filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-from apscheduler.triggers.interval import IntervalTrigger
 from DURGESH import app
 from DURGESH.database import db
 
 apauthdb = db.apauth_channels
 
-# -------------------- SCHEDULER SETUP -------------------- #
-
-jobstores = {
-    'default': SQLAlchemyJobStore(url='sqlite:///promo_jobs.db')
-}
-
-scheduler = AsyncIOScheduler(jobstores=jobstores)
+# -------------------- BACKGROUND TASKS STORAGE -------------------- #
+running_tasks = {}  # {main_channel_id: task}
 
 # -------------------- TIME PARSER -------------------- #
 
@@ -69,7 +61,8 @@ async def add_main_channel(chat_id: int):
             "promo_interval_seconds": 18000,
             "last_promo_time": None,
             "posted_messages": [],  # Store message IDs for cycling
-            "active_promo_posts": {}  # {promo_channel_id: [msg_ids]}
+            "active_promo_posts": {},  # {promo_channel_id: [msg_ids]}
+            "is_active": True
         }},
         upsert=True
     )
@@ -106,7 +99,7 @@ async def remove_promo_channel(main_id: int, promo_id: int):
     return False
 
 async def update_promo_settings(chat_id: int, forward_tag: bool, interval: str):
-    """Update promo settings and reschedule job"""
+    """Update promo settings"""
     await apauthdb.update_one(
         {"chat_id": str(chat_id)},
         {"$set": {
@@ -116,8 +109,8 @@ async def update_promo_settings(chat_id: int, forward_tag: bool, interval: str):
         }}
     )
     
-    # Reschedule the job
-    await reschedule_promo_job(chat_id, parse_promo_time(interval))
+    # Restart task with new interval
+    await restart_promo_task(chat_id)
 
 async def get_main_channel_data(chat_id: int) -> Dict:
     """Get main channel data"""
@@ -131,17 +124,35 @@ async def store_posted_message(main_id: int, msg_id: int):
         {"$addToSet": {"posted_messages": msg_id}}
     )
 
-async def store_promo_message_ids(main_id: int, promo_channel_id: int, msg_ids: List[int]):
-    """Store promoted message IDs for deletion"""
-    await apauthdb.update_one(
-        {"chat_id": str(main_id)},
-        {"$set": {f"active_promo_posts.{promo_channel_id}": msg_ids}}
-    )
-
 async def is_main_channel(chat_id: int) -> bool:
     """Check if channel is main"""
     data = await apauthdb.find_one({"chat_id": str(chat_id)})
     return bool(data and data.get("is_main"))
+
+async def should_run_promo(chat_id: int) -> bool:
+    """Check if enough time passed since last promo"""
+    data = await get_main_channel_data(chat_id)
+    
+    if not data or not data.get("is_active"):
+        return False
+    
+    last_promo = data.get("last_promo_time")
+    interval = data.get("promo_interval_seconds", 18000)
+    
+    if not last_promo:
+        return True
+    
+    last_time = datetime.fromisoformat(last_promo)
+    elapsed = (datetime.now() - last_time).total_seconds()
+    
+    return elapsed >= interval
+
+async def update_last_promo_time(chat_id: int):
+    """Update last promotion time"""
+    await apauthdb.update_one(
+        {"chat_id": str(chat_id)},
+        {"$set": {"last_promo_time": datetime.now().isoformat()}}
+    )
 
 # -------------------- PROMO LOGIC -------------------- #
 
@@ -176,7 +187,7 @@ async def send_new_posts(main_id: int, promo_channels: List[str], forward_tag: b
         print(f"⚠️ No messages to promote from {main_id}")
         return
     
-    # Get the oldest message to cycle through
+    # Get the first message to cycle
     msg_id = posted_messages[0]
     
     # Rotate list (move first to last for cycling)
@@ -205,7 +216,7 @@ async def send_new_posts(main_id: int, promo_channels: List[str], forward_tag: b
                     # Forward with tag
                     sent = await main_msg.forward(promo_id)
                 else:
-                    # Copy without tag (with buttons)
+                    # Copy without tag (buttons preserved)
                     sent = await main_msg.copy(promo_id)
                 
                 # Store new message ID
@@ -226,62 +237,71 @@ async def send_new_posts(main_id: int, promo_channels: List[str], forward_tag: b
     except Exception as e:
         print(f"❌ Error in send_new_posts: {e}")
 
-async def promo_job(main_id: int):
-    """Main promo job - delete old and send new"""
-    data = await get_main_channel_data(main_id)
+async def promo_loop(main_id: int):
+    """Background task for auto promo"""
+    print(f"🚀 Started promo loop for {main_id}")
     
-    if not data:
-        return
-    
-    promo_channels = data.get("promo_channels", [])
-    if not promo_channels:
-        print(f"⚠️ No promo channels for {main_id}")
-        return
-    
-    forward_tag = data.get("forward_tag", True)
-    
-    print(f"🔄 Running promo job for {main_id}")
-    
-    # Step 1: Delete old posts
-    await delete_old_posts(main_id, promo_channels)
-    
-    # Step 2: Send new posts (cycling)
-    await send_new_posts(main_id, promo_channels, forward_tag)
+    while True:
+        try:
+            data = await get_main_channel_data(main_id)
+            
+            if not data or not data.get("is_active"):
+                print(f"⏸️ Promo loop stopped for {main_id}")
+                break
+            
+            interval = data.get("promo_interval_seconds", 18000)
+            promo_channels = data.get("promo_channels", [])
+            forward_tag = data.get("forward_tag", True)
+            
+            if not promo_channels:
+                print(f"⚠️ No promo channels for {main_id}, waiting...")
+                await asyncio.sleep(60)  # Check again after 1 minute
+                continue
+            
+            # Check if should run
+            if await should_run_promo(main_id):
+                print(f"🔄 Running promo for {main_id}")
+                
+                # Delete old posts
+                await delete_old_posts(main_id, promo_channels)
+                
+                # Send new posts
+                await send_new_posts(main_id, promo_channels, forward_tag)
+                
+                # Update last promo time
+                await update_last_promo_time(main_id)
+            
+            # Sleep for interval
+            await asyncio.sleep(interval)
+            
+        except asyncio.CancelledError:
+            print(f"❌ Promo loop cancelled for {main_id}")
+            break
+        except Exception as e:
+            print(f"❌ Error in promo_loop: {e}")
+            await asyncio.sleep(60)  # Wait before retry
 
-async def schedule_promo_job(main_id: int, interval_seconds: int):
-    """Schedule periodic promo job"""
-    job_id = f"promo_{main_id}"
-    
-    # Check if job already exists
-    existing_job = scheduler.get_job(job_id)
-    
-    if existing_job:
-        print(f"ℹ️ Job {job_id} already scheduled")
+async def start_promo_task(main_id: int):
+    """Start background promo task"""
+    if main_id in running_tasks:
+        print(f"ℹ️ Task already running for {main_id}")
         return
     
-    # Add job
-    scheduler.add_job(
-        promo_job,
-        trigger=IntervalTrigger(seconds=interval_seconds),
-        args=[main_id],
-        id=job_id,
-        replace_existing=True
-    )
-    
-    print(f"✅ Scheduled job {job_id} every {format_time(interval_seconds)}")
+    task = asyncio.create_task(promo_loop(main_id))
+    running_tasks[main_id] = task
+    print(f"✅ Started promo task for {main_id}")
 
-async def reschedule_promo_job(main_id: int, interval_seconds: int):
-    """Reschedule existing job"""
-    job_id = f"promo_{main_id}"
-    
-    # Remove old job
-    try:
-        scheduler.remove_job(job_id)
-    except:
-        pass
-    
-    # Add new job
-    await schedule_promo_job(main_id, interval_seconds)
+async def stop_promo_task(main_id: int):
+    """Stop background promo task"""
+    if main_id in running_tasks:
+        running_tasks[main_id].cancel()
+        del running_tasks[main_id]
+        print(f"🛑 Stopped promo task for {main_id}")
+
+async def restart_promo_task(main_id: int):
+    """Restart promo task with new settings"""
+    await stop_promo_task(main_id)
+    await start_promo_task(main_id)
 
 # -------------------- COMMANDS -------------------- #
 
@@ -316,9 +336,7 @@ async def add_main_promo_channel(client, message: Message):
         return await message.reply_text(f"⚠️ Error: {e}")
     
     await add_main_channel(chat_id)
-    
-    # Schedule job with default 5h interval
-    await schedule_promo_job(chat_id, 18000)
+    await start_promo_task(chat_id)
     
     await message.reply_text(
         f"✅ **Main Channel Authorized!**\n\n"
@@ -326,26 +344,26 @@ async def add_main_promo_channel(client, message: Message):
         f"🆔 **ID:** `{chat_id}`\n"
         f"🔄 **Forward Tag:** ✅ ON\n"
         f"⏱️ **Interval:** 5h\n\n"
-        f"💡 Auto-promo job scheduled!\n"
-        f"💡 Use `/apc -b` to add promo channels",
+        f"💡 Background task started!\n"
+        f"💡 Use `/apc` or `/apc -b` to add promo channels",
         parse_mode=ParseMode.MARKDOWN
     )
 
 @app.on_message(filters.command(["addpromochnl", "apc"]))
 async def add_promo_channels_cmd(client, message: Message):
-    """Add promo channels (bulk)"""
-    
-    if "-b" not in message.text:
-        return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/apc -b <main_channel_id>`\n\n"
-            "Reply to **first message** of bulk channel forwards"
-        )
+    """
+    Add promo channels
+    /apc -b <main_id> : Bulk add (reply to first forwarded channel)
+    /apc <main_id> : Single add (reply to forwarded channel OR provide channel_id)
+    """
     
     args = message.text.split()
+    is_bulk = "-b" in args
+    
+    # Get main channel ID
     main_id = None
     
-    if len(args) >= 3:
+    if is_bulk and len(args) >= 3:
         try:
             if args[2].startswith("@"):
                 chat = await client.get_chat(args[2])
@@ -354,46 +372,80 @@ async def add_promo_channels_cmd(client, message: Message):
                 main_id = int(args[2])
         except:
             pass
+    elif not is_bulk and len(args) >= 2:
+        try:
+            if args[1].startswith("@"):
+                chat = await client.get_chat(args[1])
+                main_id = chat.id
+            elif args[1].lstrip('-').isdigit():
+                main_id = int(args[1])
+        except:
+            pass
     
     if not main_id:
-        return await message.reply_text("❌ Please provide valid main channel ID!")
+        return await message.reply_text(
+            "❌ **Usage:**\n\n"
+            "**Bulk Add:**\n"
+            "`/apc -b <main_id>` (reply to first forwarded channel)\n\n"
+            "**Single Add:**\n"
+            "`/apc <main_id>` (reply to forwarded channel)\n"
+            "OR\n"
+            "`/apc <main_id> <promo_channel_id>`"
+        )
     
     if not await is_main_channel(main_id):
         return await message.reply_text("❌ Main channel not found! Use `/apauth` first.")
     
-    if not message.reply_to_message:
-        return await message.reply_text("❌ Reply to first forwarded channel message!")
-    
     promo_ids = []
     
-    if message.reply_to_message.forward_from_chat:
-        promo_ids.append(message.reply_to_message.forward_from_chat.id)
-    
-    try:
-        msg_id = message.reply_to_message.id
-        for i in range(1, 50):
-            try:
-                next_msg = await client.get_messages(message.chat.id, msg_id + i)
-                if next_msg.forward_from_chat:
-                    promo_ids.append(next_msg.forward_from_chat.id)
-                else:
+    if is_bulk:
+        # Bulk mode: collect from reply and next messages
+        if not message.reply_to_message:
+            return await message.reply_text("❌ Reply to first forwarded channel message!")
+        
+        if message.reply_to_message.forward_from_chat:
+            promo_ids.append(message.reply_to_message.forward_from_chat.id)
+        
+        try:
+            msg_id = message.reply_to_message.id
+            for i in range(1, 50):
+                try:
+                    next_msg = await client.get_messages(message.chat.id, msg_id + i)
+                    if next_msg.forward_from_chat:
+                        promo_ids.append(next_msg.forward_from_chat.id)
+                    else:
+                        break
+                except:
                     break
+        except:
+            pass
+    else:
+        # Single mode
+        if message.reply_to_message and message.reply_to_message.forward_from_chat:
+            promo_ids.append(message.reply_to_message.forward_from_chat.id)
+        elif len(args) >= 3:
+            try:
+                if args[2].startswith("@"):
+                    chat = await client.get_chat(args[2])
+                    promo_ids.append(chat.id)
+                elif args[2].lstrip('-').isdigit():
+                    promo_ids.append(int(args[2]))
             except:
-                break
-    except:
-        pass
+                pass
     
     if not promo_ids:
-        return await message.reply_text("❌ No forwarded channels found!")
+        return await message.reply_text("❌ No channels found to add!")
     
     success = await add_promo_channels(main_id, promo_ids)
     
     if success:
+        mode_text = "Bulk" if is_bulk else "Single"
         await message.reply_text(
-            f"✅ **Added {len(promo_ids)} promo channels!**\n\n"
-            f"📌 Main Channel: `{main_id}`\n"
-            f"🎯 Promo Channels: {len(promo_ids)}\n\n"
-            f"💡 Posts will cycle every 5h (default)",
+            f"✅ **Added {len(promo_ids)} promo channel{'s' if len(promo_ids) > 1 else ''}!**\n\n"
+            f"📌 Main: `{main_id}`\n"
+            f"🎯 Mode: {mode_text}\n"
+            f"📢 Channels: {len(promo_ids)}\n\n"
+            f"💡 Posts will cycle every 5h",
             parse_mode=ParseMode.MARKDOWN
         )
     else:
@@ -494,7 +546,7 @@ async def update_promo_settings_cmd(client, message: Message):
         f"📌 **Channel:** `{chat_id}`\n"
         f"🔄 **Forward Tag:** {'❌ OFF' if not forward_tag else '✅ ON'}\n"
         f"⏱️ **Interval:** {interval}\n\n"
-        f"💡 Job rescheduled!",
+        f"💡 Task restarted with new settings!",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -516,6 +568,7 @@ async def list_promo_channels(client, message: Message):
         fwd_tag = "OFF" if not doc.get("forward_tag", True) else "ON"
         interval = doc.get("promo_interval", "5h")
         posted_count = len(doc.get("posted_messages", []))
+        status = "🟢 Active" if chat_id in running_tasks else "🔴 Stopped"
         
         try:
             chat = await client.get_chat(chat_id)
@@ -525,6 +578,7 @@ async def list_promo_channels(client, message: Message):
         
         text += f"**{i}. {name}**\n"
         text += f"   ├ ID: `{chat_id}`\n"
+        text += f"   ├ Status: {status}\n"
         text += f"   ├ Promo: {len(promo_ids)} channels\n"
         text += f"   ├ Posts: {posted_count} messages\n"
         text += f"   ├ Tag: {fwd_tag}\n"
@@ -547,21 +601,16 @@ async def store_channel_messages(client, message: Message):
 
 # -------------------- STARTUP -------------------- #
 
-async def load_existing_jobs():
-    """Load and schedule jobs for existing main channels"""
-    cursor = apauthdb.find({"is_main": True})
+async def load_existing_tasks():
+    """Load and start tasks for existing main channels"""
+    cursor = apauthdb.find({"is_main": True, "is_active": True})
     channels = [doc async for doc in cursor]
     
     for doc in channels:
         chat_id = int(doc["chat_id"])
-        interval = doc.get("promo_interval_seconds", 18000)
-        
-        await schedule_promo_job(chat_id, interval)
-        print(f"✅ Loaded job for channel {chat_id}")
+        await start_promo_task(chat_id)
+        print(f"✅ Loaded task for channel {chat_id}")
 
-# Start scheduler
-scheduler.start()
-print("🚀 APScheduler started!")
-
-# Load existing jobs on startup
-asyncio.create_task(load_existing_jobs())
+# Start loading tasks on bot start
+asyncio.create_task(load_existing_tasks())
+print("🚀 Auto Promo system started!")
