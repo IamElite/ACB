@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 from pyrogram import filters
 from pyrogram.types import Message
-from pyrogram.enums import ParseMode
 from DURGESH import app
 from DURGESH.database import db
 
@@ -324,9 +323,9 @@ async def add_main_promo_channel(client, message: Message):
     
     if not chat_id:
         return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/apauth <channel_id>`\n\n"
-            "**OR** reply to a channel forwarded message"
+            "❌ Usage:\n"
+            "/apauth <channel_id>\n\n"
+            "OR reply to a channel forwarded message"
         )
     
     try:
@@ -339,14 +338,13 @@ async def add_main_promo_channel(client, message: Message):
     await start_promo_task(chat_id)
     
     await message.reply_text(
-        f"✅ **Main Channel Authorized!**\n\n"
-        f"📌 **Name:** {chat.title}\n"
-        f"🆔 **ID:** `{chat_id}`\n"
-        f"🔄 **Forward Tag:** ✅ ON\n"
-        f"⏱️ **Interval:** 5h\n\n"
+        f"✅ Main Channel Authorized!\n\n"
+        f"📌 Name: {chat.title}\n"
+        f"🆔 ID: {chat_id}\n"
+        f"🔄 Forward Tag: ON\n"
+        f"⏱️ Interval: 5h\n\n"
         f"💡 Background task started!\n"
-        f"💡 Use `/apc` or `/apc -b` to add promo channels",
-        parse_mode=ParseMode.MARKDOWN
+        f"💡 Use /apc or /apc -b to add promo channels"
     )
 
 @app.on_message(filters.command(["addpromochnl", "apc"]))
@@ -384,17 +382,17 @@ async def add_promo_channels_cmd(client, message: Message):
     
     if not main_id:
         return await message.reply_text(
-            "❌ **Usage:**\n\n"
-            "**Bulk Add:**\n"
-            "`/apc -b <main_id>` (reply to first forwarded channel)\n\n"
-            "**Single Add:**\n"
-            "`/apc <main_id>` (reply to forwarded channel)\n"
+            "❌ Usage:\n\n"
+            "Bulk Add:\n"
+            "/apc -b <main_id> (reply to first forwarded channel)\n\n"
+            "Single Add:\n"
+            "/apc <main_id> (reply to forwarded channel)\n"
             "OR\n"
-            "`/apc <main_id> <promo_channel_id>`"
+            "/apc <main_id> <promo_channel_id>"
         )
     
     if not await is_main_channel(main_id):
-        return await message.reply_text("❌ Main channel not found! Use `/apauth` first.")
+        return await message.reply_text("❌ Main channel not found! Use /apauth first.")
     
     promo_ids = []
     
@@ -440,13 +438,13 @@ async def add_promo_channels_cmd(client, message: Message):
     
     if success:
         mode_text = "Bulk" if is_bulk else "Single"
+        channel_word = "channels" if len(promo_ids) > 1 else "channel"
         await message.reply_text(
-            f"✅ **Added {len(promo_ids)} promo channel{'s' if len(promo_ids) > 1 else ''}!**\n\n"
-            f"📌 Main: `{main_id}`\n"
+            f"✅ Added {len(promo_ids)} promo {channel_word}!\n\n"
+            f"📌 Main: {main_id}\n"
             f"🎯 Mode: {mode_text}\n"
             f"📢 Channels: {len(promo_ids)}\n\n"
-            f"💡 Posts will cycle every 5h",
-            parse_mode=ParseMode.MARKDOWN
+            f"💡 Posts will cycle every 5h"
         )
     else:
         await message.reply_text("❌ Failed to add channels!")
@@ -479,19 +477,18 @@ async def remove_promo_channel_cmd(client, message: Message):
     
     if not main_id or not promo_id:
         return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/rmpc <main_id> <promo_id>`\n\n"
-            "**OR** `/rmpc <main_id>` + reply to promo channel message"
+            "❌ Usage:\n"
+            "/rmpc <main_id> <promo_id>\n\n"
+            "OR /rmpc <main_id> + reply to promo channel message"
         )
     
     success = await remove_promo_channel(main_id, promo_id)
     
     if success:
         await message.reply_text(
-            f"✅ **Removed promo channel!**\n\n"
-            f"🗑️ Removed: `{promo_id}`\n"
-            f"📌 From: `{main_id}`",
-            parse_mode=ParseMode.MARKDOWN
+            f"✅ Removed promo channel!\n\n"
+            f"🗑️ Removed: {promo_id}\n"
+            f"📌 From: {main_id}"
         )
     else:
         await message.reply_text("❌ Channel not found in promo list!")
@@ -519,15 +516,15 @@ async def update_promo_settings_cmd(client, message: Message):
     
     if not chat_id:
         return await message.reply_text(
-            "❌ **Usage:**\n"
-            "`/apset <channel_id> -f on/off -t 5h`\n\n"
-            "**Flags:**\n"
-            "`-f` : Forward tag (on=with tag, off=no tag) - default: on\n"
-            "`-t` : Interval (5h/5d/5m) - default: 5h"
+            "❌ Usage:\n"
+            "/apset <channel_id> -f on/off -t 5h\n\n"
+            "Flags:\n"
+            "-f : Forward tag (on=with tag, off=no tag) - default: on\n"
+            "-t : Interval (5h/5d/5m) - default: 5h"
         )
     
     if not await is_main_channel(chat_id):
-        return await message.reply_text("❌ Not a main channel! Use `/apauth` first.")
+        return await message.reply_text("❌ Not a main channel! Use /apauth first.")
     
     if "-f" in args:
         idx = args.index("-f")
@@ -541,13 +538,13 @@ async def update_promo_settings_cmd(client, message: Message):
     
     await update_promo_settings(chat_id, forward_tag, interval)
     
+    tag_status = "OFF" if not forward_tag else "ON"
     await message.reply_text(
-        f"✅ **Settings Updated!**\n\n"
-        f"📌 **Channel:** `{chat_id}`\n"
-        f"🔄 **Forward Tag:** {'❌ OFF' if not forward_tag else '✅ ON'}\n"
-        f"⏱️ **Interval:** {interval}\n\n"
-        f"💡 Task restarted with new settings!",
-        parse_mode=ParseMode.MARKDOWN
+        f"✅ Settings Updated!\n\n"
+        f"📌 Channel: {chat_id}\n"
+        f"🔄 Forward Tag: {tag_status}\n"
+        f"⏱️ Interval: {interval}\n\n"
+        f"💡 Task restarted with new settings!"
     )
 
 @app.on_message(filters.command(["aplist"]))
@@ -560,7 +557,7 @@ async def list_promo_channels(client, message: Message):
     if not channels:
         return await message.reply_text("⚠️ No auto-promo channels configured yet!")
     
-    text = "✅ **Auto Promo Channels:**\n\n"
+    text = "✅ Auto Promo Channels:\n\n"
     
     for i, doc in enumerate(channels, start=1):
         chat_id = int(doc["chat_id"])
@@ -576,15 +573,15 @@ async def list_promo_channels(client, message: Message):
         except:
             name = "Unknown"
         
-        text += f"**{i}. {name}**\n"
-        text += f"   ├ ID: `{chat_id}`\n"
+        text += f"{i}. {name}\n"
+        text += f"   ├ ID: {chat_id}\n"
         text += f"   ├ Status: {status}\n"
         text += f"   ├ Promo: {len(promo_ids)} channels\n"
         text += f"   ├ Posts: {posted_count} messages\n"
         text += f"   ├ Tag: {fwd_tag}\n"
         text += f"   └ Interval: {interval}\n\n"
     
-    await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text(text)
 
 # -------------------- MESSAGE HANDLER -------------------- #
 
