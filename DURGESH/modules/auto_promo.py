@@ -55,16 +55,26 @@ async def add_main_channel(chat_id: int):
             "chat_id": str(chat_id),
             "is_main": True,
             "promo_channels": [],
-            "forward_tag": True,  # on = with tag
+            "forward_tag": True,
             "promo_interval": "5h",
             "promo_interval_seconds": 18000,
             "last_promo_time": None,
-            "posted_messages": [],  # Store message IDs for cycling
-            "active_promo_posts": {},  # {promo_channel_id: [msg_ids]}
+            "posted_messages": [],
+            "current_post_index": 0,
+            "active_promo_posts": {},
             "is_active": True
         }},
         upsert=True
     )
+
+async def remove_main_channel(chat_id: int):
+    """Remove main channel authorization"""
+    # Stop task first
+    await stop_promo_task(chat_id)
+    
+    # Remove from database
+    result = await apauthdb.delete_one({"chat_id": str(chat_id)})
+    return result.deleted_count > 0
 
 async def add_promo_channels(main_id: int, promo_ids: List[int]):
     """Add multiple promo channels to main channel"""
@@ -97,19 +107,50 @@ async def remove_promo_channel(main_id: int, promo_id: int):
         return True
     return False
 
-async def update_promo_settings(chat_id: int, forward_tag: bool, interval: str):
-    """Update promo settings"""
-    await apauthdb.update_one(
-        {"chat_id": str(chat_id)},
-        {"$set": {
-            "forward_tag": forward_tag,
-            "promo_interval": interval,
-            "promo_interval_seconds": parse_promo_time(interval)
-        }}
-    )
+async def update_or_create_promo_settings(chat_id: int, forward_tag: bool = None, interval: str = None):
+    """Update existing settings OR create new if doesn't exist"""
+    data = await apauthdb.find_one({"chat_id": str(chat_id)})
     
-    # Restart task with new interval
-    await restart_promo_task(chat_id)
+    if data:
+        # Update existing
+        update_data = {}
+        
+        if forward_tag is not None:
+            update_data["forward_tag"] = forward_tag
+        
+        if interval is not None:
+            update_data["promo_interval"] = interval
+            update_data["promo_interval_seconds"] = parse_promo_time(interval)
+        
+        if update_data:
+            await apauthdb.update_one(
+                {"chat_id": str(chat_id)},
+                {"$set": update_data}
+            )
+        
+        await restart_promo_task(chat_id)
+        return True
+    else:
+        # Create new with default values
+        default_tag = forward_tag if forward_tag is not None else True
+        default_interval = interval if interval is not None else "5h"
+        
+        await apauthdb.insert_one({
+            "chat_id": str(chat_id),
+            "is_main": True,
+            "promo_channels": [],
+            "forward_tag": default_tag,
+            "promo_interval": default_interval,
+            "promo_interval_seconds": parse_promo_time(default_interval),
+            "last_promo_time": None,
+            "posted_messages": [],
+            "current_post_index": 0,
+            "active_promo_posts": {},
+            "is_active": True
+        })
+        
+        await start_promo_task(chat_id)
+        return True
 
 async def get_main_channel_data(chat_id: int) -> Dict:
     """Get main channel data"""
@@ -175,7 +216,7 @@ async def delete_old_posts(main_id: int, promo_channels: List[str]):
                 print(f"❌ Failed to delete from {promo_id}: {e}")
 
 async def send_new_posts(main_id: int, promo_channels: List[str], forward_tag: bool):
-    """Send new posts to promo channels"""
+    """Send new posts to promo channels (cycling through all posts)"""
     data = await get_main_channel_data(main_id)
     if not data:
         return
@@ -186,52 +227,57 @@ async def send_new_posts(main_id: int, promo_channels: List[str], forward_tag: b
         print(f"⚠️ No messages to promote from {main_id}")
         return
     
-    # Get the first message to cycle
-    msg_id = posted_messages[0]
+    # Get current index
+    current_index = data.get("current_post_index", 0)
     
-    # Rotate list (move first to last for cycling)
-    posted_messages.append(posted_messages.pop(0))
+    # Reset index if it exceeds list length
+    if current_index >= len(posted_messages):
+        current_index = 0
+    
+    # Get the message to promote
+    msg_id = posted_messages[current_index]
+    
+    # Update index for next run (cycle through)
+    next_index = (current_index + 1) % len(posted_messages)
     await apauthdb.update_one(
         {"chat_id": str(main_id)},
-        {"$set": {"posted_messages": posted_messages}}
+        {"$set": {"current_post_index": next_index}}
     )
     
     try:
-        # Get the message from main channel
         main_msg = await app.get_messages(main_id, msg_id)
         
         if not main_msg:
             print(f"❌ Message {msg_id} not found in {main_id}")
             return
         
-        # Send to all promo channels
         new_promo_posts = {}
+        success_count = 0
         
         for promo_id_str in promo_channels:
             promo_id = int(promo_id_str)
             
             try:
                 if forward_tag:
-                    # Forward with tag
                     sent = await main_msg.forward(promo_id)
                 else:
-                    # Copy without tag (buttons preserved)
                     sent = await main_msg.copy(promo_id)
                 
-                # Store new message ID
                 new_promo_posts[promo_id_str] = [sent.id]
-                print(f"✅ Sent to {promo_id}")
+                success_count += 1
+                print(f"✅ Sent post #{current_index + 1}/{len(posted_messages)} to {promo_id}")
                 
-                await asyncio.sleep(1)  # Avoid flood
+                await asyncio.sleep(1)
                 
             except Exception as e:
                 print(f"❌ Failed to send to {promo_id}: {e}")
         
-        # Update active promo posts
         await apauthdb.update_one(
             {"chat_id": str(main_id)},
             {"$set": {"active_promo_posts": new_promo_posts}}
         )
+        
+        print(f"🔄 Promoted to {success_count}/{len(promo_channels)} channels. Next: post #{next_index + 1}")
         
     except Exception as e:
         print(f"❌ Error in send_new_posts: {e}")
@@ -254,23 +300,16 @@ async def promo_loop(main_id: int):
             
             if not promo_channels:
                 print(f"⚠️ No promo channels for {main_id}, waiting...")
-                await asyncio.sleep(60)  # Check again after 1 minute
+                await asyncio.sleep(60)
                 continue
             
-            # Check if should run
             if await should_run_promo(main_id):
                 print(f"🔄 Running promo for {main_id}")
                 
-                # Delete old posts
                 await delete_old_posts(main_id, promo_channels)
-                
-                # Send new posts
                 await send_new_posts(main_id, promo_channels, forward_tag)
-                
-                # Update last promo time
                 await update_last_promo_time(main_id)
             
-            # Sleep for interval
             await asyncio.sleep(interval)
             
         except asyncio.CancelledError:
@@ -278,7 +317,7 @@ async def promo_loop(main_id: int):
             break
         except Exception as e:
             print(f"❌ Error in promo_loop: {e}")
-            await asyncio.sleep(60)  # Wait before retry
+            await asyncio.sleep(60)
 
 async def start_promo_task(main_id: int):
     """Start background promo task"""
@@ -306,7 +345,10 @@ async def restart_promo_task(main_id: int):
 
 @app.on_message(filters.command(["apauth"]))
 async def add_main_promo_channel(client, message: Message):
-    """Add main channel for auto promotion"""
+    """
+    Add main channel (where posts will be stored and promoted from)
+    Usage: /apauth OR /apauth <channel_id> OR reply to channel message
+    """
     chat_id = None
     
     if message.reply_to_message and message.reply_to_message.forward_from_chat:
@@ -319,13 +361,13 @@ async def add_main_promo_channel(client, message: Message):
             elif message.command[1].lstrip('-').isdigit():
                 chat_id = int(message.command[1])
         except Exception as e:
-            return await message.reply_text(f"❌ Invalid channel!\nError: {e}")
+            return await message.reply_text(f"❌ Invalid channel! Error: {e}")
     
     if not chat_id:
         return await message.reply_text(
             "❌ Usage:\n"
             "/apauth <channel_id>\n\n"
-            "OR reply to a channel forwarded message"
+            "OR reply to main channel message"
         )
     
     try:
@@ -343,111 +385,150 @@ async def add_main_promo_channel(client, message: Message):
         f"🆔 ID: {chat_id}\n"
         f"🔄 Forward Tag: ON\n"
         f"⏱️ Interval: 5h\n\n"
-        f"💡 Background task started!\n"
-        f"💡 Use /apc or /apc -b to add promo channels"
+        f"💡 Posts from this channel will be stored automatically\n"
+        f"💡 Now add promo channels using /apc -b"
     )
+
+@app.on_message(filters.command(["rmapauth"]))
+async def remove_main_promo_channel(client, message: Message):
+    """
+    Remove main channel authorization
+    Usage: /rmapauth <channel_id> OR reply to main channel message
+    """
+    chat_id = None
+    
+    if message.reply_to_message and message.reply_to_message.forward_from_chat:
+        chat_id = message.reply_to_message.forward_from_chat.id
+    elif len(message.command) >= 2:
+        try:
+            if message.command[1].startswith("@"):
+                chat = await client.get_chat(message.command[1])
+                chat_id = chat.id
+            elif message.command[1].lstrip('-').isdigit():
+                chat_id = int(message.command[1])
+        except Exception as e:
+            return await message.reply_text(f"❌ Invalid channel! Error: {e}")
+    
+    if not chat_id:
+        return await message.reply_text(
+            "❌ Usage:\n"
+            "/rmapauth <channel_id>\n\n"
+            "OR reply to main channel message"
+        )
+    
+    # Check if it's a main channel
+    if not await is_main_channel(chat_id):
+        return await message.reply_text("❌ This channel is not authorized as main channel!")
+    
+    try:
+        chat = await client.get_chat(chat_id)
+        channel_name = chat.title
+    except:
+        channel_name = str(chat_id)
+    
+    success = await remove_main_channel(chat_id)
+    
+    if success:
+        await message.reply_text(
+            f"✅ Main Channel Removed!\n\n"
+            f"📌 Channel: {channel_name}\n"
+            f"🆔 ID: {chat_id}\n\n"
+            f"🛑 Background task stopped\n"
+            f"🗑️ All data cleared from database"
+        )
+    else:
+        await message.reply_text("❌ Failed to remove channel!")
 
 @app.on_message(filters.command(["addpromochnl", "apc"]))
 async def add_promo_channels_cmd(client, message: Message):
     """
-    Add promo channels
-    /apc -b <main_id> : Bulk add (reply to first forwarded channel)
-    /apc <main_id> : Single add (reply to forwarded channel OR provide channel_id)
+    Add promo channels (where posts will be promoted to)
+    
+    Usage:
+    1. Forward main channel message (top)
+    2. Forward all promo channel messages below (100+)
+    3. Reply to main channel message: /apc -b
     """
     
-    args = message.text.split()
-    is_bulk = "-b" in args
+    is_bulk = "-b" in message.text
     
-    # Get main channel ID
-    main_id = None
-    
-    if is_bulk and len(args) >= 3:
-        try:
-            if args[2].startswith("@"):
-                chat = await client.get_chat(args[2])
-                main_id = chat.id
-            elif args[2].lstrip('-').isdigit():
-                main_id = int(args[2])
-        except:
-            pass
-    elif not is_bulk and len(args) >= 2:
-        try:
-            if args[1].startswith("@"):
-                chat = await client.get_chat(args[1])
-                main_id = chat.id
-            elif args[1].lstrip('-').isdigit():
-                main_id = int(args[1])
-        except:
-            pass
-    
-    if not main_id:
+    if not message.reply_to_message:
         return await message.reply_text(
             "❌ Usage:\n\n"
-            "Bulk Add:\n"
-            "/apc -b <main_id> (reply to first forwarded channel)\n\n"
-            "Single Add:\n"
-            "/apc <main_id> (reply to forwarded channel)\n"
-            "OR\n"
-            "/apc <main_id> <promo_channel_id>"
+            "1️⃣ Forward MAIN channel message (top)\n"
+            "2️⃣ Forward PROMO channel messages below\n"
+            "3️⃣ Reply to main channel message: /apc -b\n\n"
+            "Bot will auto-detect all promo channels!"
         )
     
+    # Get main channel from reply
+    if not message.reply_to_message.forward_from_chat:
+        return await message.reply_text("❌ Reply to a forwarded channel message!")
+    
+    main_id = message.reply_to_message.forward_from_chat.id
+    
+    # Check if main channel is authorized
     if not await is_main_channel(main_id):
-        return await message.reply_text("❌ Main channel not found! Use /apauth first.")
+        return await message.reply_text(
+            f"❌ Channel {main_id} is not a main channel!\n\n"
+            "First use: /apauth (reply to main channel message)"
+        )
     
+    if not is_bulk:
+        return await message.reply_text(
+            "❌ Use /apc -b for adding promo channels\n\n"
+            "This will detect all forwarded channels below main channel"
+        )
+    
+    # Collect all forwarded channel messages below
     promo_ids = []
+    start_msg_id = message.reply_to_message.id
     
-    if is_bulk:
-        # Bulk mode: collect from reply and next messages
-        if not message.reply_to_message:
-            return await message.reply_text("❌ Reply to first forwarded channel message!")
-        
-        if message.reply_to_message.forward_from_chat:
-            promo_ids.append(message.reply_to_message.forward_from_chat.id)
-        
-        try:
-            msg_id = message.reply_to_message.id
-            for i in range(1, 50):
-                try:
-                    next_msg = await client.get_messages(message.chat.id, msg_id + i)
-                    if next_msg.forward_from_chat:
-                        promo_ids.append(next_msg.forward_from_chat.id)
-                    else:
-                        break
-                except:
-                    break
-        except:
-            pass
-    else:
-        # Single mode
-        if message.reply_to_message and message.reply_to_message.forward_from_chat:
-            promo_ids.append(message.reply_to_message.forward_from_chat.id)
-        elif len(args) >= 3:
+    status_msg = await message.reply_text("🔍 Detecting promo channels...")
+    
+    try:
+        for i in range(1, 201):
             try:
-                if args[2].startswith("@"):
-                    chat = await client.get_chat(args[2])
-                    promo_ids.append(chat.id)
-                elif args[2].lstrip('-').isdigit():
-                    promo_ids.append(int(args[2]))
-            except:
-                pass
+                next_msg = await client.get_messages(message.chat.id, start_msg_id + i)
+                
+                if next_msg and next_msg.forward_from_chat:
+                    promo_channel_id = next_msg.forward_from_chat.id
+                    
+                    # Don't add main channel to promo list
+                    if promo_channel_id != main_id and promo_channel_id not in promo_ids:
+                        promo_ids.append(promo_channel_id)
+                        
+                        # Update status every 10 channels
+                        if len(promo_ids) % 10 == 0:
+                            await status_msg.edit(f"🔍 Detected {len(promo_ids)} channels...")
+                else:
+                    # Stop if non-forwarded message found
+                    if next_msg and not next_msg.forward_from_chat:
+                        break
+                        
+            except Exception:
+                break
+                
+    except Exception as e:
+        print(f"Error collecting channels: {e}")
     
     if not promo_ids:
-        return await message.reply_text("❌ No channels found to add!")
+        await status_msg.edit("❌ No promo channels found below main channel message!")
+        return
     
+    # Add to database
     success = await add_promo_channels(main_id, promo_ids)
     
     if success:
-        mode_text = "Bulk" if is_bulk else "Single"
-        channel_word = "channels" if len(promo_ids) > 1 else "channel"
-        await message.reply_text(
-            f"✅ Added {len(promo_ids)} promo {channel_word}!\n\n"
-            f"📌 Main: {main_id}\n"
-            f"🎯 Mode: {mode_text}\n"
-            f"📢 Channels: {len(promo_ids)}\n\n"
-            f"💡 Posts will cycle every 5h"
+        await status_msg.edit(
+            f"✅ Added {len(promo_ids)} promo channels!\n\n"
+            f"📌 Main Channel: {main_id}\n"
+            f"📢 Promo Channels: {len(promo_ids)}\n"
+            f"⏱️ Interval: 5h\n\n"
+            f"💡 Posts will cycle automatically!"
         )
     else:
-        await message.reply_text("❌ Failed to add channels!")
+        await status_msg.edit("❌ Failed to add channels!")
 
 @app.on_message(filters.command(["rmpc"]))
 async def remove_promo_channel_cmd(client, message: Message):
@@ -479,7 +560,7 @@ async def remove_promo_channel_cmd(client, message: Message):
         return await message.reply_text(
             "❌ Usage:\n"
             "/rmpc <main_id> <promo_id>\n\n"
-            "OR /rmpc <main_id> + reply to promo channel message"
+            "OR /rmpc <main_id> + reply to promo channel"
         )
     
     success = await remove_promo_channel(main_id, promo_id)
@@ -491,17 +572,22 @@ async def remove_promo_channel_cmd(client, message: Message):
             f"📌 From: {main_id}"
         )
     else:
-        await message.reply_text("❌ Channel not found in promo list!")
+        await message.reply_text("❌ Channel not found!")
 
 @app.on_message(filters.command(["apset"]))
 async def update_promo_settings_cmd(client, message: Message):
-    """Update promo settings"""
+    """
+    Update OR create promo settings
+    If channel not authorized, it will create new entry
+    If already exists, it will update settings
+    """
     
     args = message.text.split()
     chat_id = None
-    forward_tag = True
-    interval = "5h"
+    forward_tag = None
+    interval = None
     
+    # Get channel ID
     if message.reply_to_message and message.reply_to_message.forward_from_chat:
         chat_id = message.reply_to_message.forward_from_chat.id
     elif len(args) >= 2:
@@ -519,13 +605,13 @@ async def update_promo_settings_cmd(client, message: Message):
             "❌ Usage:\n"
             "/apset <channel_id> -f on/off -t 5h\n\n"
             "Flags:\n"
-            "-f : Forward tag (on=with tag, off=no tag) - default: on\n"
-            "-t : Interval (5h/5d/5m) - default: 5h"
+            "-f : Forward tag (on/off)\n"
+            "-t : Interval (5h/5d/5m)\n\n"
+            "💡 Creates new entry if channel not authorized\n"
+            "💡 Updates existing settings if already authorized"
         )
     
-    if not await is_main_channel(chat_id):
-        return await message.reply_text("❌ Not a main channel! Use /apauth first.")
-    
+    # Parse flags
     if "-f" in args:
         idx = args.index("-f")
         if idx + 1 < len(args):
@@ -536,26 +622,55 @@ async def update_promo_settings_cmd(client, message: Message):
         if idx + 1 < len(args):
             interval = args[idx + 1]
     
-    await update_promo_settings(chat_id, forward_tag, interval)
+    # Check if no flags provided
+    if forward_tag is None and interval is None:
+        return await message.reply_text(
+            "❌ Please provide at least one flag:\n\n"
+            "-f on/off (forward tag)\n"
+            "-t 5h/5d/5m (interval)"
+        )
     
-    tag_status = "OFF" if not forward_tag else "ON"
-    await message.reply_text(
-        f"✅ Settings Updated!\n\n"
-        f"📌 Channel: {chat_id}\n"
-        f"🔄 Forward Tag: {tag_status}\n"
-        f"⏱️ Interval: {interval}\n\n"
-        f"💡 Task restarted with new settings!"
-    )
+    # Check if channel exists in DB
+    is_existing = await is_main_channel(chat_id)
+    
+    # Update or create
+    success = await update_or_create_promo_settings(chat_id, forward_tag, interval)
+    
+    if success:
+        # Get current settings
+        data = await get_main_channel_data(chat_id)
+        current_tag = data.get("forward_tag", True)
+        current_interval = data.get("promo_interval", "5h")
+        
+        try:
+            chat = await client.get_chat(chat_id)
+            channel_name = chat.title
+        except:
+            channel_name = str(chat_id)
+        
+        action = "Updated" if is_existing else "Created"
+        tag_status = "OFF" if not current_tag else "ON"
+        
+        await message.reply_text(
+            f"✅ Settings {action}!\n\n"
+            f"📌 Channel: {channel_name}\n"
+            f"🆔 ID: {chat_id}\n"
+            f"🔄 Forward Tag: {tag_status}\n"
+            f"⏱️ Interval: {current_interval}\n\n"
+            f"{'💡 Task restarted!' if is_existing else '💡 Task started!'}"
+        )
+    else:
+        await message.reply_text("❌ Failed to update settings!")
 
 @app.on_message(filters.command(["aplist"]))
 async def list_promo_channels(client, message: Message):
-    """List all main channels"""
+    """List all main channels and their settings"""
     
     cursor = apauthdb.find({"is_main": True})
     channels = [doc async for doc in cursor]
     
     if not channels:
-        return await message.reply_text("⚠️ No auto-promo channels configured yet!")
+        return await message.reply_text("⚠️ No channels configured!")
     
     text = "✅ Auto Promo Channels:\n\n"
     
@@ -565,6 +680,7 @@ async def list_promo_channels(client, message: Message):
         fwd_tag = "OFF" if not doc.get("forward_tag", True) else "ON"
         interval = doc.get("promo_interval", "5h")
         posted_count = len(doc.get("posted_messages", []))
+        current_index = doc.get("current_post_index", 0)
         status = "🟢 Active" if chat_id in running_tasks else "🔴 Stopped"
         
         try:
@@ -577,7 +693,8 @@ async def list_promo_channels(client, message: Message):
         text += f"   ├ ID: {chat_id}\n"
         text += f"   ├ Status: {status}\n"
         text += f"   ├ Promo: {len(promo_ids)} channels\n"
-        text += f"   ├ Posts: {posted_count} messages\n"
+        text += f"   ├ Posts: {posted_count} stored\n"
+        text += f"   ├ Current: #{current_index + 1}\n"
         text += f"   ├ Tag: {fwd_tag}\n"
         text += f"   └ Interval: {interval}\n\n"
     
@@ -587,19 +704,20 @@ async def list_promo_channels(client, message: Message):
 
 @app.on_message(filters.channel & ~filters.service)
 async def store_channel_messages(client, message: Message):
-    """Store messages from main channel for cycling"""
+    """Auto-store messages from main channel"""
     
     if not await is_main_channel(message.chat.id):
         return
     
-    # Store message ID for later promotion
     await store_posted_message(message.chat.id, message.id)
     print(f"📝 Stored message {message.id} from {message.chat.id}")
 
 # -------------------- STARTUP -------------------- #
 
 async def load_existing_tasks():
-    """Load and start tasks for existing main channels"""
+    """Load and start tasks for existing main channels on bot restart"""
+    await asyncio.sleep(3)  # Wait for bot to fully start
+    
     cursor = apauthdb.find({"is_main": True, "is_active": True})
     channels = [doc async for doc in cursor]
     
@@ -607,7 +725,9 @@ async def load_existing_tasks():
         chat_id = int(doc["chat_id"])
         await start_promo_task(chat_id)
         print(f"✅ Loaded task for channel {chat_id}")
+    
+    print(f"🚀 Loaded {len(channels)} auto-promo channels!")
 
 # Start loading tasks on bot start
 asyncio.create_task(load_existing_tasks())
-print("🚀 Auto Promo system started!")
+print("🔥 Auto Promo system initialized!")
