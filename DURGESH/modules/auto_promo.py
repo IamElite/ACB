@@ -444,48 +444,79 @@ async def add_promo_channels_cmd(client, message: Message):
     """
     Add promo channels (where posts will be promoted to)
     
-    Usage:
-    1. Forward main channel message (top)
-    2. Forward all promo channel messages below (100+)
-    3. Reply to main channel message: /apc -b
+    NEW USAGE (SIMPLE):
+    1. Forward ALL promo channel messages
+    2. Reply to FIRST promo channel message: /apc -b <main_channel_id>
+    
+    Bot will detect all promo channels from that point onwards!
     """
     
-    is_bulk = "-b" in message.text
+    args = message.text.split()
+    is_bulk = "-b" in args
     
-    if not message.reply_to_message:
+    if not is_bulk:
         return await message.reply_text(
-            "❌ Usage:\n\n"
-            "1️⃣ Forward MAIN channel message (top)\n"
-            "2️⃣ Forward PROMO channel messages below\n"
-            "3️⃣ Reply to main channel message: /apc -b\n\n"
-            "Bot will auto-detect all promo channels!"
+            "❌ Use /apc -b <main_channel_id>\n\n"
+            "Reply to first promo channel message"
         )
     
-    # Get main channel from reply
-    if not message.reply_to_message.forward_from_chat:
-        return await message.reply_text("❌ Reply to a forwarded channel message!")
+    # Get main channel ID from command
+    main_id = None
     
-    main_id = message.reply_to_message.forward_from_chat.id
+    # Find main_id after -b flag
+    try:
+        b_index = args.index("-b")
+        if b_index + 1 < len(args):
+            main_arg = args[b_index + 1]
+            
+            if main_arg.startswith("@"):
+                chat = await client.get_chat(main_arg)
+                main_id = chat.id
+            elif main_arg.lstrip('-').isdigit():
+                main_id = int(main_arg)
+    except:
+        pass
+    
+    if not main_id:
+        return await message.reply_text(
+            "❌ Usage:\n"
+            "/apc -b <main_channel_id>\n\n"
+            "Examples:\n"
+            "/apc -b @mainchannel\n"
+            "/apc -b -1001234567890\n\n"
+            "Reply to FIRST promo channel message"
+        )
     
     # Check if main channel is authorized
     if not await is_main_channel(main_id):
         return await message.reply_text(
-            f"❌ Channel {main_id} is not a main channel!\n\n"
-            "First use: /apauth (reply to main channel message)"
+            f"❌ Channel {main_id} is not authorized as main channel!\n\n"
+            "First use:\n"
+            "/apauth {main_id}\n\n"
+            "OR reply to main channel message and use:\n"
+            "/apauth"
         )
     
-    if not is_bulk:
+    if not message.reply_to_message:
         return await message.reply_text(
-            "❌ Use /apc -b for adding promo channels\n\n"
-            "This will detect all forwarded channels below main channel"
+            "❌ Reply to FIRST promo channel message!\n\n"
+            "Then use: /apc -b <main_channel_id>"
         )
     
-    # Collect all forwarded channel messages below
+    # Collect all forwarded channel messages from reply point onwards
     promo_ids = []
     start_msg_id = message.reply_to_message.id
     
     status_msg = await message.reply_text("🔍 Detecting promo channels...")
     
+    # Check if reply message is a forwarded channel
+    if message.reply_to_message.forward_from_chat:
+        first_promo_id = message.reply_to_message.forward_from_chat.id
+        # Don't add main channel to promo list
+        if first_promo_id != main_id:
+            promo_ids.append(first_promo_id)
+    
+    # Collect next forwarded messages
     try:
         for i in range(1, 201):
             try:
@@ -513,7 +544,13 @@ async def add_promo_channels_cmd(client, message: Message):
         print(f"Error collecting channels: {e}")
     
     if not promo_ids:
-        await status_msg.edit("❌ No promo channels found below main channel message!")
+        await status_msg.edit(
+            "❌ No promo channels found!\n\n"
+            "Make sure you:\n"
+            "1. Forward promo channel messages\n"
+            "2. Reply to FIRST promo channel\n"
+            "3. Use: /apc -b <main_channel_id>"
+        )
         return
     
     # Add to database
@@ -529,6 +566,7 @@ async def add_promo_channels_cmd(client, message: Message):
         )
     else:
         await status_msg.edit("❌ Failed to add channels!")
+
 
 @app.on_message(filters.command(["rmpc"]))
 async def remove_promo_channel_cmd(client, message: Message):
