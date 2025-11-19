@@ -49,18 +49,18 @@ async def setup_ttl_indexes():
     try:
         await apauthdb.create_index(
             [("created_at", 1)],
-            expireAfterSeconds=2592000,  # 30 days
+            expireAfterSeconds=2592000,
             partialFilterExpression={"post_type": "main_channel"},
             background=True
         )
         
         await apauthdb.create_index(
             [("posted_at", 1)],
-            expireAfterSeconds=604800,  # 7 days
+            expireAfterSeconds=604800,
             partialFilterExpression={"post_type": "promo_track"},
             background=True
         )
-        print("✅ TTL indexes ready")
+        print("✅ TTL indexes setup")
     except Exception as e:
         print(f"⚠️ TTL error: {e}")
 
@@ -90,6 +90,18 @@ async def message_exists(channel_id, message_id):
     except:
         return False
 
+# Check if bot is admin in channel
+async def check_bot_admin(channel_id):
+    """Verify bot has admin rights in channel"""
+    try:
+        member = await app.get_chat_member(channel_id, "me")
+        is_admin = member.status in ["administrator", "creator"]
+        print(f"🔍 Bot admin in {channel_id}: {'✅' if is_admin else '❌'}")
+        return is_admin
+    except Exception as e:
+        print(f"❌ Admin check failed {channel_id}: {e}")
+        return False
+
 # Track new posts from main channel
 @app.on_message(filters.channel)
 async def track_main_channel_posts(client, message: Message):
@@ -114,6 +126,7 @@ async def track_main_channel_posts(client, message: Message):
                     }},
                     upsert=True
                 )
+                print(f"📝 Post tracked: {message.id}")
     except Exception as e:
         print(f"❌ Track error: {e}")
 
@@ -174,6 +187,16 @@ async def auth_main_channel(client, message: Message):
         else:
             return await message.reply("❌ Use: `/apauth <channel_id>` ya reply karo channel msg ko!")
         
+        # Check if bot is admin
+        is_admin = await check_bot_admin(channel_id)
+        if not is_admin:
+            return await message.reply(
+                f"❌ Bot NOT admin in `{channel_id}`!\n\n"
+                f"⚠️ Bot ko admin banao with:\n"
+                f"• Post Messages\n"
+                f"• Delete Messages (optional)"
+            )
+        
         await apauthdb.update_one(
             {"_id": "config"},
             {"$set": {
@@ -183,13 +206,16 @@ async def auth_main_channel(client, message: Message):
             upsert=True
         )
         
+        print(f"✅ Main channel: {channel_id}")
+        
         await message.reply(
-            f"✅ Main channel auth ho gaya: `{channel_id}`\n\n"
-            f"🚀 Bot ab automatically posts track karega!\n"
-            f"⚠️ Bot ko channel me admin zaroor banao!"
+            f"✅ Main channel auth: `{channel_id}`\n\n"
+            f"🚀 Bot ab posts track karega!\n"
+            f"📝 Channel me post karo to test karo."
         )
         
     except Exception as e:
+        print(f"❌ Auth error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Unauth main channel
@@ -215,9 +241,11 @@ async def unauth_main_channel(client, message: Message):
                 "post_type": "main_channel"
             })
         
-        await message.reply("✅ Main channel unauth ho gaya aur sab posts clear ho gaye!")
+        print("✅ Main channel unauth")
+        await message.reply("✅ Main channel unauth ho gaya!")
         
     except Exception as e:
+        print(f"❌ Unauth error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Add promo channel
@@ -230,10 +258,7 @@ async def add_promo_channel(client, message: Message):
             bulk_add_active[chat_id] = True
             collected_channels[chat_id] = {"add": [], "remove": []}
             
-            await message.reply(
-                "📥 **Bulk Add Mode Active!**\n\n"
-                "Abhi 1 minute hai! Channels forward karo yahan! ⏳"
-            )
+            await message.reply("📥 Bulk Add Mode! 1 min - Channels forward karo! ⏳")
             
             await asyncio.sleep(60)
             
@@ -260,8 +285,10 @@ async def add_promo_channel(client, message: Message):
             
             del collected_channels[chat_id]
             
+            print(f"✅ Bulk: +{added}, -{failed}")
+            
             await message.reply(
-                f"✅ **Bulk Add Complete!**\n\n"
+                f"✅ Bulk Add Done!\n\n"
                 f"✅ Added: {added}\n"
                 f"❌ Failed: {failed}\n"
                 f"📊 Total: {len(existing)}"
@@ -272,14 +299,22 @@ async def add_promo_channel(client, message: Message):
             if message.reply_to_message.forward_from_chat:
                 channel_id = message.reply_to_message.forward_from_chat.id
             else:
-                return await message.reply("❌ Reply karo forwarded channel message ko!")
+                return await message.reply("❌ Reply karo forwarded msg!")
         elif len(message.command) > 1:
             try:
                 channel_id = int(message.command[1])
             except:
                 channel_id = message.command[1]
         else:
-            return await message.reply("❌ Use: `/apc <channel_id>` ya reply karo, ya `/apc -b` bulk ke liye!")
+            return await message.reply("❌ Use: `/apc <id>` ya `/apc -b`")
+        
+        # Check if bot is admin
+        is_admin = await check_bot_admin(channel_id)
+        if not is_admin:
+            return await message.reply(
+                f"❌ Bot NOT admin in `{channel_id}`!\n"
+                f"⚠️ Bot ko admin banao first."
+            )
         
         config = await get_config()
         promo_channels = config.get("promo_channels", [])
@@ -291,11 +326,13 @@ async def add_promo_channel(client, message: Message):
                 {"$set": {"promo_channels": promo_channels}},
                 upsert=True
             )
-            await message.reply(f"✅ Promo channel add ho gaya: `{channel_id}`")
+            print(f"✅ Promo added: {channel_id}")
+            await message.reply(f"✅ Promo channel added: `{channel_id}`")
         else:
-            await message.reply(f"ℹ️ Yeh channel already promo list mein hai!")
+            await message.reply("ℹ️ Already in list!")
             
     except Exception as e:
+        print(f"❌ Add error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Remove promo channel
@@ -308,10 +345,7 @@ async def remove_promo_channel(client, message: Message):
             bulk_remove_active[chat_id] = True
             collected_channels[chat_id] = {"add": [], "remove": []}
             
-            await message.reply(
-                "🗑️ **Bulk Remove Mode Active!**\n\n"
-                "Abhi 1 minute hai! Channels forward karo!"
-            )
+            await message.reply("🗑️ Bulk Remove! 1 min - Forward karo!")
             
             await asyncio.sleep(60)
             
@@ -334,8 +368,10 @@ async def remove_promo_channel(client, message: Message):
             
             del collected_channels[chat_id]
             
+            print(f"✅ Bulk removed: {removed}")
+            
             await message.reply(
-                f"✅ **Bulk Remove Complete!**\n\n"
+                f"✅ Bulk Remove Done!\n\n"
                 f"🗑️ Removed: {removed}\n"
                 f"📊 Remaining: {len(promo_channels)}"
             )
@@ -345,14 +381,14 @@ async def remove_promo_channel(client, message: Message):
             if message.reply_to_message.forward_from_chat:
                 channel_id = message.reply_to_message.forward_from_chat.id
             else:
-                return await message.reply("❌ Reply karo forwarded channel message ko!")
+                return await message.reply("❌ Reply karo forwarded msg!")
         elif len(message.command) > 1:
             try:
                 channel_id = int(message.command[1])
             except:
                 channel_id = message.command[1]
         else:
-            return await message.reply("❌ Use: `/rmapc <channel_id>` ya reply karo!")
+            return await message.reply("❌ Use: `/rmapc <id>`")
         
         config = await get_config()
         promo_channels = config.get("promo_channels", [])
@@ -364,11 +400,13 @@ async def remove_promo_channel(client, message: Message):
                 {"$set": {"promo_channels": promo_channels}},
                 upsert=True
             )
-            await message.reply(f"✅ Promo channel remove ho gaya: `{channel_id}`")
+            print(f"✅ Promo removed: {channel_id}")
+            await message.reply(f"✅ Removed: `{channel_id}`")
         else:
-            await message.reply(f"ℹ️ Yeh channel promo list mein nahi hai!")
+            await message.reply("ℹ️ Not in list!")
             
     except Exception as e:
+        print(f"❌ Remove error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Set config
@@ -383,11 +421,10 @@ async def set_config(client, message: Message):
         
         if len(args) == 1:
             return await message.reply(
-                f"⚙️ **Current Settings**\n\n"
+                f"⚙️ **Settings**\n\n"
                 f"🏷️ Forward Tag: `{'On' if forward_tag else 'Off'}`\n"
-                f"⏰ Promo Interval: `{format_time(promo_interval)}`\n\n"
-                f"**Usage:**\n"
-                f"`/set -f on/off -t 5h`"
+                f"⏰ Interval: `{format_time(promo_interval)}`\n\n"
+                f"**Usage:** `/set -f on/off -t 5h`"
             )
         
         if "-f" in args:
@@ -410,18 +447,21 @@ async def set_config(client, message: Message):
             upsert=True
         )
         
+        print(f"✅ Settings: tag={forward_tag}, interval={promo_interval}s")
+        
         await message.reply(
-            f"✅ **Settings Updated**\n\n"
+            f"✅ **Updated**\n\n"
             f"🏷️ Forward Tag: `{'On' if forward_tag else 'Off'}`\n"
-            f"⏰ Promo Interval: `{format_time(promo_interval)}`"
+            f"⏰ Interval: `{format_time(promo_interval)}`"
         )
         
     except Exception as e:
+        print(f"❌ Set error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Cleanup orphaned/deleted posts
 async def cleanup_deleted_posts():
-    """Periodically check and remove deleted posts from DB"""
+    """Periodically check and remove deleted posts"""
     while True:
         try:
             posts = []
@@ -430,31 +470,23 @@ async def cleanup_deleted_posts():
             
             deleted_count = 0
             for post in posts:
-                channel_id = post.get("channel_id")
-                message_id = post.get("message_id")
-                
-                if not await message_exists(channel_id, message_id):
-                    await apauthdb.update_one(
-                        {"_id": post["_id"]},
-                        {"$set": {"exists": False}}
-                    )
+                if not await message_exists(post.get("channel_id"), post.get("message_id")):
+                    await apauthdb.update_one({"_id": post["_id"]}, {"$set": {"exists": False}})
                     deleted_count += 1
-                
                 await asyncio.sleep(1)
             
             if deleted_count > 0:
-                print(f"🧹 Cleaned {deleted_count} deleted posts")
+                print(f"🧹 Cleaned {deleted_count} posts")
             
-            cutoff_date = datetime.utcnow() - timedelta(days=7)
             result = await apauthdb.delete_many({
                 "post_type": "promo_track",
-                "posted_at": {"$lt": cutoff_date}
+                "posted_at": {"$lt": datetime.utcnow() - timedelta(days=7)}
             })
             
             if result.deleted_count > 0:
-                print(f"🧹 Cleaned {result.deleted_count} old promo records")
+                print(f"🧹 Cleaned {result.deleted_count} promos")
             
-            await asyncio.sleep(21600)  # 6 hours
+            await asyncio.sleep(21600)
             
         except asyncio.CancelledError:
             break
@@ -464,14 +496,12 @@ async def cleanup_deleted_posts():
 
 # Background promo loop
 async def promo_loop():
-    """Main background loop for auto promotion"""
+    """Main promo loop"""
     print("🚀 Promo loop started")
     
-    await apauthdb.update_one(
-        {"_id": "config"},
-        {"$set": {"loop_running": True}},
-        upsert=True
-    )
+    await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": True}}, upsert=True)
+    
+    cycle = 0
     
     while True:
         try:
@@ -491,6 +521,9 @@ async def promo_loop():
                 await asyncio.sleep(120)
                 continue
             
+            cycle += 1
+            print(f"🔄 Cycle #{cycle}")
+            
             posts_data = []
             async for post_doc in apauthdb.find({
                 "channel_id": main_channel,
@@ -499,67 +532,51 @@ async def promo_loop():
             }).sort("date", -1).limit(50):
                 posts_data.append(post_doc)
             
+            print(f"📊 Posts: {len(posts_data)}")
+            
             if not posts_data:
+                print("⚠️ No posts! Add posts in main channel")
                 await asyncio.sleep(300)
                 continue
             
             if current_index >= len(posts_data):
                 current_index = 0
             
-            current_post_data = posts_data[current_index]
-            message_id = current_post_data.get("message_id")
+            message_id = posts_data[current_index].get("message_id")
+            print(f"📤 Promoting post {message_id}")
             
             try:
                 if not await message_exists(main_channel, message_id):
-                    await apauthdb.update_one(
-                        {"_id": current_post_data["_id"]},
-                        {"$set": {"exists": False}}
-                    )
+                    await apauthdb.update_one({"_id": posts_data[current_index]["_id"]}, {"$set": {"exists": False}})
                     current_index = (current_index + 1) % len(posts_data)
-                    await apauthdb.update_one(
-                        {"_id": "config"},
-                        {"$set": {"current_post_index": current_index}},
-                        upsert=True
-                    )
+                    await apauthdb.update_one({"_id": "config"}, {"$set": {"current_post_index": current_index}}, upsert=True)
                     await asyncio.sleep(5)
                     continue
                 
                 current_post = await app.get_messages(main_channel, message_id)
                 
             except Exception as e:
-                await apauthdb.update_one(
-                    {"_id": current_post_data["_id"]},
-                    {"$set": {"exists": False}}
-                )
+                print(f"❌ Get post failed: {e}")
+                await apauthdb.update_one({"_id": posts_data[current_index]["_id"]}, {"$set": {"exists": False}})
                 current_index = (current_index + 1) % len(posts_data)
-                await apauthdb.update_one(
-                    {"_id": "config"},
-                    {"$set": {"current_post_index": current_index}},
-                    upsert=True
-                )
+                await apauthdb.update_one({"_id": "config"}, {"$set": {"current_post_index": current_index}}, upsert=True)
                 await asyncio.sleep(10)
                 continue
             
-            success_count = 0
-            fail_count = 0
+            success = 0
+            failed = 0
             
             for channel_id in promo_channels:
                 try:
-                    last_msg_data = await apauthdb.find_one({
-                        "promo_channel_id": channel_id,
-                        "post_type": "promo_track"
-                    })
+                    last_msg = await apauthdb.find_one({"promo_channel_id": channel_id, "post_type": "promo_track"})
                     
-                    if last_msg_data and last_msg_data.get("last_msg_id"):
+                    if last_msg and last_msg.get("last_msg_id"):
                         try:
-                            await app.delete_messages(channel_id, last_msg_data["last_msg_id"])
+                            await app.delete_messages(channel_id, last_msg["last_msg_id"])
                         except:
                             pass
                     
-                    if forward_tag:
-                        sent = await current_post.forward(channel_id)
-                    else:
-                        sent = await current_post.copy(channel_id)
+                    sent = await current_post.forward(channel_id) if forward_tag else await current_post.copy(channel_id)
                     
                     await apauthdb.update_one(
                         {"promo_channel_id": channel_id},
@@ -572,64 +589,59 @@ async def promo_loop():
                         upsert=True
                     )
                     
-                    success_count += 1
+                    success += 1
                     await asyncio.sleep(2)
                     
                 except FloodWait as e:
                     await asyncio.sleep(e.value)
-                    fail_count += 1
-                except Exception:
-                    fail_count += 1
+                    failed += 1
+                except:
+                    failed += 1
             
-            print(f"✅ Promo done: {success_count} success, {fail_count} failed")
+            print(f"✅ Done: {success} success, {failed} failed")
             
             current_index = (current_index + 1) % len(posts_data)
             await apauthdb.update_one(
                 {"_id": "config"},
-                {"$set": {
-                    "current_post_index": current_index,
-                    "last_promo_time": datetime.utcnow()
-                }},
+                {"$set": {"current_post_index": current_index, "last_promo_time": datetime.utcnow()}},
                 upsert=True
             )
             
+            print(f"⏰ Next in {format_time(promo_interval)}")
             await asyncio.sleep(promo_interval)
             
         except asyncio.CancelledError:
-            print("🛑 Promo loop stopped")
-            await apauthdb.update_one(
-                {"_id": "config"},
-                {"$set": {"loop_running": False}},
-                upsert=True
-            )
+            print("🛑 Loop stopped")
+            await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": False}}, upsert=True)
             break
         except Exception as e:
             print(f"❌ Loop error: {e}")
             await asyncio.sleep(120)
 
-
-# Startup handler
+# Startup
 async def start_promo_on_boot():
-    """Start promo loop when bot boots up"""
+    """Bot startup"""
     global promo_task, cleanup_task
     
-    await asyncio.sleep(5)
-    
-    await setup_ttl_indexes()
-    
-    config = await get_config()
-    main_channel = config.get("main_channel")
-    promo_channels = config.get("promo_channels", [])
-    
-    # Show only useful info
-    if main_channel:
-        print(f"📢 Main Channel: {main_channel}")
-        print(f"📊 Promo Channels: {len(promo_channels)}")
-    else:
-        print("⚠️ Main channel not set")
-    
-    promo_task = asyncio.create_task(promo_loop())
-    cleanup_task = asyncio.create_task(cleanup_deleted_posts())
+    try:
+        await asyncio.sleep(5)
+        await setup_ttl_indexes()
+        
+        config = await get_config()
+        main_channel = config.get("main_channel")
+        promo_channels = config.get("promo_channels", [])
+        
+        if main_channel:
+            print(f"📢 Main: {main_channel}")
+            print(f"📊 Promo: {len(promo_channels)}")
+            await check_bot_admin(main_channel)
+        else:
+            print("⚠️ Main channel not set")
+        
+        promo_task = asyncio.create_task(promo_loop())
+        cleanup_task = asyncio.create_task(cleanup_deleted_posts())
+        
+    except Exception as e:
+        print(f"❌ Startup error: {e}")
 
-# Create startup task
 asyncio.create_task(start_promo_on_boot())
