@@ -607,6 +607,7 @@ async def promo_loop():
             print(f"❌ Loop error: {e}")
             await asyncio.sleep(120)
 
+
 # Startup handler
 async def start_promo_on_boot():
     """Start promo loop when bot boots up"""
@@ -614,18 +615,21 @@ async def start_promo_on_boot():
     
     await asyncio.sleep(5)
     
-    print("🔥 Bot started")
-    
     await setup_ttl_indexes()
     
     config = await get_config()
-    if config.get("main_channel"):
-        print(f"🔄 Resuming from index: {config.get('current_post_index', 0)}")
+    main_channel = config.get("main_channel")
+    promo_channels = config.get("promo_channels", [])
+    
+    # Show only useful info
+    if main_channel:
+        print(f"📢 Main Channel: {main_channel}")
+        print(f"📊 Promo Channels: {len(promo_channels)}")
+    else:
+        print("⚠️ Main channel not set")
     
     promo_task = asyncio.create_task(promo_loop())
     cleanup_task = asyncio.create_task(cleanup_deleted_posts())
-    
-    print("✅ All tasks running")
 
 # Create startup task
 asyncio.create_task(start_promo_on_boot())
