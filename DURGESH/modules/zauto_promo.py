@@ -525,8 +525,11 @@ async def cleanup_deleted_posts():
             await asyncio.sleep(3600)
 
 # Promo loop
+# Promo loop
 async def promo_loop():
     """Main promo loop"""
+    print("🚀 Promo loop started")
+    
     await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": True}}, upsert=True)
     
     cycle = 0
@@ -550,6 +553,7 @@ async def promo_loop():
                 continue
             
             cycle += 1
+            print(f"🔄 Cycle #{cycle}")
             
             posts_data = []
             async for post_doc in apauthdb.find({
@@ -559,6 +563,8 @@ async def promo_loop():
             }).sort("date", -1).limit(50):
                 posts_data.append(post_doc)
             
+            print(f"📊 Posts: {len(posts_data)}")
+            
             if not posts_data:
                 await asyncio.sleep(300)
                 continue
@@ -567,6 +573,7 @@ async def promo_loop():
                 current_index = 0
             
             message_id = posts_data[current_index].get("message_id")
+            print(f"📤 Promoting post {message_id}")
             
             try:
                 if not await message_exists(main_channel, message_id):
@@ -579,6 +586,7 @@ async def promo_loop():
                 current_post = await app.get_messages(main_channel, message_id)
                 
             except Exception as e:
+                print(f"❌ Get post failed: {e}")
                 await apauthdb.update_one({"_id": posts_data[current_index]["_id"]}, {"$set": {"exists": False}})
                 current_index = (current_index + 1) % len(posts_data)
                 await apauthdb.update_one({"_id": "config"}, {"$set": {"current_post_index": current_index}}, upsert=True)
@@ -620,7 +628,7 @@ async def promo_loop():
                 except:
                     failed += 1
             
-            print(f"✅ Cycle #{cycle}: {success}/{len(promo_channels)}")
+            print(f"✅ Done: {success} success, {failed} failed")
             
             current_index = (current_index + 1) % len(posts_data)
             await apauthdb.update_one(
@@ -629,14 +637,18 @@ async def promo_loop():
                 upsert=True
             )
             
+            print(f"⏰ Next in {format_time(promo_interval)}")
+            
             await asyncio.sleep(promo_interval)
             
         except asyncio.CancelledError:
+            print("🛑 Loop stopped")
             await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": False}}, upsert=True)
             break
         except Exception as e:
             print(f"❌ Loop: {e}")
             await asyncio.sleep(120)
+
 
 # Startup
 async def start_promo_on_boot():
