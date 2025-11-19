@@ -60,7 +60,6 @@ async def setup_ttl_indexes():
             partialFilterExpression={"post_type": "promo_track"},
             background=True
         )
-        print("✅ TTL indexes setup")
     except Exception as e:
         print(f"⚠️ TTL error: {e}")
 
@@ -123,7 +122,7 @@ async def track_main_channel_posts(client, message: Message):
                     }},
                     upsert=True
                 )
-                print(f"📝 Post tracked: {message.id}")
+                print(f"📝 Tracked: {message.id}")
     except Exception as e:
         print(f"❌ Track error: {e}")
 
@@ -167,7 +166,7 @@ async def bulk_collector(client, message: Message):
             except:
                 pass
 
-# Status command - debug helper
+# Status command
 @app.on_message(filters.command(["apstatus"]))
 async def check_status(client, message: Message):
     """Check current bot status and config"""
@@ -183,7 +182,6 @@ async def check_status(client, message: Message):
             bot_status = await get_bot_status(main_channel)
             status_msg += f"   Bot Status: `{bot_status}`\n\n"
             
-            # Count posts
             post_count = await apauthdb.count_documents({
                 "channel_id": main_channel,
                 "post_type": "main_channel",
@@ -219,19 +217,13 @@ async def auth_main_channel(client, message: Message):
             except:
                 channel_id = message.command[1]
         else:
-            return await message.reply("❌ Use: `/apauth <channel_id>` ya reply karo channel msg ko!")
+            return await message.reply("❌ Use: `/apauth <channel_id>` ya reply karo")
         
-        # Check if bot can access channel
         try:
             chat = await app.get_chat(channel_id)
             bot_status = await get_bot_status(channel_id)
-            print(f"🔍 Main channel: {chat.title}, Bot status: {bot_status}")
         except Exception as e:
-            return await message.reply(
-                f"❌ Bot channel access nahi kar sakta!\n\n"
-                f"Error: `{e}`\n\n"
-                f"⚠️ Bot ko channel me add karo"
-            )
+            return await message.reply(f"❌ Channel access failed: `{e}`")
         
         await apauthdb.update_one(
             {"_id": "config"},
@@ -242,19 +234,13 @@ async def auth_main_channel(client, message: Message):
             upsert=True
         )
         
-        print(f"✅ Main channel: {channel_id}")
-        
         await message.reply(
             f"✅ Main channel set: `{chat.title}`\n"
-            f"🆔 ID: `{channel_id}`\n"
-            f"📊 Bot Status: `{bot_status}`\n\n"
-            f"🚀 Bot ab posts track karega!\n"
-            f"📝 Channel me post karo to test karo.\n\n"
-            f"💡 Use `/apstatus` to check status"
+            f"🆔 ID: `{channel_id}`\n\n"
+            f"📝 Channel me post karo to test karo"
         )
         
     except Exception as e:
-        print(f"❌ Auth error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Unauth main channel
@@ -280,11 +266,9 @@ async def unauth_main_channel(client, message: Message):
                 "post_type": "main_channel"
             })
         
-        print("✅ Main channel unauth")
-        await message.reply("✅ Main channel unauth ho gaya!")
+        await message.reply("✅ Main channel unauth!")
         
     except Exception as e:
-        print(f"❌ Unauth error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Add promo channel
@@ -297,8 +281,7 @@ async def add_promo_channel(client, message: Message):
             bulk_add_active[chat_id] = True
             collected_channels[chat_id] = {"add": [], "remove": []}
             
-            await message.reply("📥 Bulk Add Mode! 1 min - Channels forward karo! ⏳")
-            
+            await message.reply("📥 Bulk Add! 1 min - Forward karo! ⏳")
             await asyncio.sleep(60)
             
             bulk_add_active[chat_id] = False
@@ -324,10 +307,8 @@ async def add_promo_channel(client, message: Message):
             
             del collected_channels[chat_id]
             
-            print(f"✅ Bulk: +{added}, -{failed}")
-            
             await message.reply(
-                f"✅ Bulk Add Done!\n\n"
+                f"✅ Bulk Done!\n\n"
                 f"✅ Added: {added}\n"
                 f"❌ Failed: {failed}\n"
                 f"📊 Total: {len(existing)}"
@@ -347,48 +328,29 @@ async def add_promo_channel(client, message: Message):
         else:
             return await message.reply("❌ Use: `/apc <id>` ya `/apc -b`")
         
-        # Get bot permissions in channel
         try:
             chat = await app.get_chat(channel_id)
             member = await app.get_chat_member(channel_id, "me")
             
-            print(f"🔍 Channel: {chat.title}")
-            print(f"🔍 Bot status: {member.status}")
+            # Convert status to string
+            status_str = str(member.status).split('.')[-1].lower()
             
-            # Log permissions if available
-            if member.privileges:
-                print(f"🔍 Can post: {member.privileges.can_post_messages}")
-                print(f"🔍 Can delete: {member.privileges.can_delete_messages}")
-            
-            # Check if bot is admin
-            if member.status not in ["administrator", "creator"]:
+            # Check admin status
+            if status_str not in ["administrator", "creator", "owner"]:
                 return await message.reply(
-                    f"❌ Bot is **{member.status}** in `{chat.title}`\n\n"
-                    f"⚠️ Bot ko **Admin** banao with:\n"
-                    f"• ✅ Post Messages\n"
-                    f"• ✅ Delete Messages (optional)\n\n"
-                    f"Fir try karo!"
+                    f"❌ Bot is {member.status}\n\n"
+                    f"⚠️ Bot ko Admin banao!"
                 )
             
-            # Check post permission (if privileges available)
+            # Check post permission
             if member.privileges and not member.privileges.can_post_messages:
                 return await message.reply(
-                    f"⚠️ Bot admin hai but **Post Messages** permission nahi hai!\n\n"
-                    f"Channel: `{chat.title}`\n"
-                    f"Status: `{member.status}`\n\n"
-                    f"✅ 'Post Messages' permission enable karo!"
+                    f"⚠️ Bot admin hai but Post Messages permission nahi!\n\n"
+                    f"✅ Permission enable karo"
                 )
             
         except Exception as e:
-            print(f"❌ Channel check error: {e}")
-            return await message.reply(
-                f"❌ Channel check failed!\n\n"
-                f"Error: `{str(e)}`\n\n"
-                f"⚠️ Check karo:\n"
-                f"1. Bot channel me add hai?\n"
-                f"2. Channel ID correct hai?\n"
-                f"3. Bot ko admin banaya?"
-            )
+            return await message.reply(f"❌ Check failed: `{str(e)}`")
         
         config = await get_config()
         promo_channels = config.get("promo_channels", [])
@@ -400,21 +362,15 @@ async def add_promo_channel(client, message: Message):
                 {"$set": {"promo_channels": promo_channels}},
                 upsert=True
             )
-            print(f"✅ Promo added: {channel_id}")
             await message.reply(
-                f"✅ Promo channel added!\n\n"
-                f"📢 Channel: `{chat.title}`\n"
-                f"🆔 ID: `{channel_id}`\n"
-                f"📊 Total: `{len(promo_channels)}`"
+                f"✅ Added!\n\n"
+                f"📢 {chat.title}\n"
+                f"📊 Total: {len(promo_channels)}"
             )
         else:
-            await message.reply(
-                f"ℹ️ Already in list!\n\n"
-                f"Channel: `{chat.title}`"
-            )
+            await message.reply(f"ℹ️ Already added!")
             
     except Exception as e:
-        print(f"❌ Add error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Remove promo channel
@@ -427,8 +383,7 @@ async def remove_promo_channel(client, message: Message):
             bulk_remove_active[chat_id] = True
             collected_channels[chat_id] = {"add": [], "remove": []}
             
-            await message.reply("🗑️ Bulk Remove! 1 min - Forward karo!")
-            
+            await message.reply("🗑️ Bulk Remove! 1 min")
             await asyncio.sleep(60)
             
             bulk_remove_active[chat_id] = False
@@ -450,10 +405,8 @@ async def remove_promo_channel(client, message: Message):
             
             del collected_channels[chat_id]
             
-            print(f"✅ Bulk removed: {removed}")
-            
             await message.reply(
-                f"✅ Bulk Remove Done!\n\n"
+                f"✅ Done!\n\n"
                 f"🗑️ Removed: {removed}\n"
                 f"📊 Remaining: {len(promo_channels)}"
             )
@@ -482,13 +435,11 @@ async def remove_promo_channel(client, message: Message):
                 {"$set": {"promo_channels": promo_channels}},
                 upsert=True
             )
-            print(f"✅ Promo removed: {channel_id}")
             await message.reply(f"✅ Removed: `{channel_id}`")
         else:
             await message.reply("ℹ️ Not in list!")
             
     except Exception as e:
-        print(f"❌ Remove error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
 # Set config
@@ -529,8 +480,6 @@ async def set_config(client, message: Message):
             upsert=True
         )
         
-        print(f"✅ Settings: tag={forward_tag}, interval={promo_interval}s")
-        
         await message.reply(
             f"✅ **Updated**\n\n"
             f"🏷️ Forward Tag: `{'On' if forward_tag else 'Off'}`\n"
@@ -538,10 +487,9 @@ async def set_config(client, message: Message):
         )
         
     except Exception as e:
-        print(f"❌ Set error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
-# Cleanup orphaned/deleted posts
+# Cleanup deleted posts
 async def cleanup_deleted_posts():
     """Periodically check and remove deleted posts"""
     while True:
@@ -550,15 +498,15 @@ async def cleanup_deleted_posts():
             async for post in apauthdb.find({"post_type": "main_channel", "exists": True}):
                 posts.append(post)
             
-            deleted_count = 0
+            deleted = 0
             for post in posts:
                 if not await message_exists(post.get("channel_id"), post.get("message_id")):
                     await apauthdb.update_one({"_id": post["_id"]}, {"$set": {"exists": False}})
-                    deleted_count += 1
+                    deleted += 1
                 await asyncio.sleep(1)
             
-            if deleted_count > 0:
-                print(f"🧹 Cleaned {deleted_count} posts")
+            if deleted > 0:
+                print(f"🧹 Cleaned {deleted} posts")
             
             result = await apauthdb.delete_many({
                 "post_type": "promo_track",
@@ -573,14 +521,12 @@ async def cleanup_deleted_posts():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"❌ Cleanup error: {e}")
+            print(f"❌ Cleanup: {e}")
             await asyncio.sleep(3600)
 
-# Background promo loop
+# Promo loop
 async def promo_loop():
     """Main promo loop"""
-    print("🚀 Promo loop started")
-    
     await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": True}}, upsert=True)
     
     cycle = 0
@@ -604,7 +550,6 @@ async def promo_loop():
                 continue
             
             cycle += 1
-            print(f"🔄 Cycle #{cycle}")
             
             posts_data = []
             async for post_doc in apauthdb.find({
@@ -614,10 +559,7 @@ async def promo_loop():
             }).sort("date", -1).limit(50):
                 posts_data.append(post_doc)
             
-            print(f"📊 Posts: {len(posts_data)}")
-            
             if not posts_data:
-                print("⚠️ No posts! Add posts in main channel")
                 await asyncio.sleep(300)
                 continue
             
@@ -625,7 +567,6 @@ async def promo_loop():
                 current_index = 0
             
             message_id = posts_data[current_index].get("message_id")
-            print(f"📤 Promoting post {message_id}")
             
             try:
                 if not await message_exists(main_channel, message_id):
@@ -638,7 +579,6 @@ async def promo_loop():
                 current_post = await app.get_messages(main_channel, message_id)
                 
             except Exception as e:
-                print(f"❌ Get post failed: {e}")
                 await apauthdb.update_one({"_id": posts_data[current_index]["_id"]}, {"$set": {"exists": False}})
                 current_index = (current_index + 1) % len(posts_data)
                 await apauthdb.update_one({"_id": "config"}, {"$set": {"current_post_index": current_index}}, upsert=True)
@@ -680,7 +620,7 @@ async def promo_loop():
                 except:
                     failed += 1
             
-            print(f"✅ Done: {success} success, {failed} failed")
+            print(f"✅ Cycle #{cycle}: {success}/{len(promo_channels)}")
             
             current_index = (current_index + 1) % len(posts_data)
             await apauthdb.update_one(
@@ -689,15 +629,13 @@ async def promo_loop():
                 upsert=True
             )
             
-            print(f"⏰ Next in {format_time(promo_interval)}")
             await asyncio.sleep(promo_interval)
             
         except asyncio.CancelledError:
-            print("🛑 Loop stopped")
             await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": False}}, upsert=True)
             break
         except Exception as e:
-            print(f"❌ Loop error: {e}")
+            print(f"❌ Loop: {e}")
             await asyncio.sleep(120)
 
 # Startup
@@ -716,13 +654,11 @@ async def start_promo_on_boot():
         if main_channel:
             print(f"📢 Main: {main_channel}")
             print(f"📊 Promo: {len(promo_channels)}")
-        else:
-            print("⚠️ Main channel not set")
         
         promo_task = asyncio.create_task(promo_loop())
         cleanup_task = asyncio.create_task(cleanup_deleted_posts())
         
     except Exception as e:
-        print(f"❌ Startup error: {e}")
+        print(f"❌ Startup: {e}")
 
 asyncio.create_task(start_promo_on_boot())
