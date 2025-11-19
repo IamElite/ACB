@@ -90,17 +90,14 @@ async def message_exists(channel_id, message_id):
     except:
         return False
 
-# Check if bot is admin in channel
-async def check_bot_admin(channel_id):
-    """Verify bot has admin rights in channel"""
+# Check bot status in channel
+async def get_bot_status(channel_id):
+    """Get bot member status in channel"""
     try:
         member = await app.get_chat_member(channel_id, "me")
-        is_admin = member.status in ["administrator", "creator"]
-        print(f"🔍 Bot admin in {channel_id}: {'✅' if is_admin else '❌'}")
-        return is_admin
+        return member.status
     except Exception as e:
-        print(f"❌ Admin check failed {channel_id}: {e}")
-        return False
+        return f"Error: {e}"
 
 # Track new posts from main channel
 @app.on_message(filters.channel)
@@ -170,6 +167,43 @@ async def bulk_collector(client, message: Message):
             except:
                 pass
 
+# Status command - debug helper
+@app.on_message(filters.command(["apstatus"]))
+async def check_status(client, message: Message):
+    """Check current bot status and config"""
+    try:
+        config = await get_config()
+        main_channel = config.get("main_channel")
+        promo_channels = config.get("promo_channels", [])
+        
+        status_msg = "🔍 **Auto Promo Status**\n\n"
+        
+        if main_channel:
+            status_msg += f"📢 Main Channel: `{main_channel}`\n"
+            bot_status = await get_bot_status(main_channel)
+            status_msg += f"   Bot Status: `{bot_status}`\n\n"
+            
+            # Count posts
+            post_count = await apauthdb.count_documents({
+                "channel_id": main_channel,
+                "post_type": "main_channel",
+                "exists": {"$ne": False}
+            })
+            status_msg += f"📝 Tracked Posts: `{post_count}`\n\n"
+        else:
+            status_msg += "📢 Main Channel: `Not Set`\n\n"
+        
+        status_msg += f"📊 Promo Channels: `{len(promo_channels)}`\n"
+        status_msg += f"⏰ Interval: `{format_time(config.get('promo_interval', 18000))}`\n"
+        status_msg += f"🏷️ Forward Tag: `{'On' if config.get('forward_tag') else 'Off'}`\n"
+        status_msg += f"🔄 Loop Running: `{'Yes' if config.get('loop_running') else 'No'}`\n"
+        status_msg += f"📍 Current Index: `{config.get('current_post_index', 0)}`"
+        
+        await message.reply(status_msg)
+        
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+
 # Auth main channel
 @app.on_message(filters.command(["apauth"]))
 async def auth_main_channel(client, message: Message):
@@ -187,14 +221,15 @@ async def auth_main_channel(client, message: Message):
         else:
             return await message.reply("❌ Use: `/apauth <channel_id>` ya reply karo channel msg ko!")
         
-        # Check if bot is admin
-        is_admin = await check_bot_admin(channel_id)
-        if not is_admin:
+        # Check if bot can access channel
+        try:
+            bot_status = await get_bot_status(channel_id)
+            print(f"🔍 Bot status in {channel_id}: {bot_status}")
+        except Exception as e:
             return await message.reply(
-                f"❌ Bot NOT admin in `{channel_id}`!\n\n"
-                f"⚠️ Bot ko admin banao with:\n"
-                f"• Post Messages\n"
-                f"• Delete Messages (optional)"
+                f"❌ Bot channel access nahi kar sakta!\n\n"
+                f"Error: `{e}`\n\n"
+                f"⚠️ Bot ko channel me add karo (admin ya member)"
             )
         
         await apauthdb.update_one(
@@ -209,9 +244,11 @@ async def auth_main_channel(client, message: Message):
         print(f"✅ Main channel: {channel_id}")
         
         await message.reply(
-            f"✅ Main channel auth: `{channel_id}`\n\n"
+            f"✅ Main channel set: `{channel_id}`\n"
+            f"📊 Bot Status: `{bot_status}`\n\n"
             f"🚀 Bot ab posts track karega!\n"
-            f"📝 Channel me post karo to test karo."
+            f"📝 Channel me post karo to test karo.\n\n"
+            f"💡 Use `/apstatus` to check bot status"
         )
         
     except Exception as e:
@@ -248,7 +285,6 @@ async def unauth_main_channel(client, message: Message):
         print(f"❌ Unauth error: {e}")
         await message.reply(f"❌ Error: {str(e)}")
 
-# Add promo channel
 # Add promo channel
 @app.on_message(filters.command(["addpromochnl", "apc"]))
 async def add_promo_channel(client, message: Message):
@@ -309,44 +345,19 @@ async def add_promo_channel(client, message: Message):
         else:
             return await message.reply("❌ Use: `/apc <id>` ya `/apc -b`")
         
-        # Get bot permissions in channel
+        # Check if bot is admin (required for promo channels)
         try:
-            chat = await app.get_chat(channel_id)
             member = await app.get_chat_member(channel_id, "me")
-            
-            print(f"🔍 Channel: {chat.title}")
-            print(f"🔍 Bot status: {member.status}")
-            print(f"🔍 Can post: {member.privileges.can_post_messages if member.privileges else 'N/A'}")
-            print(f"🔍 Can delete: {member.privileges.can_delete_messages if member.privileges else 'N/A'}")
-            
-            # Check if bot can post messages
             if member.status not in ["administrator", "creator"]:
                 return await message.reply(
-                    f"❌ Bot is **{member.status}** in `{chat.title}`\n\n"
-                    f"⚠️ Bot ko **Admin** banao with:\n"
-                    f"• ✅ Post Messages\n"
-                    f"• ✅ Delete Messages (optional)\n\n"
-                    f"Fir try karo!"
+                    f"❌ Bot NOT admin in `{channel_id}`!\n"
+                    f"Current status: `{member.status}`\n\n"
+                    f"⚠️ Promo channel me bot ko ADMIN banao!"
                 )
-            
-            # Check post permission
-            if member.privileges and not member.privileges.can_post_messages:
-                return await message.reply(
-                    f"⚠️ Bot admin hai but **Post Messages** permission nahi hai!\n\n"
-                    f"Channel: `{chat.title}`\n"
-                    f"Status: `{member.status}`\n\n"
-                    f"✅ 'Post Messages' permission on karo!"
-                )
-            
         except Exception as e:
-            print(f"❌ Channel check error: {e}")
             return await message.reply(
-                f"❌ Channel check failed!\n\n"
-                f"Error: `{str(e)}`\n\n"
-                f"⚠️ Check:\n"
-                f"1. Bot channel me add hai?\n"
-                f"2. Channel ID correct hai?\n"
-                f"3. Bot ko admin banaya?"
+                f"❌ Bot channel access nahi kar sakta: `{channel_id}`\n"
+                f"Error: `{e}`"
             )
         
         config = await get_config()
@@ -360,17 +371,9 @@ async def add_promo_channel(client, message: Message):
                 upsert=True
             )
             print(f"✅ Promo added: {channel_id}")
-            await message.reply(
-                f"✅ Promo channel added!\n\n"
-                f"📢 Channel: `{chat.title}`\n"
-                f"🆔 ID: `{channel_id}`\n"
-                f"📊 Total promo channels: `{len(promo_channels)}`"
-            )
+            await message.reply(f"✅ Promo channel added: `{channel_id}`")
         else:
-            await message.reply(
-                f"ℹ️ Already in list!\n\n"
-                f"Channel: `{chat.title}`"
-            )
+            await message.reply("ℹ️ Already in list!")
             
     except Exception as e:
         print(f"❌ Add error: {e}")
@@ -675,7 +678,6 @@ async def start_promo_on_boot():
         if main_channel:
             print(f"📢 Main: {main_channel}")
             print(f"📊 Promo: {len(promo_channels)}")
-            await check_bot_admin(main_channel)
         else:
             print("⚠️ Main channel not set")
         
