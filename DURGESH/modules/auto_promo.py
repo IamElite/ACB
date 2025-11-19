@@ -13,6 +13,11 @@ apauthdb = db.apauth_channels
 # Background task reference
 promo_task = None
 
+# Bulk mode collectors
+bulk_add_active = {}
+bulk_remove_active = {}
+collected_channels = {}
+
 # Helper: Parse time string
 def parse_time(time_str):
     """Convert '5h', '30m', '2d' to seconds"""
@@ -52,6 +57,51 @@ async def get_config():
         }
         await apauthdb.insert_one(config)
     return config
+
+# Global handler to collect forwarded channels in bulk mode
+@app.on_message(filters.forwarded)
+async def bulk_collector(client, message: Message):
+    """Collect forwarded channels when bulk mode is active"""
+    chat_id = message.chat.id
+    
+    # Check if bulk add mode is active for this chat
+    if chat_id in bulk_add_active and bulk_add_active[chat_id]:
+        if message.forward_from_chat:
+            ch_id = message.forward_from_chat.id
+            
+            if chat_id not in collected_channels:
+                collected_channels[chat_id] = {"add": [], "remove": []}
+            
+            try:
+                # Check if bot is admin
+                member = await client.get_chat_member(ch_id, "me")
+                if member.status in ["administrator", "creator"]:
+                    collected_channels[chat_id]["add"].append(ch_id)
+                    # Delete the forwarded message
+                    try:
+                        await message.delete()
+                    except:
+                        pass
+                else:
+                    collected_channels[chat_id]["add"].append(None)  # Mark as failed
+            except:
+                collected_channels[chat_id]["add"].append(None)  # Mark as failed
+    
+    # Check if bulk remove mode is active for this chat
+    elif chat_id in bulk_remove_active and bulk_remove_active[chat_id]:
+        if message.forward_from_chat:
+            ch_id = message.forward_from_chat.id
+            
+            if chat_id not in collected_channels:
+                collected_channels[chat_id] = {"add": [], "remove": []}
+            
+            collected_channels[chat_id]["remove"].append(ch_id)
+            
+            # Delete the forwarded message
+            try:
+                await message.delete()
+            except:
+                pass
 
 # Auth main channel
 @app.on_message(filters.command(["apauth"]))
@@ -102,43 +152,39 @@ async def unauth_main_channel(client, message: Message):
 @app.on_message(filters.command(["addpromochnl", "apc"]))
 async def add_promo_channel(client, message: Message):
     try:
+        chat_id = message.chat.id
+        
         # Check for bulk mode
         if "-b" in message.text:
+            # Activate bulk mode
+            bulk_add_active[chat_id] = True
+            collected_channels[chat_id] = {"add": [], "remove": []}
+            
             await message.reply(
-                "📥 **Bulk Add Mode**\n\n"
-                "Abhi 1 minute wait karunga, fir tum bulk mein promo channels forward karo yahan!\n"
-                "Jo channels mein bot admin hoga, vo add ho jayenge."
+                "📥 **Bulk Add Mode Active!**\n\n"
+                "Abhi 1 minute hai! Jitne bhi channels add karne hain, sab forward karo yahan!\n"
+                "Jo channels mein bot admin hoga, vo add ho jayenge. ⏳"
             )
             
-            # Wait and collect forwards
+            # Wait for 1 minute
             await asyncio.sleep(60)
             
+            # Deactivate bulk mode
+            bulk_add_active[chat_id] = False
+            
+            # Process collected channels
             config = await get_config()
             existing = set(config.get("promo_channels", []))
+            
             added = 0
             failed = 0
             
-            async for msg in client.get_chat_history(message.chat.id, limit=100):
-                if msg.date < message.date:
-                    break
-                if msg.forward_from_chat:
-                    ch_id = msg.forward_from_chat.id
-                    try:
-                        # Check bot is admin
-                        member = await client.get_chat_member(ch_id, "me")
-                        if member.status in ["administrator", "creator"]:
-                            if ch_id not in existing:
-                                existing.add(ch_id)
-                                added += 1
-                            # Delete the forwarded message
-                            try:
-                                await msg.delete()
-                            except:
-                                pass
-                        else:
-                            failed += 1
-                    except:
-                        failed += 1
+            for ch_id in collected_channels[chat_id]["add"]:
+                if ch_id is None:
+                    failed += 1
+                elif ch_id not in existing:
+                    existing.add(ch_id)
+                    added += 1
             
             # Update DB
             await apauthdb.update_one(
@@ -147,8 +193,11 @@ async def add_promo_channel(client, message: Message):
                 upsert=True
             )
             
+            # Clean up
+            del collected_channels[chat_id]
+            
             await message.reply(
-                f"✅ **Bulk Add Complete**\n\n"
+                f"✅ **Bulk Add Complete!**\n\n"
                 f"✅ Added: {added}\n"
                 f"❌ Failed: {failed}\n"
                 f"📊 Total promo channels: {len(existing)}"
@@ -190,40 +239,47 @@ async def add_promo_channel(client, message: Message):
 @app.on_message(filters.command(["rmaddpromochnl", "rmapc"]))
 async def remove_promo_channel(client, message: Message):
     try:
+        chat_id = message.chat.id
+        
         # Check for bulk mode
         if "-b" in message.text:
+            # Activate bulk remove mode
+            bulk_remove_active[chat_id] = True
+            collected_channels[chat_id] = {"add": [], "remove": []}
+            
             await message.reply(
-                "🗑️ **Bulk Remove Mode**\n\n"
-                "Abhi 1 minute wait karunga, fir tum jo channels remove karne hain vo forward karo!"
+                "🗑️ **Bulk Remove Mode Active!**\n\n"
+                "Abhi 1 minute hai! Jo channels remove karne hain vo forward karo!"
             )
             
+            # Wait for 1 minute
             await asyncio.sleep(60)
             
+            # Deactivate bulk mode
+            bulk_remove_active[chat_id] = False
+            
+            # Process collected channels
             config = await get_config()
             promo_channels = set(config.get("promo_channels", []))
             removed = 0
             
-            async for msg in client.get_chat_history(message.chat.id, limit=100):
-                if msg.date < message.date:
-                    break
-                if msg.forward_from_chat:
-                    ch_id = msg.forward_from_chat.id
-                    if ch_id in promo_channels:
-                        promo_channels.remove(ch_id)
-                        removed += 1
-                    try:
-                        await msg.delete()
-                    except:
-                        pass
+            for ch_id in collected_channels[chat_id]["remove"]:
+                if ch_id in promo_channels:
+                    promo_channels.remove(ch_id)
+                    removed += 1
             
+            # Update DB
             await apauthdb.update_one(
                 {"_id": "config"},
                 {"$set": {"promo_channels": list(promo_channels)}},
                 upsert=True
             )
             
+            # Clean up
+            del collected_channels[chat_id]
+            
             await message.reply(
-                f"✅ **Bulk Remove Complete**\n\n"
+                f"✅ **Bulk Remove Complete!**\n\n"
                 f"🗑️ Removed: {removed}\n"
                 f"📊 Remaining channels: {len(promo_channels)}"
             )
@@ -320,13 +376,13 @@ async def promo_loop():
             # Check if main channel is set
             if not main_channel:
                 print("⏸️ Main channel nahi hai, 2 min sleep kar raha hu...")
-                await asyncio.sleep(120)  # Wait 2 min then recheck
+                await asyncio.sleep(120)
                 continue
             
             # Check if promo channels exist
             if not promo_channels:
                 print("⏸️ Promo channels nahi hai, 2 min sleep kar raha hu...")
-                await asyncio.sleep(120)  # Wait 2 min then recheck
+                await asyncio.sleep(120)
                 continue
             
             # Get posts from main channel
@@ -338,13 +394,13 @@ async def promo_loop():
                         posts.append(msg)
             except Exception as e:
                 print(f"❌ Main channel access error: {e}")
-                await asyncio.sleep(300)  # Wait 5 min if channel access fails
+                await asyncio.sleep(300)
                 continue
             
             # If no posts found, wait and recheck
             if not posts:
                 print("😴 Main channel me koi post nahi hai, 5 min sleep kar raha hu...")
-                await asyncio.sleep(300)  # Wait 5 min then recheck
+                await asyncio.sleep(300)
                 continue
             
             print(f"✅ {len(posts)} posts milein! Promotion shuru kar raha hu...")
@@ -371,10 +427,8 @@ async def promo_loop():
                     
                     # Send new promo
                     if forward_tag:
-                        # Forward with tag
                         sent = await current_post.forward(channel_id)
                     else:
-                        # Copy without tag (buttons bhi copy honge)
                         sent = await current_post.copy(channel_id)
                     
                     # Store new message id
@@ -388,7 +442,7 @@ async def promo_loop():
                     )
                     
                     success_count += 1
-                    await asyncio.sleep(2)  # Anti-flood
+                    await asyncio.sleep(2)
                     
                 except FloodWait as e:
                     print(f"⚠️ FloodWait {e.value}s for channel {channel_id}")
@@ -421,21 +475,18 @@ async def promo_loop():
             break
         except Exception as e:
             print(f"❌ Promo loop error: {e}")
-            await asyncio.sleep(120)  # Wait 2 min on error
+            await asyncio.sleep(120)
 
-# Startup handler - bot start hote hi background loop chalega
+# Startup handler
 async def start_promo_on_boot():
     """Start promo loop when bot boots up"""
     global promo_task
     
-    # Wait a bit for bot to fully start
     await asyncio.sleep(5)
     
     print("🔥 Bot started! Promo loop ko background mein start kar raha hu...")
-    
-    # Start the promo loop in background
     promo_task = asyncio.create_task(promo_loop())
     print("✅ Promo loop background task created!")
 
-# Create startup task when this module loads
+# Create startup task
 asyncio.create_task(start_promo_on_boot())
