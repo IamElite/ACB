@@ -249,6 +249,7 @@ async def unauth_main_channel(client, message: Message):
         await message.reply(f"❌ Error: {str(e)}")
 
 # Add promo channel
+# Add promo channel
 @app.on_message(filters.command(["addpromochnl", "apc"]))
 async def add_promo_channel(client, message: Message):
     try:
@@ -308,12 +309,44 @@ async def add_promo_channel(client, message: Message):
         else:
             return await message.reply("❌ Use: `/apc <id>` ya `/apc -b`")
         
-        # Check if bot is admin
-        is_admin = await check_bot_admin(channel_id)
-        if not is_admin:
+        # Get bot permissions in channel
+        try:
+            chat = await app.get_chat(channel_id)
+            member = await app.get_chat_member(channel_id, "me")
+            
+            print(f"🔍 Channel: {chat.title}")
+            print(f"🔍 Bot status: {member.status}")
+            print(f"🔍 Can post: {member.privileges.can_post_messages if member.privileges else 'N/A'}")
+            print(f"🔍 Can delete: {member.privileges.can_delete_messages if member.privileges else 'N/A'}")
+            
+            # Check if bot can post messages
+            if member.status not in ["administrator", "creator"]:
+                return await message.reply(
+                    f"❌ Bot is **{member.status}** in `{chat.title}`\n\n"
+                    f"⚠️ Bot ko **Admin** banao with:\n"
+                    f"• ✅ Post Messages\n"
+                    f"• ✅ Delete Messages (optional)\n\n"
+                    f"Fir try karo!"
+                )
+            
+            # Check post permission
+            if member.privileges and not member.privileges.can_post_messages:
+                return await message.reply(
+                    f"⚠️ Bot admin hai but **Post Messages** permission nahi hai!\n\n"
+                    f"Channel: `{chat.title}`\n"
+                    f"Status: `{member.status}`\n\n"
+                    f"✅ 'Post Messages' permission on karo!"
+                )
+            
+        except Exception as e:
+            print(f"❌ Channel check error: {e}")
             return await message.reply(
-                f"❌ Bot NOT admin in `{channel_id}`!\n"
-                f"⚠️ Bot ko admin banao first."
+                f"❌ Channel check failed!\n\n"
+                f"Error: `{str(e)}`\n\n"
+                f"⚠️ Check:\n"
+                f"1. Bot channel me add hai?\n"
+                f"2. Channel ID correct hai?\n"
+                f"3. Bot ko admin banaya?"
             )
         
         config = await get_config()
@@ -327,9 +360,17 @@ async def add_promo_channel(client, message: Message):
                 upsert=True
             )
             print(f"✅ Promo added: {channel_id}")
-            await message.reply(f"✅ Promo channel added: `{channel_id}`")
+            await message.reply(
+                f"✅ Promo channel added!\n\n"
+                f"📢 Channel: `{chat.title}`\n"
+                f"🆔 ID: `{channel_id}`\n"
+                f"📊 Total promo channels: `{len(promo_channels)}`"
+            )
         else:
-            await message.reply("ℹ️ Already in list!")
+            await message.reply(
+                f"ℹ️ Already in list!\n\n"
+                f"Channel: `{chat.title}`"
+            )
             
     except Exception as e:
         print(f"❌ Add error: {e}")
