@@ -141,7 +141,11 @@ async def bulk_collector(client, message: Message):
             
             try:
                 member = await client.get_chat_member(ch_id, "me")
-                if member.status in ["administrator", "creator"]:
+                
+                # Convert status to string for comparison
+                status_str = str(member.status).split('.')[-1].lower()
+                
+                if status_str in ["administrator", "creator", "owner"]:
                     collected_channels[chat_id]["add"].append(ch_id)
                     try:
                         await message.delete()
@@ -525,7 +529,6 @@ async def cleanup_deleted_posts():
             await asyncio.sleep(3600)
 
 # Promo loop
-# Promo loop
 async def promo_loop():
     """Main promo loop"""
     print("🚀 Promo loop started")
@@ -648,7 +651,6 @@ async def promo_loop():
         except Exception as e:
             print(f"❌ Loop: {e}")
             await asyncio.sleep(120)
-
 
 # Startup
 async def start_promo_on_boot():
