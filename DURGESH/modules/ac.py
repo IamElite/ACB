@@ -27,11 +27,11 @@ DEFAULT_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACd
 
 # ---------------- Helpers ----------------
 def extract_episode(fname: str) -> str:
-    """Extract episode number from filename"""
+    """Extract episode number from filename → E05"""
     for pat, grp in (
         (r'EPS(\d+)\s*EP(\d+)\s*\((\d+)\)', (2, 3)),
         (r'S(\d+)\s*(?:E|EP)(\d+)\s*\((\d+)\)', (2, 3)),
-        (r'S(\d+)\s*(?:E|EP)(\d+)', (2,)),
+        (r'S(\d+)\s*(?:E|EP)(\d+)', (2,)),   # S01E05
         (r'(?:E|EP)\s*\((\d+)\)', (1,)),
         (r'(?:E|EP)(\d+)', (1,)),
         (r'-\s*(\d+)', (1,))
@@ -39,14 +39,15 @@ def extract_episode(fname: str) -> str:
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
             if len(grp) == 2:
-                return f"{m.group(grp[0]).zfill(2)} ({m.group(grp[1])})"
-            return f"{m.group(grp[0]).zfill(2)}"
+                return f"E{m.group(grp[0]).zfill(2)} ({m.group(grp[1])})"
+            return f"E{m.group(grp[0]).zfill(2)}"
     return "N/A"
 
+
 def extract_season(fname: str) -> str:
-    """Extract season number from filename"""
+    """Extract season number from filename → S01"""
     for pat in (
-        r'S(\d+)(?:E|EP)(\d+)',
+        r'S(\d+)(?:E|EP)(\d+)',            # S01E05
         r'S(\d+)\s*(?:E|EP|-\s*EP)(\d+)',
         r'S(\d+)[^\d]*(\d+)',
         r'\bseason\s*(\d+)\b',
@@ -54,20 +55,22 @@ def extract_season(fname: str) -> str:
     ):
         m = re.search(pat, fname, re.IGNORECASE)
         if m:
-            return m.group(1).zfill(2)
+            return f"S{m.group(1).zfill(2)}"
     return "N/A"
 
+
 def extract_quality(text: str) -> str:
-    """Extract quality from filename"""
+    """Extract quality from filename → 480p / 720p / 1080p"""
     qpats = [
         (r'[(\[{<]?\s*4k\s*[)\]}>]?', "4K"),
         (r'[(\[{<]?\s*2k\s*[)\]}>]?', "2K"),
-        (r'[(\[{<]?\s*4kX264\s*[)\]}>]?', "4K X264"),
-        (r'[(\[{<]?\s*4kx265\s*[)\]}>]?', "4K X265"),
+        (r'[(\[{<]?\s*4k\s*x264\s*[)\]}>]?', "4K X264"),
+        (r'[(\[{<]?\s*4k\s*x265\s*[)\]}>]?', "4K X265"),
         (r'\bWEB[.\- ]*DL\b', "WEB-DL"),
         (r'[(\[{<]?\s*HdRip\s*[)\]}>]?|\bHdRip\b', "HDRip"),
-        (r'(\d{3,4})[pP]', None),
+        (r'(\d{3,4})[pP]', None),          # 480p / 720p
     ]
+
     for pat, repl in qpats:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
@@ -76,6 +79,7 @@ def extract_quality(text: str) -> str:
                 return "480p"
             return q
     return "N/A"
+
 
 def get_readable_file_size(size_in_bytes) -> str:
     """Convert bytes to readable format"""
