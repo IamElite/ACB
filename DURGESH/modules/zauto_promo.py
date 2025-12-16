@@ -98,10 +98,10 @@ async def get_bot_status(channel_id):
     except Exception as e:
         return f"Error: {e}"
 
-# Track new posts from main channel
+# Track new posts from main channel + React with 👍
 @app.on_message(filters.channel)
 async def track_main_channel_posts(client, message: Message):
-    """Automatically track posts from main channel"""
+    """Automatically track posts from main channel and react"""
     try:
         config = await get_config()
         main_channel = config.get("main_channel")
@@ -122,7 +122,15 @@ async def track_main_channel_posts(client, message: Message):
                     }},
                     upsert=True
                 )
-                print(f"📝 Tracked: {message.id}")
+                
+                # React with 👍 to confirm DB add
+                try:
+                    await message.react(emoji="👍")
+                    print(f"📝 Tracked & Reacted: {message.id}")
+                except Exception as e:
+                    print(f"⚠️ React failed: {e}")
+                    print(f"📝 Tracked: {message.id}")
+                    
     except Exception as e:
         print(f"❌ Track error: {e}")
 
@@ -241,7 +249,7 @@ async def auth_main_channel(client, message: Message):
         await message.reply(
             f"✅ Main channel set: `{chat.title}`\n"
             f"🆔 ID: `{channel_id}`\n\n"
-            f"📝 Channel me post karo to test karo"
+            f"📝 Channel me post karo, bot 👍 react karega!"
         )
         
     except Exception as e:
@@ -489,6 +497,40 @@ async def set_config(client, message: Message):
             f"🏷️ Forward Tag: `{'On' if forward_tag else 'Off'}`\n"
             f"⏰ Interval: `{format_time(promo_interval)}`"
         )
+        
+    except Exception as e:
+        await message.reply(f"❌ Error: {str(e)}")
+
+# Force restart promo from beginning
+@app.on_message(filters.command(["forcespromo", "fp", "fpromo"]))
+async def force_start_promo(client, message: Message):
+    """Force restart promo cycle from beginning"""
+    try:
+        config = await get_config()
+        
+        if not config.get("main_channel"):
+            return await message.reply("❌ Main channel set nahi hai! Pehle `/apauth` use karo")
+        
+        if not config.get("promo_channels"):
+            return await message.reply("❌ Promo channels nahi hain! Pehle `/apc` use karo")
+        
+        # Reset index to 0 (start from beginning)
+        await apauthdb.update_one(
+            {"_id": "config"},
+            {"$set": {
+                "current_post_index": 0,
+                "loop_running": True
+            }},
+            upsert=True
+        )
+        
+        await message.reply(
+            "🔄 **Force Promo Started!**\n\n"
+            "📍 Index reset to 0\n"
+            "✅ Next cycle 1st post se start hoga!"
+        )
+        
+        print("🔄 Force promo restart - Index reset to 0")
         
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
