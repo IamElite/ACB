@@ -14,6 +14,9 @@ apauthdb = db.apauth_channels
 promo_task = None
 cleanup_task = None
 
+# Event to trigger immediate promo
+force_promo_event = asyncio.Event()
+
 # Bulk mode collectors
 bulk_add_active = {}
 bulk_remove_active = {}
@@ -106,7 +109,11 @@ async def track_main_channel_posts(client, message: Message):
         config = await get_config()
         main_channel = config.get("main_channel")
         
+        print(f"🔍 Message received: Chat={message.chat.id}, Main={main_channel}")
+        
         if main_channel and message.chat.id == main_channel:
+            print(f"✅ Match! Text={bool(message.text)}, Media={bool(message.media)}")
+            
             if message.text or message.media:
                 await apauthdb.update_one(
                     {"_id": f"post_{message.id}"},
@@ -126,10 +133,14 @@ async def track_main_channel_posts(client, message: Message):
                 # React with 👍 to confirm DB add
                 try:
                     await message.react(emoji="👍")
-                    print(f"📝 Tracked & Reacted: {message.id}")
+                    print(f"✅ Tracked & Reacted: {message.id}")
                 except Exception as e:
                     print(f"⚠️ React failed: {e}")
-                    print(f"📝 Tracked: {message.id}")
+                    print(f"✅ Tracked: {message.id}")
+            else:
+                print(f"❌ No text/media in message {message.id}")
+        else:
+            print(f"ℹ️ Not main channel or no match")
                     
     except Exception as e:
         print(f"❌ Track error: {e}")
@@ -251,6 +262,8 @@ async def auth_main_channel(client, message: Message):
             f"🆔 ID: `{channel_id}`\n\n"
             f"📝 Channel me post karo, bot 👍 react karega!"
         )
+        
+        print(f"📢 Main channel set: {channel_id}")
         
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
@@ -501,10 +514,10 @@ async def set_config(client, message: Message):
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
 
-# Force restart promo from beginning
+# Force restart promo - IMMEDIATE CYCLE
 @app.on_message(filters.command(["forcespromo", "fp", "fpromo"]))
 async def force_start_promo(client, message: Message):
-    """Force restart promo cycle from beginning"""
+    """Force restart promo cycle from beginning + immediate promo"""
     try:
         config = await get_config()
         
@@ -513,6 +526,16 @@ async def force_start_promo(client, message: Message):
         
         if not config.get("promo_channels"):
             return await message.reply("❌ Promo channels nahi hain! Pehle `/apc` use karo")
+        
+        # Check posts exist
+        post_count = await apauthdb.count_documents({
+            "channel_id": config.get("main_channel"),
+            "post_type": "main_channel",
+            "exists": {"$ne": False}
+        })
+        
+        if post_count == 0:
+            return await message.reply("❌ Koi post track nahi hai! Main channel me post karo pehle")
         
         # Reset index to 0 (start from beginning)
         await apauthdb.update_one(
@@ -524,13 +547,17 @@ async def force_start_promo(client, message: Message):
             upsert=True
         )
         
+        # Trigger immediate promo cycle
+        force_promo_event.set()
+        
         await message.reply(
-            "🔄 **Force Promo Started!**\n\n"
+            "🔄 **Force Promo Triggered!**\n\n"
             "📍 Index reset to 0\n"
-            "✅ Next cycle 1st post se start hoga!"
+            f"📝 Total posts: {post_count}\n"
+            "⚡ Immediate promo cycle starting..."
         )
         
-        print("🔄 Force promo restart - Index reset to 0")
+        print("🔄 Force promo: Index=0, Immediate cycle triggered")
         
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
@@ -570,9 +597,9 @@ async def cleanup_deleted_posts():
             print(f"❌ Cleanup: {e}")
             await asyncio.sleep(3600)
 
-# Promo loop
+# Promo loop with immediate trigger support
 async def promo_loop():
-    """Main promo loop"""
+    """Main promo loop with force trigger support"""
     print("🚀 Promo loop started")
     
     await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": True}}, upsert=True)
@@ -684,7 +711,15 @@ async def promo_loop():
             
             print(f"⏰ Next in {format_time(promo_interval)}")
             
-            await asyncio.sleep(promo_interval)
+            # Wait for interval OR force trigger event
+            try:
+                await asyncio.wait_for(force_promo_event.wait(), timeout=promo_interval)
+                # Event triggered - immediate next cycle
+                force_promo_event.clear()
+                print("⚡ Force trigger activated - skipping wait")
+            except asyncio.TimeoutError:
+                # Normal interval completed
+                pass
             
         except asyncio.CancelledError:
             print("🛑 Loop stopped")
