@@ -136,20 +136,6 @@ async def _search(q):
     return best
 
 
-def _categorize_by_lang(items):
-    en = []
-    others = []
-    for x in items:
-        lang = x.get("iso_639_1")
-        if lang == "en":
-            en.append(x)
-        else:
-            others.append(x)
-    en.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
-    others.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
-    return en, others
-
-
 async def _get_details(kind, mid):
     if kind == "tv":
         url = f"{BASE}/tv/{mid}"
@@ -172,26 +158,24 @@ async def _get_images(kind, mid):
         url = f"{BASE}/tv/{mid}/images"
     else:
         url = f"{BASE}/movie/{mid}/images"
-    r = await _fetch_json(url, params={"include_image_language": "en,null,hi,ta,te,ml,kn,bn,mr,gu,pa,ur,fr,es,de,it,ja,ko,zh,pt,ru,th,ar,tr,pl,nl,sv,id"})
+    
+    r = await _fetch_json(url)
     
     posters_raw = r.get("posters", []) or []
     backs_raw = r.get("backdrops", []) or []
     logos_raw = r.get("logos", []) or []
     
-    en_backs, other_backs = _categorize_by_lang(backs_raw)
-    all_backs = en_backs + other_backs
+    posters_raw.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
+    backs_raw.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
+    logos_raw.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
     
-    en_posters, other_posters = _categorize_by_lang(posters_raw)
-    all_posters = en_posters + other_posters
-    
-    en_logos, other_logos = _categorize_by_lang(logos_raw)
-    all_logos = en_logos + other_logos
+    en_backs = [x for x in backs_raw if x.get("iso_639_1") == "en"]
     
     d = {
         "en_landscape": [IMG + "original" + x["file_path"] for x in en_backs[:BACKDROP_LIMIT]],
-        "all_landscape": [IMG + "original" + x["file_path"] for x in all_backs[:BACKDROP_LIMIT]],
-        "all_posters": [IMG + "original" + x["file_path"] for x in all_posters[:POSTER_LIMIT]],
-        "all_logos": [IMG + "original" + x["file_path"] for x in all_logos[:LOGO_LIMIT]],
+        "all_landscape": [IMG + "original" + x["file_path"] for x in backs_raw[:BACKDROP_LIMIT]],
+        "all_posters": [IMG + "original" + x["file_path"] for x in posters_raw[:POSTER_LIMIT]],
+        "all_logos": [IMG + "original" + x["file_path"] for x in logos_raw[:LOGO_LIMIT]],
     }
     return d
 
