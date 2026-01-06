@@ -221,10 +221,30 @@ async def _get_images(kind, mid, orig_lang="en"):
     backs_raw.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
     logos_raw.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
     
-    orig_backs = [x for x in backs_raw if x.get("iso_639_1") == orig_lang]
+    lang_map = {"ja": "Japanese", "en": "English", "ko": "Korean", "hi": "Hindi", "zh": "Chinese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian", "th": "Thai", "ar": "Arabic", "te": "Telugu", "ta": "Tamil", "ml": "Malayalam", "kn": "Kannada", "bn": "Bengali", "mr": "Marathi", "pa": "Punjabi", "gu": "Gujarati"}
+    
+    available_langs = {}
+    for x in backs_raw:
+        lang = x.get("iso_639_1")
+        if lang and lang != "en" and lang in lang_map:
+            if lang not in available_langs:
+                available_langs[lang] = []
+            available_langs[lang].append(x)
+    
+    best_lang = orig_lang
+    best_lang_name = lang_map.get(orig_lang, "English")
+    best_backs = []
+    
+    if orig_lang in available_langs:
+        best_backs = available_langs[orig_lang]
+    elif available_langs:
+        best_lang = max(available_langs.keys(), key=lambda l: len(available_langs[l]))
+        best_lang_name = lang_map.get(best_lang, best_lang.upper())
+        best_backs = available_langs[best_lang]
     
     d = {
-        "orig_landscape": [IMG + "original" + x["file_path"] for x in orig_backs[:BACKDROP_LIMIT]],
+        "orig_landscape": [IMG + "original" + x["file_path"] for x in best_backs[:BACKDROP_LIMIT]],
+        "orig_lang_name": best_lang_name,
         "all_landscape": [IMG + "original" + x["file_path"] for x in backs_raw[:BACKDROP_LIMIT]],
         "all_posters": [IMG + "original" + x["file_path"] for x in posters_raw[:POSTER_LIMIT]],
         "all_logos": [IMG + "original" + x["file_path"] for x in logos_raw[:LOGO_LIMIT]],
@@ -306,7 +326,7 @@ async def poster_cmd(client, message):
         query=q,
         title=t,
         languages=languages,
-        orig_lang_name=orig_lang_name,
+        orig_lang_name=imgs.get("orig_lang_name", orig_lang_name),
         orig_landscape=orig_land,
         all_landscape=all_land,
         posters=posters,
