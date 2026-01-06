@@ -171,38 +171,18 @@ async def _get_details(kind, mid):
         url = f"{BASE}/movie/{mid}"
     r = await _fetch_json(url)
     
-    lang_names = []
-    
-    spoken = r.get("spoken_languages") or []
-    if spoken:
-        for x in spoken:
-            if isinstance(x, dict):
-                name = x.get("english_name") or x.get("name") or x.get("iso_639_1", "")
-                if name and name not in lang_names:
-                    lang_names.append(name)
-            elif isinstance(x, str) and x not in lang_names:
-                lang_names.append(x)
-    
-    languages = r.get("languages") or []
-    if languages:
-        for x in languages:
-            if isinstance(x, str) and x.upper() not in [l.upper() for l in lang_names]:
-                lang_names.append(x.upper())
-    
-    orig_lang = r.get("original_language")
-    if orig_lang and orig_lang.upper() not in [l.upper()[:2] for l in lang_names]:
-        lang_map = {"ja": "Japanese", "en": "English", "ko": "Korean", "hi": "Hindi", "zh": "Chinese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian", "th": "Thai", "ar": "Arabic"}
-        if orig_lang in lang_map and lang_map[orig_lang] not in lang_names:
-            lang_names.insert(0, lang_map[orig_lang])
-    
-    if not lang_names:
-        lang_names = ["Multiple Languages"]
+    lang_map = {"ja": "Japanese", "en": "English", "ko": "Korean", "hi": "Hindi", "zh": "Chinese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian", "th": "Thai", "ar": "Arabic", "te": "Telugu", "ta": "Tamil", "ml": "Malayalam", "kn": "Kannada", "bn": "Bengali", "mr": "Marathi", "pa": "Punjabi", "gu": "Gujarati"}
     
     orig_lang_code = r.get("original_language", "en")
-    lang_map = {"ja": "Japanese", "en": "English", "ko": "Korean", "hi": "Hindi", "zh": "Chinese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian", "th": "Thai", "ar": "Arabic", "te": "Telugu", "ta": "Tamil", "ml": "Malayalam", "kn": "Kannada", "bn": "Bengali", "mr": "Marathi", "pa": "Punjabi", "gu": "Gujarati"}
     orig_lang_name = lang_map.get(orig_lang_code, "English")
     
-    return ", ".join(lang_names[:8]) if lang_names else "Multiple Languages", orig_lang_code, orig_lang_name
+    spoken = r.get("spoken_languages") or []
+    if len(spoken) > 1:
+        languages = f"{orig_lang_name}, Multiple Languages"
+    else:
+        languages = orig_lang_name
+    
+    return languages, orig_lang_code, orig_lang_name
 
 
 async def _get_images(kind, mid, orig_lang="en"):
