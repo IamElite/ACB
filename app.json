@@ -52,7 +52,7 @@
     "UPSTREAM_BRANCH": {
       "description": "M1",
       "required": true,
-      "value": "m1"
+      "value": "t1"
     },
     "UPSTREAM_REPO": {
       "description": "repo",
@@ -61,4 +61,5 @@
     }
   }
 }
+
 
