@@ -1,6 +1,10 @@
 import re
+import os
 import asyncio
 import uuid
+import tempfile
+import subprocess
+from io import BytesIO
 from difflib import SequenceMatcher
 from urllib.parse import quote_plus
 import aiohttp
@@ -239,10 +243,22 @@ POSTER_TEMPLATE = """<b>Search Result</b>
 <b>Title:</b> {title}
 <b>Languages:</b> {languages}
 
-<b>Total:</b> {total} quality images
+<b>{orig_lang_name} Landscape ({orig_land_count} images):</b>
+{orig_landscape}
+
+<b>All Landscape ({all_land_count} images):</b>
+{all_landscape}
+
+<b>All Posters ({poster_count} images):</b>
+{posters}
+
+<b>All Logos ({logo_count} images):</b>
+{logos}
+
+<b>Total:</b> {total} quality links
 <b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)
 
-<i>Click buttons below to download images:</i>"""
+<i>Click buttons to download images:</i>"""
 
 
 @app.on_message(filters.command("p", prefixes=["/", "!", ".", ""]))
@@ -285,17 +301,43 @@ async def poster_cmd(client, message):
         "orig_lang_name": imgs.get("orig_lang_name", orig_lang_name)
     }
     
+    def format_links(urls):
+        if not urls:
+            return "No images found"
+        if len(urls) == 1:
+            return urls[0]
+        lines = []
+        first_link = urls[0]
+        for i, x in enumerate(urls[1:], 2):
+            lines.append(f'{i}. <a href="{x}">HD Link</a>')
+        rest = "\n".join(lines)
+        return f"{first_link}\n<blockquote expandable>{rest}</blockquote>"
+    
+    orig_land = format_links(imgs["orig_landscape"])
+    all_land = format_links(imgs["all_landscape"])
+    posters = format_links(imgs["all_posters"])
+    logos = format_links(imgs["all_logos"])
+    
+    olname = imgs.get("orig_lang_name", orig_lang_name)
     total = len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
     
     text = POSTER_TEMPLATE.format(
         query=q,
         title=t,
         languages=languages,
+        orig_lang_name=olname,
+        orig_landscape=orig_land,
+        all_landscape=all_land,
+        posters=posters,
+        logos=logos,
+        orig_land_count=len(imgs["orig_landscape"]),
+        all_land_count=len(imgs["all_landscape"]),
+        poster_count=len(imgs["all_posters"]),
+        logo_count=len(imgs["all_logos"]),
         total=total
     )
     
     buttons = []
-    olname = imgs.get("orig_lang_name", orig_lang_name)
     if imgs["orig_landscape"]:
         buttons.append(InlineKeyboardButton(f"📐 {olname} ({len(imgs['orig_landscape'])})", callback_data=f"pdl_{cache_id}_orig"))
     if imgs["all_landscape"]:
@@ -309,7 +351,11 @@ async def poster_cmd(client, message):
     for i in range(0, len(buttons), 2):
         keyboard.append(buttons[i:i+2])
     
-    await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    hc_status = POSTER_CACHE[cache_id].get("hc", True)
+    hc_text = "🔆 HD Enhance: ON" if hc_status else "🔅 HD Enhance: OFF"
+    keyboard.append([InlineKeyboardButton(hc_text, callback_data=f"phc_{cache_id}")])
+    
+    await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=False)
 
 
 @app.on_callback_query(filters.regex(r"^pdl_"))
@@ -346,25 +392,84 @@ async def poster_download_callback(client, callback_query):
     if not urls:
         return await callback_query.answer("No images found!", show_alert=True)
     
-    await callback_query.answer(f"Sending {len(urls)} {label}...")
+    hc_enabled = cache.get("hc", True)
+    await callback_query.answer(f"Sending {len(urls)} {label}..." + (" (Enhanced)" if hc_enabled else ""))
     
     chat_id = callback_query.message.chat.id
+    
+    async def download_image(url):
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+        return None
+    
+    async def process_image(data):
+        if not hc_enabled:
+            return data
+        in_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+        in_f.write(data)
+        in_f.close()
+        out_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+        out_f.close()
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["convert", in_f.name,
+                 "-modulate", "100,115", "-sigmoidal-contrast", "4x50%", "-enhance",
+                 "-contrast-stretch", "0.5%x0.5%", out_f.name],
+                check=True, capture_output=True
+            )
+            with open(out_f.name, "rb") as f:
+                return f.read()
+        except Exception:
+            return data
+        finally:
+            for p in (in_f.name, out_f.name):
+                if p and os.path.exists(p):
+                    os.remove(p)
     
     for i in range(0, len(urls), 10):
         batch = urls[i:i+10]
         try:
-            if len(batch) == 1:
-                await client.send_photo(chat_id, batch[0], caption=f"<b>{title}</b>\n{label} (1/{len(urls)})", parse_mode=ParseMode.HTML)
-            else:
-                media = []
-                for j, url in enumerate(batch):
+            media = []
+            for j, url in enumerate(batch):
+                img_data = await download_image(url)
+                if img_data:
+                    processed = await process_image(img_data)
+                    bio = BytesIO(processed)
+                    bio.name = f"img_{i+j+1}.jpg"
                     if j == 0:
-                        media.append(InputMediaPhoto(url, caption=f"<b>{title}</b>\n{label} ({i+1}-{i+len(batch)}/{len(urls)})", parse_mode=ParseMode.HTML))
+                        media.append(InputMediaPhoto(bio, caption=f"<b>{title}</b>\n{label} ({i+1}-{i+len(batch)}/{len(urls)})", parse_mode=ParseMode.HTML))
                     else:
-                        media.append(InputMediaPhoto(url))
+                        media.append(InputMediaPhoto(bio))
+            if len(media) == 1:
+                await client.send_photo(chat_id, media[0].media, caption=media[0].caption, parse_mode=ParseMode.HTML)
+            elif media:
                 await client.send_media_group(chat_id, media)
         except Exception as e:
-            await client.send_message(chat_id, f"<b>Error sending batch {i//10 + 1}:</b> {str(e)[:100]}", parse_mode=ParseMode.HTML)
+            await client.send_message(chat_id, f"<b>Error batch {i//10 + 1}:</b> {str(e)[:100]}", parse_mode=ParseMode.HTML)
         
         if i + 10 < len(urls):
             await asyncio.sleep(1)
+
+
+@app.on_callback_query(filters.regex(r"^phc_"))
+async def hc_toggle_callback(client, callback_query):
+    cache_id = callback_query.data.split("_")[1]
+    if cache_id not in POSTER_CACHE:
+        return await callback_query.answer("Session expired!", show_alert=True)
+    
+    cache = POSTER_CACHE[cache_id]
+    cache["hc"] = not cache.get("hc", True)
+    hc_status = cache["hc"]
+    
+    msg = callback_query.message
+    keyboard = msg.reply_markup.inline_keyboard[:-1]
+    
+    hc_text = "🔆 HD Enhance: ON" if hc_status else "🔅 HD Enhance: OFF"
+    keyboard.append([InlineKeyboardButton(hc_text, callback_data=f"phc_{cache_id}")])
+    
+    await msg.edit_reply_markup(InlineKeyboardMarkup(keyboard))
+    await callback_query.answer(f"HD Enhance: {'ON' if hc_status else 'OFF'}")
+
