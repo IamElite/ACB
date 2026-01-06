@@ -198,10 +198,14 @@ async def _get_details(kind, mid):
     if not lang_names:
         lang_names = ["Multiple Languages"]
     
-    return ", ".join(lang_names[:8]) if lang_names else "Multiple Languages"
+    orig_lang_code = r.get("original_language", "en")
+    lang_map = {"ja": "Japanese", "en": "English", "ko": "Korean", "hi": "Hindi", "zh": "Chinese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian", "th": "Thai", "ar": "Arabic", "te": "Telugu", "ta": "Tamil", "ml": "Malayalam", "kn": "Kannada", "bn": "Bengali", "mr": "Marathi", "pa": "Punjabi", "gu": "Gujarati"}
+    orig_lang_name = lang_map.get(orig_lang_code, "English")
+    
+    return ", ".join(lang_names[:8]) if lang_names else "Multiple Languages", orig_lang_code, orig_lang_name
 
 
-async def _get_images(kind, mid):
+async def _get_images(kind, mid, orig_lang="en"):
     if kind == "tv":
         url = f"{BASE}/tv/{mid}/images"
     else:
@@ -217,10 +221,10 @@ async def _get_images(kind, mid):
     backs_raw.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
     logos_raw.sort(key=lambda z: z.get("vote_count", 0), reverse=True)
     
-    en_backs = [x for x in backs_raw if x.get("iso_639_1") == "en"]
+    orig_backs = [x for x in backs_raw if x.get("iso_639_1") == orig_lang]
     
     d = {
-        "en_landscape": [IMG + "original" + x["file_path"] for x in en_backs[:BACKDROP_LIMIT]],
+        "orig_landscape": [IMG + "original" + x["file_path"] for x in orig_backs[:BACKDROP_LIMIT]],
         "all_landscape": [IMG + "original" + x["file_path"] for x in backs_raw[:BACKDROP_LIMIT]],
         "all_posters": [IMG + "original" + x["file_path"] for x in posters_raw[:POSTER_LIMIT]],
         "all_logos": [IMG + "original" + x["file_path"] for x in logos_raw[:LOGO_LIMIT]],
@@ -233,8 +237,8 @@ POSTER_TEMPLATE = """<b>Search Result</b>
 <b>Title:</b> {title}
 <b>Languages:</b> {languages}
 
-<b>English Landscape ({en_land_count} images):</b>
-{en_landscape}
+<b>{orig_lang_name} Landscape ({orig_land_count} images):</b>
+{orig_landscape}
 
 <b>All Landscape ({all_land_count} images):</b>
 {all_landscape}
@@ -249,7 +253,7 @@ POSTER_TEMPLATE = """<b>Search Result</b>
 <b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)"""
 
 
-@app.on_message(filters.command("p"))
+@app.on_message(filters.command("p", prefixes=["/", "!", ".", ""]))
 async def poster_cmd(client, message):
     if not getattr(message, "command", None) or len(message.command) < 2:
         return await message.reply_text(
@@ -272,8 +276,8 @@ async def poster_cmd(client, message):
         return await w.edit_text("<b>❌ Not Found</b>\n<i>Try with correct spelling or year</i>", parse_mode=ParseMode.HTML)
     kind, mid, title, year = r
     await w.edit_text(f"<i>📥 Fetching posters for:</i>\n<b>{title}</b> ({year})", parse_mode=ParseMode.HTML)
-    languages = await _get_details(kind, mid)
-    imgs = await _get_images(kind, mid)
+    languages, orig_lang_code, orig_lang_name = await _get_details(kind, mid)
+    imgs = await _get_images(kind, mid, orig_lang_code)
     
     t = f"{title}"
     if year:
@@ -291,7 +295,7 @@ async def poster_cmd(client, message):
         rest = "\n".join(lines)
         return f"{first_link}\n<blockquote expandable>{rest}</blockquote>"
     
-    en_land = format_links(imgs["en_landscape"])
+    orig_land = format_links(imgs["orig_landscape"])
     all_land = format_links(imgs["all_landscape"])
     posters = format_links(imgs["all_posters"])
     logos = format_links(imgs["all_logos"])
@@ -302,11 +306,12 @@ async def poster_cmd(client, message):
         query=q,
         title=t,
         languages=languages,
-        en_landscape=en_land,
+        orig_lang_name=orig_lang_name,
+        orig_landscape=orig_land,
         all_landscape=all_land,
         posters=posters,
         logos=logos,
-        en_land_count=len(imgs["en_landscape"]),
+        orig_land_count=len(imgs["orig_landscape"]),
         all_land_count=len(imgs["all_landscape"]),
         poster_count=len(imgs["all_posters"]),
         logo_count=len(imgs["all_logos"]),
