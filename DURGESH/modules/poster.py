@@ -1,10 +1,4 @@
-import re
-import os
-import asyncio
-import uuid
-import tempfile
-import subprocess
-import aiohttp
+import re, os, asyncio, uuid, tempfile, subprocess, aiohttp
 
 from io import BytesIO
 from difflib import SequenceMatcher
@@ -306,55 +300,46 @@ async def _get_images(kind, mid, orig_lang="en"):
     return d
 
 
-POSTER_TEMPLATE = """<b>Search Result</b>
-<b>Query:</b> {query}
-<b>Title:</b> {title}
-<b>Languages:</b> {languages}
-
-<b>English Landscape ({en_land_count} images):</b>
-{en_landscape}
-
-<b>Hindi Landscape ({hi_land_count} images):</b>
-{hi_landscape}
-
-<b>All Landscape ({all_land_count} images):</b>
-{all_landscape}
-
-<b>All Posters ({poster_count} images):</b>
-{posters}
-
-<b>All Logos ({logo_count} images):</b>
-{logos}
-
-<b>Total:</b> {total} quality links
-<b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)
-
-<i>Click buttons to download images:</i>"""
+def format_links(urls):
+    if not urls:
+        return ""
+    if len(urls) == 1:
+        return urls[0]
+    lines = []
+    first_link = urls[0]
+    for i, x in enumerate(urls[1:], 2):
+        lines.append(f'{i}. <a href="{x}">HD Link</a>')
+    rest = "\n".join(lines)
+    return f"{first_link}\n<blockquote expandable>{rest}</blockquote>"
 
 
-@app.on_message(filters.command("p", prefixes=["/", "!", ".", ""]))
+@app.on_message(filters.command(["p", "pc"], prefixes=["/", "!", ".", ""]))
 async def poster_cmd(client, message):
     if not getattr(message, "command", None) or len(message.command) < 2:
         return await message.reply_text(
             "<b>🎬 Poster Scraper</b>\n\n"
             "<b>Usage:</b>\n"
             "<code>/p movie_name</code> - TMDB search\n"
-            "<code>/p OTT_URL</code> - OTT platforms\n\n"
+            "<code>/p OTT_URL</code> - OTT platforms\n"
+            "<code>/pc anime_name</code> - Crunchyroll search\n\n"
             "<b>Supported OTT:</b>\n"
             "Netflix, Prime Video, ZEE5, Aha, Airtel, MX Player, Crunchyroll, etc.\n\n"
             "<b>Examples:</b>\n"
             "<code>/p Spiderman</code>\n"
-            "<code>/p https://zee5.com/...</code>",
+            "<code>/p https://zee5.com/...</code>\n"
+            "<code>/pc Naruto</code>",
             parse_mode=ParseMode.HTML
         )
+    
+    cmd = message.command[0].lower()
     q = " ".join(message.command[1:])
     
-    ott_platform = _detect_ott_platform(q)
-    cr_search = False
-    if q.lower().startswith("crunchyroll "):
+    if cmd == "pc":
         ott_platform = "crunchyroll.com"
-        q = q[12:].strip()
         cr_search = True
+    else:
+        ott_platform = _detect_ott_platform(q)
+        cr_search = False
 
     if ott_platform:
         w = await message.reply_text(f"<i>📺 Fetching from {OTT_NAMES.get(ott_platform, ott_platform)}...</i>", parse_mode=ParseMode.HTML)
@@ -376,7 +361,30 @@ async def poster_cmd(client, message):
         if not cr_search:
             text += f"\n<b>🔗 Original URL:</b>\n<code>{q}</code>"
         
-        return await w.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+        _cache_cleanup()
+        cache_id = str(uuid.uuid4())[:8]
+        POSTER_CACHE[cache_id] = {
+            "title": ott_info['title'],
+            "all_landscape": [ott_info['landscape']] if ott_info['landscape'] else [],
+            "all_posters": [ott_info['poster']] if ott_info['poster'] else [],
+            "ts": asyncio.get_event_loop().time()
+        }
+        
+        buttons = []
+        if ott_info['landscape']:
+            buttons.append(InlineKeyboardButton("🖼 Landscape", callback_data=f"pdl_{cache_id}_land"))
+        if ott_info['poster']:
+            buttons.append(InlineKeyboardButton("🎬 Portrait", callback_data=f"pdl_{cache_id}_post"))
+            
+        keyboard = []
+        if buttons:
+            keyboard.append(buttons)
+        
+        hc_status = POSTER_CACHE[cache_id].get("hc", True)
+        hc_text = "🔆 HD Enhance: ON" if hc_status else "🔅 HD Enhance: OFF"
+        keyboard.append([InlineKeyboardButton(hc_text, callback_data=f"phc_{cache_id}")])
+        
+        return await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=False)
     
     w = await message.reply_text(f"<i>🔍 Searching:</i>\n<code>{q}</code>", parse_mode=ParseMode.HTML)
     r = await _search(q)
@@ -403,42 +411,31 @@ async def poster_cmd(client, message):
         "ts": asyncio.get_event_loop().time()
     }
     
-    def format_links(urls):
-        if not urls:
-            return "No images found"
-        if len(urls) == 1:
-            return urls[0]
-        lines = []
-        first_link = urls[0]
-        for i, x in enumerate(urls[1:], 2):
-            lines.append(f'{i}. <a href="{x}">HD Link</a>')
-        rest = "\n".join(lines)
-        return f"{first_link}\n<blockquote expandable>{rest}</blockquote>"
+    text = f"<b>Search Result</b>\n"
+    text += f"<b>Query:</b> {q}\n"
+    text += f"<b>Title:</b> {t}\n"
+    text += f"<b>Languages:</b> {languages}\n\n"
     
-    en_land = format_links(imgs["en_landscape"])
-    hi_land = format_links(imgs["hi_landscape"])
+    if imgs["en_landscape"]:
+        en_land = format_links(imgs["en_landscape"])
+        text += f"<b>English Landscape ({len(imgs['en_landscape'])} images):</b>\n{en_land}\n\n"
+    
+    if imgs["hi_landscape"]:
+        hi_land = format_links(imgs["hi_landscape"])
+        text += f"<b>Hindi Landscape ({len(imgs['hi_landscape'])} images):</b>\n{hi_land}\n\n"
+    
     all_land = format_links(imgs["all_landscape"])
     posters = format_links(imgs["all_posters"])
     logos = format_links(imgs["all_logos"])
     
-    total = len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
+    text += f"<b>All Landscape ({len(imgs['all_landscape'])} images):</b>\n{all_land}\n\n"
+    text += f"<b>All Posters ({len(imgs['all_posters'])} images):</b>\n{posters}\n\n"
+    text += f"<b>All Logos ({len(imgs['all_logos'])} images):</b>\n{logos}\n\n"
     
-    text = POSTER_TEMPLATE.format(
-        query=q,
-        title=t,
-        languages=languages,
-        en_landscape=en_land,
-        hi_landscape=hi_land,
-        all_landscape=all_land,
-        posters=posters,
-        logos=logos,
-        en_land_count=len(imgs["en_landscape"]),
-        hi_land_count=len(imgs["hi_landscape"]),
-        all_land_count=len(imgs["all_landscape"]),
-        poster_count=len(imgs["all_posters"]),
-        logo_count=len(imgs["all_logos"]),
-        total=total
-    )
+    total = len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
+    text += f"<b>Total:</b> {total} quality links\n"
+    text += f"<b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)\n\n"
+    text += f"<i>Click buttons to download images:</i>"
     
     buttons = []
     if imgs["en_landscape"]:
