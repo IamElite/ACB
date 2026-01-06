@@ -31,6 +31,14 @@ BACKDROP_LIMIT = 40
 LOGO_LIMIT = 15
 
 POSTER_CACHE = {}
+CACHE_EXPIRY = 180
+
+
+def _cache_cleanup():
+    now = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+    expired = [k for k, v in POSTER_CACHE.items() if now - v.get("ts", 0) > CACHE_EXPIRY]
+    for k in expired:
+        del POSTER_CACHE[k]
 
 
 def _n(s):
@@ -291,6 +299,7 @@ async def poster_cmd(client, message):
     if year:
         t += f" ({year})"
     
+    _cache_cleanup()
     cache_id = str(uuid.uuid4())[:8]
     POSTER_CACHE[cache_id] = {
         "title": t,
@@ -298,7 +307,8 @@ async def poster_cmd(client, message):
         "all_landscape": imgs["all_landscape"],
         "all_posters": imgs["all_posters"],
         "all_logos": imgs["all_logos"],
-        "orig_lang_name": imgs.get("orig_lang_name", orig_lang_name)
+        "orig_lang_name": imgs.get("orig_lang_name", orig_lang_name),
+        "ts": asyncio.get_event_loop().time()
     }
     
     def format_links(urls):
