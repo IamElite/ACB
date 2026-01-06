@@ -4,10 +4,12 @@ import asyncio
 import uuid
 import tempfile
 import subprocess
+import aiohttp
+
 from io import BytesIO
 from difflib import SequenceMatcher
 from urllib.parse import quote_plus
-import aiohttp
+
 from pyrogram import filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from pyrogram.enums import ParseMode
@@ -16,6 +18,8 @@ from DURGESH import app
 TMDB_ACCESS_TOKEN = ""
 BASE_DIRECT = "https://api.themoviedb.org/3"
 BASE_WORKER = "https://tmdbapi.the-zake.workers.dev/3"
+
+CRUNCHYROLL_API = "https://crunchyroll.blaze-updatez.workers.dev/?q="
 
 if TMDB_ACCESS_TOKEN:
     BASE = BASE_DIRECT
@@ -32,6 +36,78 @@ LOGO_LIMIT = 15
 
 POSTER_CACHE = {}
 CACHE_EXPIRY = 180
+
+OTT_WORKERS = {
+    "zee5.com": "https://zee5.the-zake.workers.dev/?url=",
+    "tv.apple.com": "https://appletv.the-zake.workers.dev/?url=",
+    "airtelxstream.in": "https://airtelxstream.the-zake.workers.dev/?url=",
+    "sunnxt.com": "https://sunnxt.the-zake.workers.dev/?url=",
+    "aha.video": "https://ahavideo.the-zake.workers.dev/?url=",
+    "iqiyi.com": "https://iqiyi.the-zake.workers.dev/?url=",
+    "wetv.vip": "https://wetv.the-zake.workers.dev/?url=",
+    "shemaroome.com": "https://shemaroo.the-zake.workers.dev/?url=",
+    "bookmyshow.com": "https://bookmyshow.the-zake.workers.dev/?url=",
+    "plex.tv": "https://plextv.the-zake.workers.dev/?url=",
+    "addatimes.com": "https://addatimes.the-zake.workers.dev/?url=",
+    "thestage.in": "https://stage.the-zake.workers.dev/?url=",
+    "netflix.com": "https://netflix.the-zake.workers.dev/?url=",
+    "mxplayer.in": "https://mxplayer.the-zake.workers.dev/?url=",
+    "primevideo.com": "https://primevideo.pbx1bots.workers.dev/?url=",
+    "amazon.com": "https://primevideo.pbx1bots.workers.dev/?url=",
+    "crunchyroll.com": "https://crunchyroll.blaze-updatez.workers.dev/?q=",
+}
+
+OTT_NAMES = {
+    "zee5.com": "ZEE5", "tv.apple.com": "Apple TV+", "airtelxstream.in": "Airtel Xstream",
+    "sunnxt.com": "Sun NXT", "aha.video": "Aha Video", "iqiyi.com": "iQIYI",
+    "wetv.vip": "WeTV", "shemaroome.com": "ShemarooMe", "bookmyshow.com": "BookMyShow",
+    "plex.tv": "Plex TV", "addatimes.com": "Addatimes", "thestage.in": "Stage",
+    "netflix.com": "Netflix", "mxplayer.in": "MX Player", "primevideo.com": "Prime Video",
+    "amazon.com": "Prime Video", "crunchyroll.com": "Crunchyroll",
+}
+
+
+
+def _detect_ott_platform(url):
+    url_lower = url.lower()
+    for domain in OTT_WORKERS:
+        if domain in url_lower:
+            return domain
+    return None
+
+
+async def _fetch_ott_info(url, platform):
+    worker = OTT_WORKERS.get(platform)
+    if not worker:
+        return None
+    try:
+        if platform == "crunchyroll.com":
+            # For CR, try to extract the query from URL if it's a URL, otherwise use as is
+            query = url
+            if "crunchyroll.com/" in url:
+                path = url.split("crunchyroll.com/")[-1].strip("/")
+                if path:
+                    query = path.split("/")[0].replace("-", " ")
+            fetch_url = f"{CRUNCHYROLL_API}{quote_plus(query)}"
+        else:
+            fetch_url = f"{worker}{quote_plus(url)}"
+            
+        async with aiohttp.ClientSession() as session:
+            async with session.get(fetch_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                root = data.get("data", data)
+                images = data.get("images", {}) or {}
+                return {
+                    "title": root.get("title", "Unknown"),
+                    "year": str(root.get("year", root.get("metadata", {}).get("release_year", ""))),
+                    "poster": root.get("portrait") or root.get("poster") or images.get("portrait_poster"),
+                    "landscape": root.get("landscape") or root.get("banner") or images.get("landscape_poster") or images.get("banner_backdrop"),
+                    "source": OTT_NAMES.get(platform, platform)
+                }
+    except:
+        return None
 
 
 def _cache_cleanup():
@@ -261,18 +337,47 @@ async def poster_cmd(client, message):
     if not getattr(message, "command", None) or len(message.command) < 2:
         return await message.reply_text(
             "<b>🎬 Poster Scraper</b>\n\n"
-            "<b>Usage:</b> <code>/p movie_name</code>\n\n"
-            "<b>Features:</b>\n"
-            "• Auto spelling correction\n"
-            "• Landscapes/Posters: up to 40\n"
-            "• Logos: up to 15\n"
-            "• Full HD Quality\n\n"
+            "<b>Usage:</b>\n"
+            "<code>/p movie_name</code> - TMDB search\n"
+            "<code>/p OTT_URL</code> - OTT platforms\n\n"
+            "<b>Supported OTT:</b>\n"
+            "Netflix, Prime Video, ZEE5, Aha, Airtel, MX Player, Crunchyroll, etc.\n\n"
             "<b>Examples:</b>\n"
-            "<code>/p Spiderman</code> → Spider-Man\n"
-            "<code>/p Wednsday</code> → Wednesday",
+            "<code>/p Spiderman</code>\n"
+            "<code>/p https://zee5.com/...</code>",
             parse_mode=ParseMode.HTML
         )
     q = " ".join(message.command[1:])
+    
+    ott_platform = _detect_ott_platform(q)
+    cr_search = False
+    if q.lower().startswith("crunchyroll "):
+        ott_platform = "crunchyroll.com"
+        q = q[12:].strip()
+        cr_search = True
+
+    if ott_platform:
+        w = await message.reply_text(f"<i>📺 Fetching from {OTT_NAMES.get(ott_platform, ott_platform)}...</i>", parse_mode=ParseMode.HTML)
+        ott_info = await _fetch_ott_info(q, ott_platform)
+        if not ott_info:
+            return await w.edit_text("<b>❌ Failed to fetch info</b>\n<i>URL/Name may be invalid or platform unavailable</i>", parse_mode=ParseMode.HTML)
+        
+        source = ott_info['source']
+        text = f"<b>📺 {source}</b>\n\n"
+        text += f"<b>🎬 Title:</b> {ott_info['title']}\n"
+        if ott_info['year']:
+            text += f"<b>📅 Year:</b> {ott_info['year']}\n"
+        text += "\n<b>🖼 Posters:</b>\n"
+        if ott_info['landscape']:
+            text += f"• <a href=\"{ott_info['landscape']}\">Landscape</a>\n"
+        if ott_info['poster']:
+            text += f"• <a href=\"{ott_info['poster']}\">Portrait</a>\n"
+        
+        if not cr_search:
+            text += f"\n<b>🔗 Original URL:</b>\n<code>{q}</code>"
+        
+        return await w.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+    
     w = await message.reply_text(f"<i>🔍 Searching:</i>\n<code>{q}</code>", parse_mode=ParseMode.HTML)
     r = await _search(q)
     if not r:
