@@ -1,11 +1,11 @@
 import re
 import asyncio
+import uuid
 from difflib import SequenceMatcher
-from functools import partial
 from urllib.parse import quote_plus
 import aiohttp
 from pyrogram import filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from pyrogram.enums import ParseMode
 from DURGESH import app
 
@@ -25,6 +25,8 @@ IMG = "https://image.tmdb.org/t/p/"
 POSTER_LIMIT = 40
 BACKDROP_LIMIT = 40
 LOGO_LIMIT = 15
+
+POSTER_CACHE = {}
 
 
 def _n(s):
@@ -237,20 +239,10 @@ POSTER_TEMPLATE = """<b>Search Result</b>
 <b>Title:</b> {title}
 <b>Languages:</b> {languages}
 
-<b>{orig_lang_name} Landscape ({orig_land_count} images):</b>
-{orig_landscape}
+<b>Total:</b> {total} quality images
+<b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)
 
-<b>All Landscape ({all_land_count} images):</b>
-{all_landscape}
-
-<b>All Posters ({poster_count} images):</b>
-{posters}
-
-<b>All Logos ({logo_count} images):</b>
-{logos}
-
-<b>Total:</b> {total} quality links
-<b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)"""
+<i>Click buttons below to download images:</i>"""
 
 
 @app.on_message(filters.command("p", prefixes=["/", "!", ".", ""]))
@@ -283,22 +275,15 @@ async def poster_cmd(client, message):
     if year:
         t += f" ({year})"
     
-    def format_links(urls):
-        if not urls:
-            return "No images found"
-        if len(urls) == 1:
-            return urls[0]
-        lines = []
-        first_link = urls[0]
-        for i, x in enumerate(urls[1:], 2):
-            lines.append(f'{i}. <a href="{x}">HD Link</a>')
-        rest = "\n".join(lines)
-        return f"{first_link}\n<blockquote expandable>{rest}</blockquote>"
-    
-    orig_land = format_links(imgs["orig_landscape"])
-    all_land = format_links(imgs["all_landscape"])
-    posters = format_links(imgs["all_posters"])
-    logos = format_links(imgs["all_logos"])
+    cache_id = str(uuid.uuid4())[:8]
+    POSTER_CACHE[cache_id] = {
+        "title": t,
+        "orig_landscape": imgs["orig_landscape"],
+        "all_landscape": imgs["all_landscape"],
+        "all_posters": imgs["all_posters"],
+        "all_logos": imgs["all_logos"],
+        "orig_lang_name": imgs.get("orig_lang_name", orig_lang_name)
+    }
     
     total = len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
     
@@ -306,16 +291,80 @@ async def poster_cmd(client, message):
         query=q,
         title=t,
         languages=languages,
-        orig_lang_name=imgs.get("orig_lang_name", orig_lang_name),
-        orig_landscape=orig_land,
-        all_landscape=all_land,
-        posters=posters,
-        logos=logos,
-        orig_land_count=len(imgs["orig_landscape"]),
-        all_land_count=len(imgs["all_landscape"]),
-        poster_count=len(imgs["all_posters"]),
-        logo_count=len(imgs["all_logos"]),
         total=total
     )
     
-    await w.edit_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+    buttons = []
+    olname = imgs.get("orig_lang_name", orig_lang_name)
+    if imgs["orig_landscape"]:
+        buttons.append(InlineKeyboardButton(f"📐 {olname} ({len(imgs['orig_landscape'])})", callback_data=f"pdl_{cache_id}_orig"))
+    if imgs["all_landscape"]:
+        buttons.append(InlineKeyboardButton(f"🖼 Landscape ({len(imgs['all_landscape'])})", callback_data=f"pdl_{cache_id}_land"))
+    if imgs["all_posters"]:
+        buttons.append(InlineKeyboardButton(f"🎬 Posters ({len(imgs['all_posters'])})", callback_data=f"pdl_{cache_id}_post"))
+    if imgs["all_logos"]:
+        buttons.append(InlineKeyboardButton(f"✨ Logos ({len(imgs['all_logos'])})", callback_data=f"pdl_{cache_id}_logo"))
+    
+    keyboard = []
+    for i in range(0, len(buttons), 2):
+        keyboard.append(buttons[i:i+2])
+    
+    await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+@app.on_callback_query(filters.regex(r"^pdl_"))
+async def poster_download_callback(client, callback_query):
+    data = callback_query.data
+    parts = data.split("_")
+    if len(parts) < 3:
+        return await callback_query.answer("Invalid request!", show_alert=True)
+    
+    cache_id = parts[1]
+    img_type = parts[2]
+    
+    if cache_id not in POSTER_CACHE:
+        return await callback_query.answer("Session expired! Use /p again", show_alert=True)
+    
+    cache = POSTER_CACHE[cache_id]
+    title = cache["title"]
+    
+    if img_type == "orig":
+        urls = cache["orig_landscape"]
+        label = f"{cache['orig_lang_name']} Landscape"
+    elif img_type == "land":
+        urls = cache["all_landscape"]
+        label = "All Landscape"
+    elif img_type == "post":
+        urls = cache["all_posters"]
+        label = "Posters"
+    elif img_type == "logo":
+        urls = cache["all_logos"]
+        label = "Logos"
+    else:
+        return await callback_query.answer("Invalid type!", show_alert=True)
+    
+    if not urls:
+        return await callback_query.answer("No images found!", show_alert=True)
+    
+    await callback_query.answer(f"Sending {len(urls)} {label}...")
+    
+    chat_id = callback_query.message.chat.id
+    
+    for i in range(0, len(urls), 10):
+        batch = urls[i:i+10]
+        try:
+            if len(batch) == 1:
+                await client.send_photo(chat_id, batch[0], caption=f"<b>{title}</b>\n{label} (1/{len(urls)})", parse_mode=ParseMode.HTML)
+            else:
+                media = []
+                for j, url in enumerate(batch):
+                    if j == 0:
+                        media.append(InputMediaPhoto(url, caption=f"<b>{title}</b>\n{label} ({i+1}-{i+len(batch)}/{len(urls)})", parse_mode=ParseMode.HTML))
+                    else:
+                        media.append(InputMediaPhoto(url))
+                await client.send_media_group(chat_id, media)
+        except Exception as e:
+            await client.send_message(chat_id, f"<b>Error sending batch {i//10 + 1}:</b> {str(e)[:100]}", parse_mode=ParseMode.HTML)
+        
+        if i + 10 < len(urls):
+            await asyncio.sleep(1)
