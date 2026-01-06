@@ -172,16 +172,14 @@ async def _get_images(kind, mid):
         url = f"{BASE}/tv/{mid}/images"
     else:
         url = f"{BASE}/movie/{mid}/images"
-    r = await _fetch_json(url, params={"include_image_language": "en,null,hi,ta,te,ml,kn,bn,mr,gu,pa,ur,fr,es,de,it,ja,ko,zh,pt,ru"})
+    r = await _fetch_json(url, params={"include_image_language": "en,null,hi,ta,te,ml,kn,bn,mr,gu,pa,ur,fr,es,de,it,ja,ko,zh,pt,ru,th,ar,tr,pl,nl,sv,id"})
     
     posters_raw = r.get("posters", []) or []
     backs_raw = r.get("backdrops", []) or []
     logos_raw = r.get("logos", []) or []
     
-    backs_raw = [x for x in backs_raw if x.get("aspect_ratio", 0) >= 1.5]
-    
-    en_backs, all_backs = _categorize_by_lang(backs_raw)
-    all_backs = en_backs + all_backs
+    en_backs, other_backs = _categorize_by_lang(backs_raw)
+    all_backs = en_backs + other_backs
     
     en_posters, other_posters = _categorize_by_lang(posters_raw)
     all_posters = en_posters + other_posters
@@ -266,7 +264,7 @@ async def poster_cmd(client, message):
     posters = format_links(imgs["all_posters"])
     logos = format_links(imgs["all_logos"])
     
-    total = len(imgs["en_landscape"]) + len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
+    total = len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
     
     text = POSTER_TEMPLATE.format(
         query=q,
