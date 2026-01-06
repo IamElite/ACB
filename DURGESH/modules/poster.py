@@ -217,28 +217,12 @@ async def _get_images(kind, mid, orig_lang="en"):
     
     lang_map = {"ja": "Japanese", "en": "English", "ko": "Korean", "hi": "Hindi", "zh": "Chinese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian", "th": "Thai", "ar": "Arabic", "te": "Telugu", "ta": "Tamil", "ml": "Malayalam", "kn": "Kannada", "bn": "Bengali", "mr": "Marathi", "pa": "Punjabi", "gu": "Gujarati"}
     
-    available_langs = {}
-    for x in backs_raw:
-        lang = x.get("iso_639_1")
-        if lang and lang != "en" and lang in lang_map:
-            if lang not in available_langs:
-                available_langs[lang] = []
-            available_langs[lang].append(x)
-    
-    best_lang = orig_lang
-    best_lang_name = lang_map.get(orig_lang, "English")
-    best_backs = []
-    
-    if orig_lang in available_langs:
-        best_backs = available_langs[orig_lang]
-    elif available_langs:
-        best_lang = max(available_langs.keys(), key=lambda l: len(available_langs[l]))
-        best_lang_name = lang_map.get(best_lang, best_lang.upper())
-        best_backs = available_langs[best_lang]
+    en_backs = [x for x in backs_raw if x.get("iso_639_1") == "en"]
+    hi_backs = [x for x in backs_raw if x.get("iso_639_1") == "hi"]
     
     d = {
-        "orig_landscape": [IMG + "original" + x["file_path"] for x in best_backs[:BACKDROP_LIMIT]],
-        "orig_lang_name": best_lang_name,
+        "en_landscape": [IMG + "original" + x["file_path"] for x in en_backs[:BACKDROP_LIMIT]],
+        "hi_landscape": [IMG + "original" + x["file_path"] for x in hi_backs[:BACKDROP_LIMIT]],
         "all_landscape": [IMG + "original" + x["file_path"] for x in backs_raw[:BACKDROP_LIMIT]],
         "all_posters": [IMG + "original" + x["file_path"] for x in posters_raw[:POSTER_LIMIT]],
         "all_logos": [IMG + "original" + x["file_path"] for x in logos_raw[:LOGO_LIMIT]],
@@ -251,8 +235,11 @@ POSTER_TEMPLATE = """<b>Search Result</b>
 <b>Title:</b> {title}
 <b>Languages:</b> {languages}
 
-<b>{orig_lang_name} Landscape ({orig_land_count} images):</b>
-{orig_landscape}
+<b>English Landscape ({en_land_count} images):</b>
+{en_landscape}
+
+<b>Hindi Landscape ({hi_land_count} images):</b>
+{hi_landscape}
 
 <b>All Landscape ({all_land_count} images):</b>
 {all_landscape}
@@ -303,11 +290,11 @@ async def poster_cmd(client, message):
     cache_id = str(uuid.uuid4())[:8]
     POSTER_CACHE[cache_id] = {
         "title": t,
-        "orig_landscape": imgs["orig_landscape"],
+        "en_landscape": imgs["en_landscape"],
+        "hi_landscape": imgs["hi_landscape"],
         "all_landscape": imgs["all_landscape"],
         "all_posters": imgs["all_posters"],
         "all_logos": imgs["all_logos"],
-        "orig_lang_name": imgs.get("orig_lang_name", orig_lang_name),
         "ts": asyncio.get_event_loop().time()
     }
     
@@ -323,24 +310,25 @@ async def poster_cmd(client, message):
         rest = "\n".join(lines)
         return f"{first_link}\n<blockquote expandable>{rest}</blockquote>"
     
-    orig_land = format_links(imgs["orig_landscape"])
+    en_land = format_links(imgs["en_landscape"])
+    hi_land = format_links(imgs["hi_landscape"])
     all_land = format_links(imgs["all_landscape"])
     posters = format_links(imgs["all_posters"])
     logos = format_links(imgs["all_logos"])
     
-    olname = imgs.get("orig_lang_name", orig_lang_name)
     total = len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
     
     text = POSTER_TEMPLATE.format(
         query=q,
         title=t,
         languages=languages,
-        orig_lang_name=olname,
-        orig_landscape=orig_land,
+        en_landscape=en_land,
+        hi_landscape=hi_land,
         all_landscape=all_land,
         posters=posters,
         logos=logos,
-        orig_land_count=len(imgs["orig_landscape"]),
+        en_land_count=len(imgs["en_landscape"]),
+        hi_land_count=len(imgs["hi_landscape"]),
         all_land_count=len(imgs["all_landscape"]),
         poster_count=len(imgs["all_posters"]),
         logo_count=len(imgs["all_logos"]),
@@ -348,8 +336,10 @@ async def poster_cmd(client, message):
     )
     
     buttons = []
-    if imgs["orig_landscape"]:
-        buttons.append(InlineKeyboardButton(f"📐 {olname} ({len(imgs['orig_landscape'])})", callback_data=f"pdl_{cache_id}_orig"))
+    if imgs["en_landscape"]:
+        buttons.append(InlineKeyboardButton(f"🇬🇧 English ({len(imgs['en_landscape'])})", callback_data=f"pdl_{cache_id}_enld"))
+    if imgs["hi_landscape"]:
+        buttons.append(InlineKeyboardButton(f"🇮🇳 Hindi ({len(imgs['hi_landscape'])})", callback_data=f"pdl_{cache_id}_hild"))
     if imgs["all_landscape"]:
         buttons.append(InlineKeyboardButton(f"🖼 Landscape ({len(imgs['all_landscape'])})", callback_data=f"pdl_{cache_id}_land"))
     if imgs["all_posters"]:
@@ -384,9 +374,12 @@ async def poster_download_callback(client, callback_query):
     cache = POSTER_CACHE[cache_id]
     title = cache["title"]
     
-    if img_type == "orig":
-        urls = cache["orig_landscape"]
-        label = f"{cache['orig_lang_name']} Landscape"
+    if img_type == "enld":
+        urls = cache["en_landscape"]
+        label = "English Landscape"
+    elif img_type == "hild":
+        urls = cache["hi_landscape"]
+        label = "Hindi Landscape"
     elif img_type == "land":
         urls = cache["all_landscape"]
         label = "All Landscape"
