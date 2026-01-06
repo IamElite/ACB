@@ -150,6 +150,23 @@ def _categorize_by_lang(items):
     return en, others
 
 
+async def _get_details(kind, mid):
+    if kind == "tv":
+        url = f"{BASE}/tv/{mid}"
+    else:
+        url = f"{BASE}/movie/{mid}"
+    r = await _fetch_json(url)
+    langs = r.get("spoken_languages") or r.get("languages") or []
+    if isinstance(langs, list) and langs:
+        if isinstance(langs[0], dict):
+            lang_names = [x.get("english_name") or x.get("name") or x.get("iso_639_1", "") for x in langs]
+        else:
+            lang_names = langs
+    else:
+        lang_names = ["Unknown"]
+    return ", ".join(lang_names[:5]) if lang_names else "Unknown"
+
+
 async def _get_images(kind, mid):
     if kind == "tv":
         url = f"{BASE}/tv/{mid}/images"
@@ -184,27 +201,19 @@ async def _get_images(kind, mid):
 POSTER_TEMPLATE = """<b>Search Result</b>
 <b>Query:</b> {query}
 <b>Title:</b> {title}
-<b>Languages:</b> English, Multiple Languages
+<b>Languages:</b> {languages}
 
 <b>English Landscape ({en_land_count} images):</b>
-<blockquote expandable>
 {en_landscape}
-</blockquote>
 
 <b>All Landscape ({all_land_count} images):</b>
-<blockquote expandable>
 {all_landscape}
-</blockquote>
 
 <b>All Posters ({poster_count} images):</b>
-<blockquote expandable>
 {posters}
-</blockquote>
 
 <b>All Logos ({logo_count} images):</b>
-<blockquote expandable>
 {logos}
-</blockquote>
 
 <b>Total:</b> {total} quality links
 <b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)"""
@@ -233,6 +242,7 @@ async def poster_cmd(client, message):
         return await w.edit_text("<b>❌ Not Found</b>\n<i>Try with correct spelling or year</i>", parse_mode=ParseMode.HTML)
     kind, mid, title, year = r
     await w.edit_text(f"<i>📥 Fetching posters for:</i>\n<b>{title}</b> ({year})", parse_mode=ParseMode.HTML)
+    languages = await _get_details(kind, mid)
     imgs = await _get_images(kind, mid)
     
     t = f"{title}"
@@ -242,13 +252,14 @@ async def poster_cmd(client, message):
     def format_links(urls):
         if not urls:
             return "No images found"
+        if len(urls) == 1:
+            return urls[0]
         lines = []
-        for i, x in enumerate(urls, 1):
-            if i == 1:
-                lines.append(x)
-            else:
-                lines.append(f'{i}. <a href="{x}">HD Link</a>')
-        return "\n".join(lines)
+        first_link = urls[0]
+        for i, x in enumerate(urls[1:], 2):
+            lines.append(f'{i}. <a href="{x}">HD Link</a>')
+        rest = "\n".join(lines)
+        return f"{first_link}\n<blockquote expandable>{rest}</blockquote>"
     
     en_land = format_links(imgs["en_landscape"])
     all_land = format_links(imgs["all_landscape"])
@@ -260,6 +271,7 @@ async def poster_cmd(client, message):
     text = POSTER_TEMPLATE.format(
         query=q,
         title=t,
+        languages=languages,
         en_landscape=en_land,
         all_landscape=all_land,
         posters=posters,
