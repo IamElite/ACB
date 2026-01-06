@@ -2369,7 +2369,7 @@ class Fonts:
         return text
 
 
-@app.on_message(filters.command(["font", "fonts", "ont"], prefixes=["/", "!", ".", "F", "f"]))
+@app.on_message(filters.command(["font", "fonts", "f"], prefixes=["/", "!", ".", ""]))
 async def style_buttons(c, m, cb=False):
     buttons = [
         [
