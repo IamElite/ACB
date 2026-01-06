@@ -49,23 +49,51 @@ async def _search(q):
         y = m.group(0)
         t = t[:-4].strip()
     
-    all_results = []
+    async def do_search(query):
+        results = []
+        p1 = {"query": query, "include_adult": "false", "language": "en-US", "page": 1}
+        r1 = await _fetch_json(f"{BASE}/search/multi", params=p1)
+        results.extend(r1.get("results") or [])
+        
+        p2 = {"query": query, "include_adult": "false", "language": "en-US", "page": 1}
+        r2 = await _fetch_json(f"{BASE}/search/movie", params=p2)
+        for x in r2.get("results") or []:
+            x["media_type"] = "movie"
+            results.append(x)
+        
+        p3 = {"query": query, "include_adult": "false", "language": "en-US", "page": 1}
+        r3 = await _fetch_json(f"{BASE}/search/tv", params=p3)
+        for x in r3.get("results") or []:
+            x["media_type"] = "tv"
+            results.append(x)
+        return results
     
-    p1 = {"query": t, "include_adult": "false", "language": "en-US", "page": 1}
-    r1 = await _fetch_json(f"{BASE}/search/multi", params=p1)
-    all_results.extend(r1.get("results") or [])
+    def generate_variations(word):
+        variations = [word]
+        vowels = "aeiou"
+        word_lower = word.lower()
+        for i, char in enumerate(word_lower):
+            if char in vowels:
+                for v in vowels:
+                    if v != char:
+                        new_word = word_lower[:i] + v + word_lower[i+1:]
+                        if new_word not in variations:
+                            variations.append(new_word)
+        if len(word) > 3:
+            for i in range(len(word_lower) - 1):
+                swapped = word_lower[:i] + word_lower[i+1] + word_lower[i] + word_lower[i+2:]
+                if swapped not in variations:
+                    variations.append(swapped)
+        return variations[:10]
     
-    p2 = {"query": t, "include_adult": "false", "language": "en-US", "page": 1}
-    r2 = await _fetch_json(f"{BASE}/search/movie", params=p2)
-    for x in r2.get("results") or []:
-        x["media_type"] = "movie"
-        all_results.append(x)
+    all_results = await do_search(t)
     
-    p3 = {"query": t, "include_adult": "false", "language": "en-US", "page": 1}
-    r3 = await _fetch_json(f"{BASE}/search/tv", params=p3)
-    for x in r3.get("results") or []:
-        x["media_type"] = "tv"
-        all_results.append(x)
+    if not all_results:
+        variations = generate_variations(t)
+        for var in variations[1:]:
+            all_results = await do_search(var)
+            if all_results:
+                break
     
     seen_ids = set()
     res = []
@@ -142,15 +170,35 @@ async def _get_details(kind, mid):
     else:
         url = f"{BASE}/movie/{mid}"
     r = await _fetch_json(url)
-    langs = r.get("spoken_languages") or r.get("languages") or []
-    if isinstance(langs, list) and langs:
-        if isinstance(langs[0], dict):
-            lang_names = [x.get("english_name") or x.get("name") or x.get("iso_639_1", "") for x in langs]
-        else:
-            lang_names = langs
-    else:
-        lang_names = ["Unknown"]
-    return ", ".join(lang_names[:5]) if lang_names else "Unknown"
+    
+    lang_names = []
+    
+    spoken = r.get("spoken_languages") or []
+    if spoken:
+        for x in spoken:
+            if isinstance(x, dict):
+                name = x.get("english_name") or x.get("name") or x.get("iso_639_1", "")
+                if name and name not in lang_names:
+                    lang_names.append(name)
+            elif isinstance(x, str) and x not in lang_names:
+                lang_names.append(x)
+    
+    languages = r.get("languages") or []
+    if languages:
+        for x in languages:
+            if isinstance(x, str) and x.upper() not in [l.upper() for l in lang_names]:
+                lang_names.append(x.upper())
+    
+    orig_lang = r.get("original_language")
+    if orig_lang and orig_lang.upper() not in [l.upper()[:2] for l in lang_names]:
+        lang_map = {"ja": "Japanese", "en": "English", "ko": "Korean", "hi": "Hindi", "zh": "Chinese", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian", "th": "Thai", "ar": "Arabic"}
+        if orig_lang in lang_map and lang_map[orig_lang] not in lang_names:
+            lang_names.insert(0, lang_map[orig_lang])
+    
+    if not lang_names:
+        lang_names = ["Multiple Languages"]
+    
+    return ", ".join(lang_names[:8]) if lang_names else "Multiple Languages"
 
 
 async def _get_images(kind, mid):
