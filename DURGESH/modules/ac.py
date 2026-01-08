@@ -536,7 +536,7 @@ def _int_episode(fname: str) -> int:
     return 9999
 
 @app.on_message(
-    (filters.document | filters.video | filters.audio | filters.photo) &
+    (filters.document | filters.video) &
     filters.channel,
     group=10
 )
@@ -872,7 +872,7 @@ async def auto_cap_cmd(client, message: Message):
                 if not msg:
                     continue
 
-                if not (msg.document or msg.video or msg.audio or msg.photo):
+                if not (msg.document or msg.video):
                     continue
 
                 if msg.document:
