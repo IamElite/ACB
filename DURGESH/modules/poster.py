@@ -681,8 +681,12 @@ async def overlap_callback(client, callback_query):
         bg_w, bg_h = bg_img.size
         logo_w, logo_h = logo_img.size
         
-        new_logo_w = int(logo_w * scale / 100)
-        new_logo_h = int(logo_h * scale / 100)
+        target_w = int(bg_w * 0.4 * scale / 100)
+        ratio = target_w / logo_w
+        target_h = int(logo_h * ratio)
+        
+        new_logo_w = target_w
+        new_logo_h = target_h
         logo_img = logo_img.resize((new_logo_w, new_logo_h), Image.LANCZOS)
         
         positions = {
@@ -731,11 +735,11 @@ async def overlap_callback(client, callback_query):
         chat_id = callback_query.message.chat.id
         
         with open(tmp_path, "rb") as f:
-            await client.send_document(chat_id, f, caption="<b>🖼 Normal (No Enhancement)</b>", parse_mode=ParseMode.HTML)
+            await client.send_photo(chat_id, f, caption="<b>🖼 Normal (No Enhancement)</b>", parse_mode=ParseMode.HTML)
         
         if has_enhanced and os.path.exists(enhanced_path):
             with open(enhanced_path, "rb") as f:
-                await client.send_document(chat_id, f, caption="<b>✨ HD Enhanced</b>", parse_mode=ParseMode.HTML)
+                await client.send_photo(chat_id, f, caption="<b>✨ HD Enhanced</b>", parse_mode=ParseMode.HTML)
             os.unlink(enhanced_path)
         
         os.unlink(tmp_path)
