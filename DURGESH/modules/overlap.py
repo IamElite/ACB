@@ -146,10 +146,10 @@ async def overlap_callback(client, callback_query):
         try:
             subprocess.run([
                 "convert", tmp_path,
-                "-modulate", "100,110,100",
-                "-contrast-stretch", "0.1x0.1%",
-                "-unsharp", "0x1+0.5+0",
-                "-quality", "95",
+                "-modulate", "100,115",
+                "-sigmoidal-contrast", "4x50%",
+                "-enhance",
+                "-contrast-stretch", "0.5%x0.5%",
                 enhanced_path
             ], check=True, capture_output=True, timeout=30)
             has_enhanced = True
