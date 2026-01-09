@@ -24,8 +24,8 @@ else:
 
 IMG = "https://image.tmdb.org/t/p/"
 
-POSTER_LIMIT = 40
-BACKDROP_LIMIT = 40
+POSTER_LIMIT = 30
+BACKDROP_LIMIT = 30
 LOGO_LIMIT = 15
 
 POSTER_CACHE = {}
@@ -434,7 +434,7 @@ async def poster_cmd(client, message):
     
     total = len(imgs["all_landscape"]) + len(imgs["all_posters"]) + len(imgs["all_logos"])
     text += f"<b>Total:</b> {total} quality links\n"
-    text += f"<b>Limits:</b> Landscapes/Posters (1-40), Logos (1-15)\n\n"
+    text += f"<b>Limits:</b> Landscapes/Posters (1-30), Logos (1-15)\n\n"
     text += f"<i>Click buttons to download images:</i>"
     
     buttons = []
