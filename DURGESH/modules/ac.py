@@ -13,14 +13,14 @@ captiondb = db.captions
 authchanneldb = db.capauth_channels
 
 # Default caption
-DEFAULT_CAPTION = """<blockquote>
+DEFAULT_CAPTION = """<blockquote><b>
 ╭────────────────────⦿
 ├ 📺<b>єᴘɪꜱσᴅє</b> ➛ <i>{episode}</i> <b>(ꜱєᴧꜱση</b> <i>{season}</i><b>)</b>
 ├ 🔊<b>ᴧᴜᴅɪσ</b> ➛ <i>ʜɪηᴅɪ #σꜰꜰɪᴄɪᴧʟ</i>
 ├ 🎥<b>ǫᴜᴧʟɪᴛʏ</b> ➛ <i>{quality}</i>
 ├ 🌐<b>[ @TGUrlsHub & @TGEliteHub ]</b>
 ╰────────────────────⦿
-</blockquote>"""
+</blockquote></b>"""
 
 # Default sticker file_id for episode separator
 DEFAULT_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
