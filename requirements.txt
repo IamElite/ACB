@@ -11,9 +11,11 @@ pillow
 aiofiles
 yt_dlp
 bs4
+curl_cffi
 jikanpy
 httpx
 https://github.com/IamDvis/DVIS-SEARCH/archive/dvis.zip
+
 
 
 
