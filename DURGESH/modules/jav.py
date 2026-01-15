@@ -24,6 +24,10 @@ def get_njav_data(jav_id):
     
     try:
         response = requests.get(url, headers=HEADERS, verify=False, timeout=10)
+        if response.status_code != 200:
+             data["model"] = f"HTTP {response.status_code}"
+             return data
+
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -92,8 +96,9 @@ def get_njav_data(jav_id):
                         if parts:
                             data["studio"] = parts[-1]
             
-    except Exception:
-        pass
+    except Exception as e:
+        data["studio"] = f"Error: {str(e)}"
+        data["model"] = f"Status: {response.status_code}" if 'response' in locals() else "No Resp"
         
     return data
 
