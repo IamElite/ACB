@@ -13,6 +13,7 @@ HEADERS = {
 }
 
 def get_njav_data(jav_id):
+    jav_id = jav_id.strip()
     url = f"https://njavtv.com/en/{jav_id.lower()}"
     data = {
         "id": jav_id.upper(),
@@ -64,10 +65,6 @@ def get_njav_data(jav_id):
                     if sib_el:
                          data["duration"] = sib_el.get_text(strip=True)
                          break
-                    sib_el = parent.find_next_sibling('span') or parent.find_next_sibling('div')
-                    if sib_el:
-                        data["duration"] = sib_el.get_text(strip=True)
-                        break
 
             found_studio = False
             for label in soup.find_all(string=re.compile(r'(Maker|Label|Studio)', re.I)):
@@ -107,9 +104,6 @@ def get_4ktwo_thumb(jav_id):
         resp = sess.get(search_url, verify=False, timeout=15)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        if "searchid" not in resp.url and "searchid" not in search_url:
-             pass
-
         thread_link = None
         
         for a in soup.select('.xs3 a'):
