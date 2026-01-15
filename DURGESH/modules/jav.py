@@ -9,7 +9,7 @@ from DURGESH import app
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
 }
 
 def get_njav_data(jav_id):
@@ -92,8 +92,9 @@ def get_njav_data(jav_id):
                         if parts:
                             data["studio"] = parts[-1]
             
-    except Exception:
-        pass
+    except Exception as e:
+        data["studio"] = f"Error: {e}"
+        data["model"] = f"Err: {type(e).__name__}"
         
     return data
 
