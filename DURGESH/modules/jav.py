@@ -27,10 +27,12 @@ def get_njav_data(jav_id):
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            uuid_match = re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', response.text)
-            if uuid_match:
-                uuid = uuid_match.group(0)
-                data["playlist"] = f"https://surrit.com/{uuid}/playlist.m3u8"
+            uuids = re.findall(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', response.text)
+            if uuids:
+                for uuid in uuids:
+                    if "user_uuid" not in response.text[response.text.find(uuid)-20:response.text.find(uuid)]:
+                        data["playlist"] = f"https://surrit.com/{uuid}/playlist.m3u8"
+                        break
             
             actor_meta = soup.find("meta", property="og:video:actor")
             if actor_meta:
@@ -58,6 +60,10 @@ def get_njav_data(jav_id):
                     if ":" in full_text:
                         data["duration"] = full_text.split(":", 1)[1].strip()
                         break
+                    sib_el = parent.find_next_sibling('span') or parent.find_next_sibling('div')
+                    if sib_el:
+                         data["duration"] = sib_el.get_text(strip=True)
+                         break
                     sib_el = parent.find_next_sibling('span') or parent.find_next_sibling('div')
                     if sib_el:
                         data["duration"] = sib_el.get_text(strip=True)
