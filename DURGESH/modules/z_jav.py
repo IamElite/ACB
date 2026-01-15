@@ -24,12 +24,19 @@ def get_njav_data(jav_id):
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            uuids = re.findall(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', response.text)
-            if uuids:
-                for uuid in uuids:
-                    if "user_uuid" not in response.text[response.text.find(uuid)-20:response.text.find(uuid)]:
-                        data["playlist"] = f"https://surrit.com/{uuid}/playlist.m3u8"
-                        break
+            # Targeted UUID search (nineyu or surrit)
+            # Looks for: nineyu.com/UUID or surrit.com/UUID (handling escaped slashes)
+            domain_uuids = re.findall(r'(?:surrit|nineyu)\.com(?:\\/|/)([a-f0-9-]{36})', response.text)
+            
+            if domain_uuids:
+                data["playlist"] = f"https://surrit.com/{domain_uuids[0]}/playlist.m3u8"
+            else:
+                uuids = re.findall(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', response.text)
+                if uuids:
+                    for uuid in uuids:
+                        if "user_uuid" not in response.text[response.text.find(uuid)-20:response.text.find(uuid)]:
+                            data["playlist"] = f"https://surrit.com/{uuid}/playlist.m3u8"
+                            break
             
             actor_meta = soup.find("meta", property="og:video:actor")
             if actor_meta:
