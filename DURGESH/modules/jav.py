@@ -9,7 +9,7 @@ from DURGESH import app
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/199.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 }
 
 def get_njav_data(jav_id):
@@ -24,10 +24,6 @@ def get_njav_data(jav_id):
     
     try:
         response = requests.get(url, headers=HEADERS, verify=False, timeout=10)
-        if response.status_code != 200:
-             data["model"] = f"HTTP {response.status_code}"
-             return data
-
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -96,9 +92,8 @@ def get_njav_data(jav_id):
                         if parts:
                             data["studio"] = parts[-1]
             
-    except Exception as e:
-        data["studio"] = f"Error: {str(e)}"
-        data["model"] = f"Status: {response.status_code}" if 'response' in locals() else "No Resp"
+    except Exception:
+        pass
         
     return data
 
