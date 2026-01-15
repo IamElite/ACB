@@ -10,10 +10,11 @@ pillow
 
 aiofiles
 yt_dlp
-bs4
+beautifulsoup4
 jikanpy
 httpx
 https://github.com/IamDvis/DVIS-SEARCH/archive/dvis.zip
+
 
 
 
