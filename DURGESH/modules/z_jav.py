@@ -1,18 +1,14 @@
-import requests
 import re
 from bs4 import BeautifulSoup
-import urllib3
 import asyncio
+from curl_cffi import requests
 from pyrogram import filters
 from DURGESH import app
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
-}
+# curl_cffi handles TLS/Headers. We just need to impersonate.
 
 def get_njav_data(jav_id):
+    jav_id = jav_id.strip()
     url = f"https://njavtv.com/en/{jav_id.lower()}"
     data = {
         "id": jav_id.upper(),
@@ -23,7 +19,8 @@ def get_njav_data(jav_id):
     }
     
     try:
-        response = requests.get(url, headers=HEADERS, verify=False, timeout=10)
+        # Masquerade as Safari to bypass WAF (tested on Colab)
+        response = requests.get(url, impersonate="safari15_5", timeout=15)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
@@ -101,10 +98,9 @@ def get_njav_data(jav_id):
 def get_4ktwo_thumb(jav_id):
     search_url = f"https://4ktwo.net/search.php?mod=forum&searchsubmit=yes&srchtxt={jav_id}"
     try:
-        sess = requests.Session()
-        sess.headers.update(HEADERS)
-        
-        resp = sess.get(search_url, verify=False, timeout=15)
+        # 4ktwo might not need advanced impersonation, but keeping consistent is safe
+        # Or simple requests might be fine. Let's use curl_cffi for consistency.
+        resp = requests.get(search_url, impersonate="safari15_5", timeout=15)
         soup = BeautifulSoup(resp.text, 'html.parser')
         
         if "searchid" not in resp.url and "searchid" not in search_url:
@@ -133,7 +129,7 @@ def get_4ktwo_thumb(jav_id):
             if not thread_link.startswith('http'):
                 thread_link = "https://4ktwo.net/" + thread_link
             
-            thread_resp = sess.get(thread_link, verify=False, timeout=10)
+            thread_resp = requests.get(thread_link, impersonate="safari15_5", timeout=15)
             thread_soup = BeautifulSoup(thread_resp.text, 'html.parser')
             
             post_content = thread_soup.find('div', class_='pcb')
