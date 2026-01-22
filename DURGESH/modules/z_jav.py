@@ -192,9 +192,9 @@ async def jav_search_cmd(client, message):
         )
         
         if njav_data['playlist']:
-            caption += f"**dow link -**\n`{njav_data['playlist']}`"
+            caption += f"**STREAM LINK -**\n{njav_data['playlist']}"
         else:
-             caption += "**dow link -**\n❌ Not Found"
+             caption += "**STREAM LINK -**\n❌ Not Found"
 
         if thumb_url:
             await message.reply_photo(
