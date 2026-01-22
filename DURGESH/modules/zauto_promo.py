@@ -562,40 +562,112 @@ async def force_start_promo(client, message: Message):
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
 
-# Cleanup deleted posts
+# Sync main channel posts (Cleanup + Catch-up)
+async def sync_main_channel(status_msg=None):
+    """Sync DB with actual channel state: Remove deleted, Add missing"""
+    try:
+        config = await get_config()
+        main_channel = config.get("main_channel")
+        
+        if not main_channel:
+            return "❌ Main channel not set!"
+
+        # 1. Cleanup: Check tracked posts
+        cleaned = 0
+        posts_to_check = []
+        async for post in apauthdb.find({"post_type": "main_channel", "exists": {"$ne": False}}):
+            posts_to_check.append(post)
+        
+        if status_msg:
+            await status_msg.edit(f"♻️ Checking {len(posts_to_check)} tracked posts...")
+
+        for post in posts_to_check:
+            if not await message_exists(post.get("channel_id"), post.get("message_id")):
+                await apauthdb.update_one({"_id": post["_id"]}, {"$set": {"exists": False}})
+                cleaned += 1
+            await asyncio.sleep(0.1) # Fast check
+            
+        # 2. Catch-up: Check recent history (last 50 messages)
+        added = 0
+        if status_msg:
+            await status_msg.edit(f"♻️ Cleaned {cleaned}. Checking recent messages...")
+            
+        try:
+            async for message in app.get_chat_history(main_channel, limit=50):
+                if message.text or message.media:
+                    # Check if already exists
+                    cutoff_date = datetime.utcnow() - timedelta(days=30)
+                    if message.date < cutoff_date:
+                        continue
+                        
+                    post_id = f"post_{message.id}"
+                    existing = await apauthdb.find_one({"_id": post_id})
+                    
+                    if not existing:
+                        await apauthdb.update_one(
+                            {"_id": post_id},
+                            {"$set": {
+                                "post_type": "main_channel",
+                                "channel_id": main_channel,
+                                "message_id": message.id,
+                                "created_at": datetime.utcnow(),
+                                "date": message.date,
+                                "has_text": bool(message.text),
+                                "has_media": bool(message.media),
+                                "exists": True
+                            }},
+                            upsert=True
+                        )
+                        added += 1
+                        try:
+                            await message.react(emoji="👍")
+                        except:
+                            pass
+        except Exception as e:
+            print(f"⚠️ History check failed: {e}")
+            
+        return f"✅ **Sync Complete**\n\n🗑️ Cleaned: `{cleaned}`\n🆕 Added: `{added}`"
+        
+    except Exception as e:
+        return f"❌ Sync Error: {e}"
+
+# Force Check/Sync Command
+@app.on_message(filters.command(["forcechk", "fchk"]))
+async def force_sync_command(client, message: Message):
+    try:
+        status_msg = await message.reply("⏳ **Syncing Main Channel...**\n\nChecking deleted & new posts...")
+        result = await sync_main_channel(status_msg)
+        await status_msg.edit(result)
+    except Exception as e:
+        await message.reply(f"❌ Error: {e}")
+
+# Cleanup deleted posts (Updated to be more robust)
 async def cleanup_deleted_posts():
-    """Periodically check and remove deleted posts"""
+    """Periodically sync main channel posts"""
+    print("🧹 Cleanup task started")
     while True:
         try:
-            posts = []
-            async for post in apauthdb.find({"post_type": "main_channel", "exists": True}):
-                posts.append(post)
+            # Run sync every 1 hour (3600 seconds) instead of 6 hours
+            await asyncio.sleep(3600)
             
-            deleted = 0
-            for post in posts:
-                if not await message_exists(post.get("channel_id"), post.get("message_id")):
-                    await apauthdb.update_one({"_id": post["_id"]}, {"$set": {"exists": False}})
-                    deleted += 1
-                await asyncio.sleep(1)
+            # Run silent sync
+            await sync_main_channel()
             
-            if deleted > 0:
-                print(f"🧹 Cleaned {deleted} posts")
-            
+            # Cleanup old promos older than 7 days
             result = await apauthdb.delete_many({
                 "post_type": "promo_track",
                 "posted_at": {"$lt": datetime.utcnow() - timedelta(days=7)}
             })
             
             if result.deleted_count > 0:
-                print(f"🧹 Cleaned {result.deleted_count} promos")
-            
-            await asyncio.sleep(21600)
-            
+                print(f"🧹 Cleaned {result.deleted_count} old promos")
+                
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"❌ Cleanup: {e}")
-            await asyncio.sleep(3600)
+            print(f"❌ Cleanup Task Error: {e}")
+            await asyncio.sleep(300)
+
 
 # Promo loop with immediate trigger support
 async def promo_loop():
