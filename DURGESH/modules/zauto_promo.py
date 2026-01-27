@@ -1,6 +1,7 @@
 # auto_promo.py
 
 
+
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -16,7 +17,6 @@ force_promo_event = asyncio.Event()
 bulk_add_active = {}
 bulk_remove_active = {}
 collected_channels = {}
-
 def parse_time(time_str):
     """Convert '5h', '30m', '2d' to seconds"""
     try:
@@ -580,7 +580,10 @@ async def sync_main_channel(status_msg=None):
             f"🆕 Added: `{added}`\n"
             f"{error_log}"
         )
-@app.on_message(filters.command(["addpost"]))
+    except Exception as e:
+        return f"❌ Sync Error: {e}"
+
+@app.on_message(filters.command(["addpost", "addp"]))
 async def manual_add_post(client, message: Message):
     """Manually add a post to the database"""
     try:
