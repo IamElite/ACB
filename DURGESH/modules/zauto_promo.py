@@ -1,5 +1,6 @@
 # auto_promo.py
 
+
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -9,20 +10,13 @@ from DURGESH import app
 from DURGESH.database import db
 
 apauthdb = db.apauth_channels
-
-# Background task references
 promo_task = None
 cleanup_task = None
-
-# Event to trigger immediate promo
 force_promo_event = asyncio.Event()
-
-# Bulk mode collectors
 bulk_add_active = {}
 bulk_remove_active = {}
 collected_channels = {}
 
-# Helper: Parse time string
 def parse_time(time_str):
     """Convert '5h', '30m', '2d' to seconds"""
     try:
@@ -35,8 +29,6 @@ def parse_time(time_str):
         return 18000
     except:
         return 18000
-
-# Helper: Format seconds back to readable
 def format_time(seconds):
     """Convert seconds to '5h', '30m', etc."""
     if seconds < 3600:
@@ -45,8 +37,6 @@ def format_time(seconds):
         return f"{seconds//3600}h"
     else:
         return f"{seconds//86400}d"
-
-# Setup TTL indexes for auto cleanup
 async def setup_ttl_indexes():
     """Setup MongoDB TTL indexes for automatic cleanup"""
     try:
@@ -65,8 +55,6 @@ async def setup_ttl_indexes():
         )
     except Exception as e:
         print(f"⚠️ TTL error: {e}")
-
-# Get or create config
 async def get_config():
     config = await apauthdb.find_one({"_id": "config"})
     if not config:
@@ -82,8 +70,6 @@ async def get_config():
         }
         await apauthdb.insert_one(config)
     return config
-
-# Check if message still exists
 async def message_exists(channel_id, message_id):
     """Check if a message exists in channel"""
     try:
@@ -91,8 +77,6 @@ async def message_exists(channel_id, message_id):
         return msg and not msg.empty
     except:
         return False
-
-# Get bot status in channel
 async def get_bot_status(channel_id):
     """Get bot member status in channel"""
     try:
@@ -100,8 +84,6 @@ async def get_bot_status(channel_id):
         return member.status
     except Exception as e:
         return f"Error: {e}"
-
-# Track new posts from main channel + React with 👍
 @app.on_message(filters.channel)
 async def track_main_channel_posts(client, message: Message):
     """Automatically track posts from main channel and react"""
@@ -129,8 +111,6 @@ async def track_main_channel_posts(client, message: Message):
                     }},
                     upsert=True
                 )
-                
-                # React with 👍 to confirm DB add
                 try:
                     await message.react(emoji="👍")
                     print(f"✅ Tracked & Reacted: {message.id}")
@@ -144,8 +124,6 @@ async def track_main_channel_posts(client, message: Message):
                     
     except Exception as e:
         print(f"❌ Track error: {e}")
-
-# Global handler to collect forwarded channels in bulk mode
 @app.on_message(filters.forwarded)
 async def bulk_collector(client, message: Message):
     """Collect forwarded channels when bulk mode is active"""
@@ -160,8 +138,6 @@ async def bulk_collector(client, message: Message):
             
             try:
                 member = await client.get_chat_member(ch_id, "me")
-                
-                # Convert status to string for comparison
                 status_str = str(member.status).split('.')[-1].lower()
                 
                 if status_str in ["administrator", "creator", "owner"]:
@@ -188,8 +164,6 @@ async def bulk_collector(client, message: Message):
                 await message.delete()
             except:
                 pass
-
-# Status command
 @app.on_message(filters.command(["apstatus"]))
 async def check_status(client, message: Message):
     """Check current bot status and config"""
@@ -224,8 +198,6 @@ async def check_status(client, message: Message):
         
     except Exception as e:
         await message.reply(f"❌ Error: {e}")
-
-# Auth main channel
 @app.on_message(filters.command(["apauth"]))
 async def auth_main_channel(client, message: Message):
     try:
@@ -267,8 +239,6 @@ async def auth_main_channel(client, message: Message):
         
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
-
-# Unauth main channel
 @app.on_message(filters.command(["apunauth"]))
 async def unauth_main_channel(client, message: Message):
     try:
@@ -295,8 +265,6 @@ async def unauth_main_channel(client, message: Message):
         
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
-
-# Add promo channel
 @app.on_message(filters.command(["addpromochnl", "apc"]))
 async def add_promo_channel(client, message: Message):
     try:
@@ -356,18 +324,12 @@ async def add_promo_channel(client, message: Message):
         try:
             chat = await app.get_chat(channel_id)
             member = await app.get_chat_member(channel_id, "me")
-            
-            # Convert status to string
             status_str = str(member.status).split('.')[-1].lower()
-            
-            # Check admin status
             if status_str not in ["administrator", "creator", "owner"]:
                 return await message.reply(
                     f"❌ Bot is {member.status}\n\n"
                     f"⚠️ Bot ko Admin banao!"
                 )
-            
-            # Check post permission
             if member.privileges and not member.privileges.can_post_messages:
                 return await message.reply(
                     f"⚠️ Bot admin hai but Post Messages permission nahi!\n\n"
@@ -397,8 +359,6 @@ async def add_promo_channel(client, message: Message):
             
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
-
-# Remove promo channel
 @app.on_message(filters.command(["rmaddpromochnl", "rmapc"]))
 async def remove_promo_channel(client, message: Message):
     try:
@@ -466,8 +426,6 @@ async def remove_promo_channel(client, message: Message):
             
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
-
-# Set config
 @app.on_message(filters.command(["set"]))
 async def set_config(client, message: Message):
     try:
@@ -513,8 +471,6 @@ async def set_config(client, message: Message):
         
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
-
-# Force restart promo - IMMEDIATE CYCLE
 @app.on_message(filters.command(["forcespromo", "fp", "fpromo"]))
 async def force_start_promo(client, message: Message):
     """Force restart promo cycle from beginning + immediate promo"""
@@ -526,8 +482,6 @@ async def force_start_promo(client, message: Message):
         
         if not config.get("promo_channels"):
             return await message.reply("❌ Promo channels nahi hain! Pehle `/apc` use karo")
-        
-        # Check posts exist
         post_count = await apauthdb.count_documents({
             "channel_id": config.get("main_channel"),
             "post_type": "main_channel",
@@ -536,8 +490,6 @@ async def force_start_promo(client, message: Message):
         
         if post_count == 0:
             return await message.reply("❌ Koi post track nahi hai! Main channel me post karo pehle")
-        
-        # Reset index to 0 (start from beginning)
         await apauthdb.update_one(
             {"_id": "config"},
             {"$set": {
@@ -546,8 +498,6 @@ async def force_start_promo(client, message: Message):
             }},
             upsert=True
         )
-        
-        # Trigger immediate promo cycle
         force_promo_event.set()
         
         await message.reply(
@@ -561,8 +511,6 @@ async def force_start_promo(client, message: Message):
         
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
-
-# Sync main channel posts (Cleanup + Catch-up)
 async def sync_main_channel(status_msg=None):
     """Sync DB with actual channel state: Remove deleted, Add missing"""
     try:
@@ -571,8 +519,6 @@ async def sync_main_channel(status_msg=None):
         
         if not main_channel:
             return "❌ Main channel not set!"
-
-        # 1. Cleanup: Check tracked posts
         cleaned = 0
         posts_to_check = []
         async for post in apauthdb.find({"post_type": "main_channel", "exists": {"$ne": False}}):
@@ -586,8 +532,6 @@ async def sync_main_channel(status_msg=None):
                 await apauthdb.update_one({"_id": post["_id"]}, {"$set": {"exists": False}})
                 cleaned += 1
             await asyncio.sleep(0.1) # Fast check
-            
-        # 2. Catch-up: Check recent history
         added = 0
         history_scanned = 0
         error_log = ""
@@ -602,7 +546,6 @@ async def sync_main_channel(status_msg=None):
                     continue
                     
                 if message.text or message.media:
-                    # Check if already exists
                     post_id = f"post_{message.id}"
                     existing = await apauthdb.find_one({"_id": post_id})
                     
@@ -637,11 +580,65 @@ async def sync_main_channel(status_msg=None):
             f"🆕 Added: `{added}`\n"
             f"{error_log}"
         )
+@app.on_message(filters.command(["addpost"]))
+async def manual_add_post(client, message: Message):
+    """Manually add a post to the database"""
+    try:
+        config = await get_config()
+        main_channel = config.get("main_channel")
+        
+        if not main_channel:
+            return await message.reply("❌ Main channel set nahi hai!")
+            
+        target_msg = None
+        if message.reply_to_message:
+            if message.reply_to_message.forward_from_chat and message.reply_to_message.forward_from_chat.id == main_channel:
+                 target_msg = message.reply_to_message
+            elif message.chat.id == main_channel:
+                 target_msg = message.reply_to_message
+        elif len(message.command) > 1:
+            input_arg = message.command[1]
+            try:
+                if "t.me/" in input_arg:
+                    msg_id = int(input_arg.split("/")[-1])
+                else:
+                    msg_id = int(input_arg)
+                    
+                target_msg = await app.get_messages(main_channel, msg_id)
+            except Exception as e:
+                return await message.reply(f"❌ Invalid ID/Link: {e}")
+        
+        if not target_msg or target_msg.empty:
+            return await message.reply(
+                "❌ **Post nahi mila!**\n\n"
+                "Tareeke:\n"
+                "1. Main channel ke forwarded message pe reply karo\n"
+                "2. `/addpost <message_id>` use karo\n"
+                "3. `/addpost <post_link>` use karo"
+            )
+        
+        if target_msg.forward_from_chat and target_msg.forward_from_chat.id != main_channel:
+             return await message.reply(f"❌ Yeh post Main Channel ({main_channel}) ka nahi hai!")
+        post_id = f"post_{target_msg.id}"
+        await apauthdb.update_one(
+            {"_id": post_id},
+            {"$set": {
+                "post_type": "main_channel",
+                "channel_id": main_channel,
+                "message_id": target_msg.id,
+                "created_at": datetime.utcnow(),
+                "date": target_msg.date,
+                "has_text": bool(target_msg.text),
+                "has_media": bool(target_msg.media),
+                "exists": True
+            }},
+            upsert=True
+        )
+        
+        await message.reply(f"✅ **Post Added!**\n🆔 `{target_msg.id}`")
         
     except Exception as e:
-        return f"❌ Sync Error: {e}"
-
-# Force Check/Sync Command
+        await message.reply(f"❌ Error: {e}")
 @app.on_message(filters.command(["forcechk", "fchk"]))
 async def force_sync_command(client, message: Message):
     try:
@@ -650,20 +647,13 @@ async def force_sync_command(client, message: Message):
         await status_msg.edit(result)
     except Exception as e:
         await message.reply(f"❌ Error: {e}")
-
-# Cleanup deleted posts (Updated to be more robust)
 async def cleanup_deleted_posts():
     """Periodically sync main channel posts"""
     print("🧹 Cleanup task started")
     while True:
         try:
-            # Run sync every 1 hour (3600 seconds) instead of 6 hours
             await asyncio.sleep(3600)
-            
-            # Run silent sync
             await sync_main_channel()
-            
-            # Cleanup old promos older than 7 days
             result = await apauthdb.delete_many({
                 "post_type": "promo_track",
                 "posted_at": {"$lt": datetime.utcnow() - timedelta(days=7)}
@@ -677,9 +667,6 @@ async def cleanup_deleted_posts():
         except Exception as e:
             print(f"❌ Cleanup Task Error: {e}")
             await asyncio.sleep(300)
-
-
-# Promo loop with immediate trigger support
 async def promo_loop():
     """Main promo loop with force trigger support"""
     print("🚀 Promo loop started")
@@ -792,15 +779,11 @@ async def promo_loop():
             )
             
             print(f"⏰ Next in {format_time(promo_interval)}")
-            
-            # Wait for interval OR force trigger event
             try:
                 await asyncio.wait_for(force_promo_event.wait(), timeout=promo_interval)
-                # Event triggered - immediate next cycle
                 force_promo_event.clear()
                 print("⚡ Force trigger activated - skipping wait")
             except asyncio.TimeoutError:
-                # Normal interval completed
                 pass
             
         except asyncio.CancelledError:
@@ -810,8 +793,6 @@ async def promo_loop():
         except Exception as e:
             print(f"❌ Loop: {e}")
             await asyncio.sleep(120)
-
-# Startup
 async def start_promo_on_boot():
     """Bot startup"""
     global promo_task, cleanup_task
