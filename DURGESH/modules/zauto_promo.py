@@ -587,19 +587,22 @@ async def sync_main_channel(status_msg=None):
                 cleaned += 1
             await asyncio.sleep(0.1) # Fast check
             
-        # 2. Catch-up: Check recent history (last 50 messages)
+        # 2. Catch-up: Check recent history
         added = 0
+        history_scanned = 0
+        error_log = ""
+        
         if status_msg:
-            await status_msg.edit(f"♻️ Cleaned {cleaned}. Checking recent messages...")
+            await status_msg.edit(f"♻️ Cleaned {cleaned}. Scanning recent posts...")
             
         try:
-            async for message in app.get_chat_history(main_channel, limit=50):
+            async for message in app.get_chat_history(main_channel, limit=100):
+                history_scanned += 1
+                if message.service:
+                    continue
+                    
                 if message.text or message.media:
                     # Check if already exists
-                    cutoff_date = datetime.utcnow() - timedelta(days=30)
-                    if message.date < cutoff_date:
-                        continue
-                        
                     post_id = f"post_{message.id}"
                     existing = await apauthdb.find_one({"_id": post_id})
                     
@@ -624,9 +627,16 @@ async def sync_main_channel(status_msg=None):
                         except:
                             pass
         except Exception as e:
+            error_log = f"\n⚠️ Scan Error: {str(e)}"
             print(f"⚠️ History check failed: {e}")
             
-        return f"✅ **Sync Complete**\n\n🗑️ Cleaned: `{cleaned}`\n🆕 Added: `{added}`"
+        return (
+            f"✅ **Sync Complete**\n\n"
+            f"🗑️ Cleaned: `{cleaned}`\n"
+            f"🔍 Scanned: `{history_scanned}` recent posts\n"
+            f"🆕 Added: `{added}`\n"
+            f"{error_log}"
+        )
         
     except Exception as e:
         return f"❌ Sync Error: {e}"
