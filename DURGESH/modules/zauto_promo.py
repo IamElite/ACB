@@ -1,7 +1,6 @@
 # auto_promo.py
 
 
-
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -17,6 +16,8 @@ force_promo_event = asyncio.Event()
 bulk_add_active = {}
 bulk_remove_active = {}
 collected_channels = {}
+
+
 def parse_time(time_str):
     """Convert '5h', '30m', '2d' to seconds"""
     try:
@@ -638,7 +639,19 @@ async def manual_add_post(client, message: Message):
             upsert=True
         )
         
-        await message.reply(f"✅ **Post Added!**\n🆔 `{target_msg.id}`")
+        # Like the post
+        try:
+            await target_msg.react(emoji="👍")
+        except:
+            pass
+            
+        # Logger/Confirmation Message
+        await message.reply(
+            f"✅ **Post Manually Added!**\n\n"
+            f"🆔 ID: `{target_msg.id}`\n"
+            f"👍 Reacted: Yes\n"
+            f"📅 Date: `{target_msg.date}`"
+        )
         
     except Exception as e:
         await message.reply(f"❌ Error: {e}")
