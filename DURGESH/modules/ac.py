@@ -816,41 +816,14 @@ async def auto_cap_cmd(client, message: Message):
         episode_header_enabled = await load_episode_header_setting(real_dest_id)
 
         # ---------- Access check: source + destination ----------
-        from_chat_id = int(from_channel)
-        resolved = False
-        
         try:
-            # Method 1: Try get_chat
-            await client.get_chat(from_chat_id)
-            resolved = True
-        except Exception:
-            try:
-                # Method 2: Try get_messages (forces peer update)
-                test_msg = await client.get_messages(from_chat_id, start_id)
-                if test_msg and not test_msg.empty:
-                    resolved = True
-            except Exception:
-                try:
-                    # Method 3: Try get_chat_history (last resort wake up)
-                    async for _ in client.get_chat_history(from_chat_id, limit=1):
-                        resolved = True
-                        break
-                except Exception:
-                    pass
-
-        if not resolved:
-            troubleshoot = (
-                "\n\n💡 <b>Troubleshoot:</b>\n"
-                "1. Bot ko <b>Source</b> channel me Admin banao.\n"
-                "2. Source channel se koi bhi ek message bot ko <b>Forward</b> karo (Isse Peer resolve hoga).\n"
-                "3. Agar Admin h fir bhi fail ho raha h, to bot ko ek baar channel se <b>Remove</b> karke fir se <b>Add/Admin</b> banao.\n"
-                "4. Make sure <code>t.me/c/...</code> links correct hain."
-            )
+            await client.get_chat(int(from_channel))
+        except Exception as e:
             return await message.reply_text(
                 "⚠️ <b>Cannot access source channel.</b>\n\n"
                 f"<b>Source:</b> <code>{from_channel}</code>\n"
-                f"<b>Reason:</b> <code>Telegram says peer not found (CHANNEL_INVALID/PRIVATE)</code>"
-                f"{troubleshoot}",
+                f"<b>Reason:</b> <code>{html.escape(str(e))}</code>\n\n"
+                "Make sure bot is member/admin in <b>source</b> channel.",
                 parse_mode=ParseMode.HTML
             )
 
