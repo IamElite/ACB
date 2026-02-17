@@ -13,14 +13,14 @@ captiondb = db.captions
 authchanneldb = db.capauth_channels
 
 # Default caption
-DEFAULT_CAPTION = """<blockquote>
+DEFAULT_CAPTION = """<blockquote><b>
 ╭────────────────────⦿
 ├ 📺<b>єᴘɪꜱσᴅє</b> ➛ <i>{episode}</i> <b>(ꜱєᴧꜱση</b> <i>{season}</i><b>)</b>
 ├ 🔊<b>ᴧᴜᴅɪσ</b> ➛ <i>ʜɪηᴅɪ #σꜰꜰɪᴄɪᴧʟ</i>
 ├ 🎥<b>ǫᴜᴧʟɪᴛʏ</b> ➛ <i>{quality}</i>
 ├ 🌐<b>[ @TGUrlsHub & @TGEliteHub ]</b>
 ╰────────────────────⦿
-</blockquote>"""
+</blockquote></b>"""
 
 # Default sticker file_id for episode separator
 DEFAULT_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
@@ -536,7 +536,7 @@ def _int_episode(fname: str) -> int:
     return 9999
 
 @app.on_message(
-    (filters.document | filters.video | filters.audio | filters.photo) &
+    (filters.document | filters.video) &
     filters.channel,
     group=10
 )
@@ -817,13 +817,27 @@ async def auto_cap_cmd(client, message: Message):
 
         # ---------- Access check: source + destination ----------
         try:
-            await client.get_chat(int(from_channel))
+            # Try to fetch start_id to force peer resolution and check access
+            test_msg = await client.get_messages(int(from_channel), start_id)
+            if not test_msg or test_msg.empty:
+                 # Try to fallback to get_chat if get_messages returns empty but doesn't raise
+                 await client.get_chat(int(from_channel))
         except Exception as e:
+            err_str = str(e)
+            troubleshoot = ""
+            if "400 CHANNEL_INVALID" in err_str or "406 CHANNEL_PRIVATE" in err_str:
+                troubleshoot = (
+                    "\n\n💡 <b>Troubleshoot:</b>\n"
+                    "1. Bot ko <b>Source</b> channel me Admin banao.\n"
+                    "2. Agar Admin h fir bhi fail ho raha h, to bot ko ek baar channel se <b>Remove</b> karke fir se <b>Add/Admin</b> banao.\n"
+                    "3. Make sure <code>t.me/c/...</code> links are correct and accessible."
+                )
+            
             return await message.reply_text(
                 "⚠️ <b>Cannot access source channel.</b>\n\n"
                 f"<b>Source:</b> <code>{from_channel}</code>\n"
-                f"<b>Reason:</b> <code>{html.escape(str(e))}</code>\n\n"
-                "Make sure bot is member/admin in <b>source</b> channel.",
+                f"<b>Reason:</b> <code>{html.escape(err_str)}</code>"
+                f"{troubleshoot}",
                 parse_mode=ParseMode.HTML
             )
 
@@ -872,7 +886,7 @@ async def auto_cap_cmd(client, message: Message):
                 if not msg:
                     continue
 
-                if not (msg.document or msg.video or msg.audio or msg.photo):
+                if not (msg.document or msg.video):
                     continue
 
                 if msg.document:
