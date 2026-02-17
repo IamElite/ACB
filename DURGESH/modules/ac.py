@@ -716,11 +716,22 @@ async def auto_cap_cmd(client, message: Message):
 
         # ---------- Helpers ----------
         def parse_link(arg: str):
-            # Return (internal_id, msg_id) from t.me/c link, else (None, None)
-            m = re.search(r'(?:https?://)?t\.me/c/(\d+)/(\d+)', arg)
-            if not m:
-                return None, None
-            return m.group(1), int(m.group(2))
+            """
+            Parses Telegram links (private /c/ or public /username/).
+            Returns (channel_ref, msg_id)
+            channel_ref can be '123456789' (internal ID) or 'username'
+            """
+            # Private: t.me/c/12345/6789
+            m_priv = re.search(r'(?:https?://)?t\.me/c/(\d+)/(\d+)', arg)
+            if m_priv:
+                return f"-100{m_priv.group(1)}", int(m_priv.group(2))
+            
+            # Public: t.me/username/6789
+            m_pub = re.search(r'(?:https?://)?t\.me/([\w\d_]+)/(\d+)', arg)
+            if m_pub:
+                return m_pub.group(1), int(m_pub.group(2))
+                
+            return None, None
 
         def parse_msg_id(arg: str) -> int:
             # If link -> msg_id, else plain int
@@ -730,36 +741,32 @@ async def auto_cap_cmd(client, message: Message):
             return int(arg)
 
         # ---------- Source channel + msg ids from start/end ----------
-        src1_internal, start_from_link = parse_link(start_arg)
-        src2_internal, end_from_link = parse_link(end_arg)
+        src1_ref, start_id = parse_link(start_arg)
+        src2_ref, end_id = parse_link(end_arg)
 
-        if src1_internal or src2_internal:
-            # Expect both links & same /c/ id
-            if not (src1_internal and src2_internal):
-                return await message.reply_text(
-                    "❌ <b>Start aur end dono ko same type me do.</b>\n"
-                    "Dono <code>t.me/c/...</code> links hone chahiye.",
-                    parse_mode=ParseMode.HTML
-                )
-            if src1_internal != src2_internal:
+        if src1_ref and src2_ref:
+            if src1_ref != src2_ref:
                 return await message.reply_text(
                     "❌ <b>Start aur end links alag channels ke hain.</b>\n"
                     "Dono links same source channel se lo.",
                     parse_mode=ParseMode.HTML
                 )
-
-            from_channel = f"-100{src1_internal}"
-            start_id = start_from_link
-            end_id = end_from_link
-        else:
-            # Dono plain IDs diye gaye (no link).
-            # Yaha hum source channel nahi guess kar sakte, to error dekar clear bol dete.
+            from_channel = src1_ref
+        elif not src1_ref and not src2_ref:
+            # Both plain IDs
             return await message.reply_text(
                 "❌ <b>Source detect nahi ho raha.</b>\n"
-                "Please <b>start</b> & <b>end</b> ke liye <code>t.me/c/.../msg_id</code> links use karo.\n\n"
+                "Please <b>start</b> & <b>end</b> ke liye <code>t.me/...</code> links use karo.\n\n"
                 "Example:\n"
                 "<code>/ac https://t.me/c/2906536289/1824 "
                 "https://t.me/c/2906536289/1995 -1002572090742</code>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            # Mixed input
+            return await message.reply_text(
+                "❌ <b>Start aur end dono ko same type me do.</b>\n"
+                "Dono links hone chahiye.",
                 parse_mode=ParseMode.HTML
             )
 
@@ -817,7 +824,9 @@ async def auto_cap_cmd(client, message: Message):
 
         # ---------- Access check: source + destination ----------
         try:
-            await client.get_chat(int(from_channel))
+            # Use resolve_peer / get_chat carefully
+            source_chat = await client.get_chat(from_channel)
+            from_channel_id = source_chat.id
         except Exception as e:
             return await message.reply_text(
                 "⚠️ <b>Cannot access source channel.</b>\n\n"
@@ -854,10 +863,10 @@ async def auto_cap_cmd(client, message: Message):
             chunk_ids = msg_ids[i:i + CHUNK]
 
             try:
-                msgs = await client.get_messages(int(from_channel), chunk_ids)
+                msgs = await client.get_messages(from_channel_id, chunk_ids)
             except FloodWait as fw:
                 await asyncio.sleep(fw.value)
-                msgs = await client.get_messages(int(from_channel), chunk_ids)
+                msgs = await client.get_messages(from_channel_id, chunk_ids)
             except Exception as e:
                 await message.reply_text(
                     "⚠️ <b>Error while fetching messages:</b> "
