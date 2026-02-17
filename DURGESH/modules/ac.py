@@ -817,18 +817,13 @@ async def auto_cap_cmd(client, message: Message):
 
         # ---------- Access check: source + destination ----------
         try:
-            # Try to fetch start_id to force peer resolution and check access
-            test_msg = await client.get_messages(int(from_channel), start_id)
-            if not test_msg or test_msg.empty:
-                 # Try to fallback to get_chat if get_messages returns empty but doesn't raise
-                 await client.get_chat(int(from_channel))
+            await client.get_chat(int(from_channel))
         except Exception as e:
             return await message.reply_text(
                 "⚠️ <b>Cannot access source channel.</b>\n\n"
                 f"<b>Source:</b> <code>{from_channel}</code>\n"
                 f"<b>Reason:</b> <code>{html.escape(str(e))}</code>\n\n"
-                "Make sure bot is member/admin in <b>source</b> channel and "
-                "the links/IDs provided are correct.",
+                "Make sure bot is member/admin in <b>source</b> channel.",
                 parse_mode=ParseMode.HTML
             )
 
