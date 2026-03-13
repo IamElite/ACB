@@ -70,6 +70,16 @@ async def get_config():
             "loop_running": False
         }
         await apauthdb.insert_one(config)
+    
+    # Auto-fix: Convert string channel ID to integer if possible
+    if config.get("main_channel") and isinstance(config["main_channel"], str):
+        try:
+            config["main_channel"] = int(config["main_channel"])
+            await apauthdb.update_one({"_id": "config"}, {"$set": {"main_channel": config["main_channel"]}})
+            print(f"✅ Migrated main_channel ID to Integer: {config['main_channel']}")
+        except ValueError:
+            pass
+
     return config
 async def message_exists(channel_id, message_id):
     """Check if a message exists in channel"""
@@ -92,10 +102,11 @@ async def track_main_channel_posts(client, message: Message):
         config = await get_config()
         main_channel = config.get("main_channel")
         
-        print(f"🔍 Message received: Chat={message.chat.id}, Main={main_channel}")
+        # Robust comparison: handle string/int chat IDs
+        current_chat_id = message.chat.id
         
-        if main_channel and message.chat.id == main_channel:
-            print(f"✅ Match! Text={bool(message.text)}, Media={bool(message.media)}")
+        if main_channel and (current_chat_id == main_channel or str(current_chat_id) == str(main_channel)):
+            print(f"✅ Match! Chat={current_chat_id}, Main={main_channel}")
             
             if message.text or message.media:
                 await apauthdb.update_one(
@@ -181,9 +192,12 @@ async def check_status(client, message: Message):
             status_msg += f"   Bot Status: `{bot_status}`\n\n"
             
             post_count = await apauthdb.count_documents({
-                "channel_id": main_channel,
                 "post_type": "main_channel",
-                "exists": {"$ne": False}
+                "exists": {"$ne": False},
+                "$or": [
+                    {"channel_id": main_channel},
+                    {"channel_id": str(main_channel)}
+                ]
             })
             status_msg += f"📝 Tracked Posts: `{post_count}`\n\n"
         else:
@@ -217,6 +231,7 @@ async def auth_main_channel(client, message: Message):
         
         try:
             chat = await app.get_chat(channel_id)
+            channel_id = chat.id # Use resolved integer ID
             bot_status = await get_bot_status(channel_id)
         except Exception as e:
             return await message.reply(f"❌ Channel access failed: `{e}`")
@@ -484,9 +499,12 @@ async def force_start_promo(client, message: Message):
         if not config.get("promo_channels"):
             return await message.reply("❌ Promo channels nahi hain! Pehle `/apc` use karo")
         post_count = await apauthdb.count_documents({
-            "channel_id": config.get("main_channel"),
             "post_type": "main_channel",
-            "exists": {"$ne": False}
+            "exists": {"$ne": False},
+            "$or": [
+                {"channel_id": config.get("main_channel")},
+                {"channel_id": str(config.get("main_channel"))}
+            ]
         })
         
         if post_count == 0:
@@ -596,9 +614,12 @@ async def manual_add_post(client, message: Message):
             
         target_msg = None
         if message.reply_to_message:
-            if message.reply_to_message.forward_from_chat and message.reply_to_message.forward_from_chat.id == main_channel:
-                 target_msg = message.reply_to_message
-            elif message.chat.id == main_channel:
+            # Check if source chat matches main_channel (robustly)
+            src_chat_id = message.reply_to_message.chat.id
+            fwd_chat_id = message.reply_to_message.forward_from_chat.id if message.reply_to_message.forward_from_chat else None
+            
+            if (fwd_chat_id and (fwd_chat_id == main_channel or str(fwd_chat_id) == str(main_channel))) or \
+               (src_chat_id == main_channel or str(src_chat_id) == str(main_channel)):
                  target_msg = message.reply_to_message
         elif len(message.command) > 1:
             input_arg = message.command[1]
@@ -621,8 +642,10 @@ async def manual_add_post(client, message: Message):
                 "3. `/addpost <post_link>` use karo"
             )
         
-        if target_msg.forward_from_chat and target_msg.forward_from_chat.id != main_channel:
-             return await message.reply(f"❌ Yeh post Main Channel ({main_channel}) ka nahi hai!")
+        if target_msg.forward_from_chat:
+             fwd_id = target_msg.forward_from_chat.id
+             if fwd_id != main_channel and str(fwd_id) != str(main_channel):
+                  return await message.reply(f"❌ Yeh post Main Channel ({main_channel}) ka nahi hai!")
         post_id = f"post_{target_msg.id}"
         await apauthdb.update_one(
             {"_id": post_id},
@@ -713,11 +736,16 @@ async def promo_loop():
             print(f"🔄 Cycle #{cycle}")
             
             posts_data = []
-            async for post_doc in apauthdb.find({
-                "channel_id": main_channel,
+            posts_query = {
                 "post_type": "main_channel",
-                "exists": {"$ne": False}
-            }).sort("date", -1).limit(50):
+                "exists": {"$ne": False},
+                "$or": [
+                    {"channel_id": main_channel},
+                    {"channel_id": str(main_channel)}
+                ]
+            }
+            
+            async for post_doc in apauthdb.find(posts_query).sort("date", -1).limit(50):
                 posts_data.append(post_doc)
             
             print(f"📊 Posts: {len(posts_data)}")
