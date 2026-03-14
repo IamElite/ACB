@@ -50,7 +50,7 @@ async def setup_ttl_indexes():
         
         await apauthdb.create_index(
             [("posted_at", 1)],
-            expireAfterSeconds=604800,
+            expireAfterSeconds=2592000, # Increased to 30 days
             partialFilterExpression={"post_type": "promo_track"},
             background=True
         )
@@ -82,12 +82,16 @@ async def get_config():
 
     return config
 async def message_exists(channel_id, message_id):
-    """Check if a message exists in channel"""
-    try:
-        msg = await app.get_messages(channel_id, message_id)
-        return msg and not msg.empty
-    except:
-        return False
+    """Check if a message exists in channel with retries for transient errors"""
+    for _ in range(2):
+        try:
+            msg = await app.get_messages(channel_id, message_id)
+            return msg and not msg.empty
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+        except Exception:
+            await asyncio.sleep(1)
+    return False
 async def get_bot_status(channel_id):
     """Get bot member status in channel"""
     try:
@@ -540,17 +544,28 @@ async def sync_main_channel(status_msg=None):
             return "❌ Main channel not set!"
         cleaned = 0
         posts_to_check = []
-        async for post in apauthdb.find({"post_type": "main_channel", "exists": {"$ne": False}}):
+        # Check ALL posts for this channel, even those marked as non-existent
+        async for post in apauthdb.find({
+            "post_type": "main_channel",
+            "$or": [
+                {"channel_id": main_channel},
+                {"channel_id": str(main_channel)}
+            ]
+        }):
             posts_to_check.append(post)
         
         if status_msg:
             await status_msg.edit(f"♻️ Checking {len(posts_to_check)} tracked posts...")
 
         for post in posts_to_check:
-            if not await message_exists(post.get("channel_id"), post.get("message_id")):
+            is_alive = await message_exists(post.get("channel_id"), post.get("message_id"))
+            if not is_alive and post.get("exists") is not False:
                 await apauthdb.update_one({"_id": post["_id"]}, {"$set": {"exists": False}})
                 cleaned += 1
-            await asyncio.sleep(0.1) # Fast check
+            elif is_alive and post.get("exists") is False:
+                await apauthdb.update_one({"_id": post["_id"]}, {"$set": {"exists": True}})
+                added += 1 # Counting re-activated as "added" for stats
+            await asyncio.sleep(0.05)
         added = 0
         history_scanned = 0
         error_log = ""
@@ -637,16 +652,15 @@ async def manual_add_post(client, message: Message):
             return await message.reply(
                 "❌ **Post nahi mila!**\n\n"
                 "Tareeke:\n"
-                "1. Main channel ke forwarded message pe reply karo\n"
+                "1. Main channel ke message/fwd pe reply karo\n"
                 "2. `/addpost <message_id>` use karo\n"
                 "3. `/addpost <post_link>` use karo"
             )
         
-        if target_msg.forward_from_chat:
-             fwd_id = target_msg.forward_from_chat.id
-             if fwd_id != main_channel and str(fwd_id) != str(main_channel):
-                  return await message.reply(f"❌ Yeh post Main Channel ({main_channel}) ka nahi hai!")
-        post_id = f"post_{target_msg.id}"
+        # Ensure we are saving the correct data
+        m_id = target_msg.id
+        print(f"📥 Attempting to add post {m_id} for channel {main_channel}")
+        
         await apauthdb.update_one(
             {"_id": post_id},
             {"$set": {
@@ -695,11 +709,11 @@ async def cleanup_deleted_posts():
             await sync_main_channel()
             result = await apauthdb.delete_many({
                 "post_type": "promo_track",
-                "posted_at": {"$lt": datetime.utcnow() - timedelta(days=7)}
+                "posted_at": {"$lt": datetime.utcnow() - timedelta(days=30)}
             })
             
             if result.deleted_count > 0:
-                print(f"🧹 Cleaned {result.deleted_count} old promos")
+                print(f"🧹 Cleaned {result.deleted_count} old promos (30 days older)")
                 
         except asyncio.CancelledError:
             break
@@ -745,17 +759,21 @@ async def promo_loop():
                 ]
             }
             
-            async for post_doc in apauthdb.find(posts_query).sort("date", -1).limit(50):
+            async for post_doc in apauthdb.find(posts_query).sort("date", -1).limit(100):
                 posts_data.append(post_doc)
             
-            print(f"📊 Posts: {len(posts_data)}")
+            p_ids = [p.get("message_id") for p in posts_data]
+            print(f"📊 Posts found: {len(posts_data)} | IDs: {p_ids}")
             
             if not posts_data:
-                await asyncio.sleep(300)
+                print(f"⚠️ No posts found for channel {main_channel} in DB! Query: {posts_query}")
+                await asyncio.sleep(60) 
                 continue
             
             if current_index >= len(posts_data):
+                print(f"🔄 Index {current_index} out of range (max {len(posts_data)-1}), resetting to 0")
                 current_index = 0
+                await apauthdb.update_one({"_id": "config"}, {"$set": {"current_post_index": 0}})
             
             message_id = posts_data[current_index].get("message_id")
             print(f"📤 Promoting post {message_id}")
@@ -783,7 +801,14 @@ async def promo_loop():
             
             for channel_id in promo_channels:
                 try:
-                    last_msg = await apauthdb.find_one({"promo_channel_id": channel_id, "post_type": "promo_track"})
+                    # Robust query for existing promo message
+                    last_msg = await apauthdb.find_one({
+                        "post_type": "promo_track",
+                        "$or": [
+                            {"promo_channel_id": channel_id},
+                            {"promo_channel_id": str(channel_id)}
+                        ]
+                    })
                     
                     if last_msg and last_msg.get("last_msg_id"):
                         try:
