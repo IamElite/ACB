@@ -1,4 +1,4 @@
-# auto_promo.py - Final Smart Version (Sequential Posts + Fixed Loop)
+# auto_promo.py - Final Stable Version (No Data Loss)
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -107,7 +107,7 @@ async def get_next_post_number():
     return 1
 
 # ────────────────────────────────────────────────
-# Track Main Channel Posts (SEQUENTIAL NUMBERING)
+# Track Main Channel Posts
 # ────────────────────────────────────────────────
 @app.on_message(filters.channel)
 async def track_main_channel_posts(client, message: Message):
@@ -134,13 +134,13 @@ async def track_main_channel_posts(client, message: Message):
                         "post_type": "main_channel",
                         "channel_id": message.chat.id,
                         "message_id": message.id,
-                        "post_number": post_number,  # ✅ Sequential number
+                        "post_number": post_number,
                         "created_at": datetime.utcnow(),
                         "date": message.date,
                         "has_text": bool(message.text),
                         "has_media": bool(message.media),
                         "exists": True,
-                        "promo_count": 0  # Track how many times promoted
+                        "promo_count": 0
                     }},
                     upsert=True
                 )
@@ -320,7 +320,7 @@ async def toggle_promo(client, message: Message):
         await message.reply(f"❌ Error: {str(e)}")
 
 # ────────────────────────────────────────────────
-# Status Command (Shows Sequential Post Info)
+# Status Command (With DB Debug Info)
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["apstatus"]))
 async def check_status(client, message: Message):
@@ -339,15 +339,20 @@ async def check_status(client, message: Message):
             bot_status = await get_bot_status(main_channel)
             status_msg += f"🤖 Bot Status: `{bot_status}`\n\n"
             
-            post_count = await apauthdb.count_documents({
+            # ✅ Multiple query attempts for debugging
+            post_count_strict = await apauthdb.count_documents({
                 "channel_id": main_channel,
                 "post_type": "main_channel",
-                "$or": [
-                    {"exists": {"$ne": False}},
-                    {"exists": {"$exists": False}}
-                ]
+                "exists": True
             })
-            status_msg += f"📝 Tracked Posts: `{post_count}`\n\n"
+            
+            post_count_loose = await apauthdb.count_documents({
+                "channel_id": main_channel,
+                "post_type": "main_channel"
+            })
+            
+            status_msg += f"📝 Tracked Posts (Strict): `{post_count_strict}`\n"
+            status_msg += f"📝 Tracked Posts (All): `{post_count_loose}`\n\n"
             
             # Show last 5 posts with numbers
             status_msg += "📊 **Recent Posts:**\n"
@@ -355,7 +360,8 @@ async def check_status(client, message: Message):
                 {"channel_id": main_channel, "post_type": "main_channel"},
                 sort=[("post_number", -1)]
             ).limit(5):
-                status_msg += f"  #{post.get('post_number', '?')} | Msg: `{post.get('message_id')}`\n"
+                exists_val = post.get('exists', 'N/A')
+                status_msg += f"  #{post.get('post_number', '?')} | Msg: `{post.get('message_id')}` | Exists: `{exists_val}`\n"
             status_msg += "\n"
         else:
             status_msg += "📢 Main Channel: `Not Set`\n\n"
@@ -394,10 +400,6 @@ async def auth_main_channel(client, message: Message):
             chat = await app.get_chat(channel_id)
         except Exception as e:
             return await message.reply(f"❌ Channel access failed: `{e}`")
-        
-        # Reset post numbers when changing main channel
-        await apauthdb.delete_many({"channel_id": config.get("main_channel") if 'config' in locals() else None, "post_type": "main_channel"})
-        await apauthdb.update_one({"_id": "config"}, {"$set": {"total_posts_tracked": 0, "current_post_index": 0}})
         
         await apauthdb.update_one(
             {"_id": "config"},
@@ -634,11 +636,7 @@ async def force_start_promo(client, message: Message):
         
         post_count = await apauthdb.count_documents({
             "channel_id": config.get("main_channel"),
-            "post_type": "main_channel",
-            "$or": [
-                {"exists": {"$ne": False}},
-                {"exists": {"$exists": False}}
-            ]
+            "post_type": "main_channel"
         })
         
         if post_count == 0:
@@ -697,7 +695,7 @@ async def cleanup_deleted_posts():
             await asyncio.sleep(3600)
 
 # ────────────────────────────────────────────────
-# MAIN PROMO LOOP (FIXED + SEQUENTIAL)
+# MAIN PROMO LOOP (FIXED QUERY - NO DATA LOSS)
 # ────────────────────────────────────────────────
 async def promo_loop():
     print("🚀 Promo loop started")
@@ -726,22 +724,26 @@ async def promo_loop():
             cycle += 1
             print(f"🔄 Cycle #{cycle}")
             
-            # Fetch posts sorted by post_number (sequential order)
+            # ✅ FIXED: Simple query without $or - fetch ALL posts first
             posts_data = []
             async for post_doc in apauthdb.find({
                 "channel_id": main_channel,
-                "post_type": "main_channel",
-                "$or": [
-                    {"exists": {"$ne": False}},
-                    {"exists": {"$exists": False}}
-                ]
+                "post_type": "main_channel"
             }).sort("post_number", 1).limit(50):
-                posts_data.append(post_doc)
+                # ✅ Filter out only exists=False posts in Python (not DB)
+                if post_doc.get("exists") is not False:
+                    posts_data.append(post_doc)
             
             print(f"📊 Posts found: {len(posts_data)}")
             
-            # ✅ FIXED: Proper check for empty posts
-            if not posts_data:
+            # ✅ Debug: Show total in DB vs filtered
+            total_in_db = await apauthdb.count_documents({
+                "channel_id": main_channel,
+                "post_type": "main_channel"
+            })
+            print(f"🔍 DB Total: {total_in_db}, Filtered: {len(posts_data)}")
+            
+            if not posts_
                 print("⚠️ No posts to promote, waiting...")
                 await asyncio.sleep(300)
                 continue
