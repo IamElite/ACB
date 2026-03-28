@@ -1,4 +1,4 @@
-# auto_promo.py - Final Working Version (No GetHistory Error)
+# auto_promo.py - Final Smart Version (Sequential Posts + Fixed Loop)
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -54,6 +54,10 @@ async def setup_ttl_indexes():
             partialFilterExpression={"post_type": "promo_track"},
             background=True
         )
+        await apauthdb.create_index(
+            [("post_number", 1)],
+            background=True
+        )
     except Exception as e:
         print(f"⚠️ TTL error: {e}")
 
@@ -69,7 +73,8 @@ async def get_config():
             "current_post_index": 0,
             "last_promo_time": None,
             "loop_running": False,
-            "promo_enabled": True
+            "promo_enabled": True,
+            "total_posts_tracked": 0
         }
         await apauthdb.insert_one(config)
     elif "promo_enabled" not in config:
@@ -91,8 +96,18 @@ async def get_bot_status(channel_id):
     except Exception as e:
         return f"Error: {e}"
 
+async def get_next_post_number():
+    """Get next sequential post number"""
+    last_post = await apauthdb.find_one(
+        {"post_type": "main_channel"},
+        sort=[("post_number", -1)]
+    )
+    if last_post:
+        return last_post.get("post_number", 0) + 1
+    return 1
+
 # ────────────────────────────────────────────────
-# Track Main Channel Posts
+# Track Main Channel Posts (SEQUENTIAL NUMBERING)
 # ────────────────────────────────────────────────
 @app.on_message(filters.channel)
 async def track_main_channel_posts(client, message: Message):
@@ -104,25 +119,43 @@ async def track_main_channel_posts(client, message: Message):
             if message.text or message.media:
                 doc_id = f"post_{message.chat.id}_{message.id}"
                 
+                # Check if already tracked
+                existing = await apauthdb.find_one({"_id": doc_id})
+                if existing:
+                    print(f"ℹ️ Already tracked: {doc_id}")
+                    return
+                
+                # Get sequential post number
+                post_number = await get_next_post_number()
+                
                 await apauthdb.update_one(
                     {"_id": doc_id},
                     {"$set": {
                         "post_type": "main_channel",
                         "channel_id": message.chat.id,
                         "message_id": message.id,
+                        "post_number": post_number,  # ✅ Sequential number
                         "created_at": datetime.utcnow(),
                         "date": message.date,
                         "has_text": bool(message.text),
                         "has_media": bool(message.media),
-                        "exists": True
+                        "exists": True,
+                        "promo_count": 0  # Track how many times promoted
                     }},
                     upsert=True
                 )
+                
+                # Update total count in config
+                await apauthdb.update_one(
+                    {"_id": "config"},
+                    {"$inc": {"total_posts_tracked": 1}}
+                )
+                
                 try:
                     await message.react(emoji="👍")
                 except:
                     pass
-                print(f"✅ Tracked: {doc_id}")
+                print(f"✅ Tracked #{post_number}: {doc_id}")
     except Exception as e:
         print(f"❌ Track error: {e}")
 
@@ -164,7 +197,7 @@ async def bulk_collector(client, message: Message):
                 pass
 
 # ────────────────────────────────────────────────
-# ON/OFF Toggle Commands (DB ONLY - NO GetHistory)
+# ON/OFF Toggle Commands
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["promo", "promotoggle"]))
 async def toggle_promo(client, message: Message):
@@ -192,7 +225,6 @@ async def toggle_promo(client, message: Message):
             print("🔛 Promo system enabled by user")
             
         elif action == "off":
-            # 🛑 Step 1: Disable system first
             await apauthdb.update_one(
                 {"_id": "config"},
                 {"$set": {"promo_enabled": False, "loop_running": False}},
@@ -205,7 +237,6 @@ async def toggle_promo(client, message: Message):
             failed_count = 0
             skipped_count = 0
             
-            # 🗑️ Step 2: Fetch DB records and delete messages
             promo_entries = []
             async for entry in apauthdb.find({"post_type": "promo_track"}):
                 if entry.get("promo_channel_id") and entry.get("last_msg_id"):
@@ -227,7 +258,6 @@ async def toggle_promo(client, message: Message):
                             revoke=True
                         )
                         deleted_count += 1
-                        print(f"✅ Deleted from {entry['channel_id']} msg {entry['message_id']}")
                     except FloodWait as e:
                         await asyncio.sleep(e.value)
                         try:
@@ -241,22 +271,16 @@ async def toggle_promo(client, message: Message):
                             failed_count += 1
                     except ChatAdminRequired:
                         skipped_count += 1
-                        print(f"⚠️ Skip {entry['channel_id']}: No delete permission")
                     except UserNotParticipant:
                         skipped_count += 1
-                        print(f"⚠️ Skip {entry['channel_id']}: Bot not in channel")
                     except RPCError as e:
                         if "BOT_METHOD_INVALID" in str(e):
                             skipped_count += 1
-                            print(f"⚠️ Skip {entry['channel_id']}: Telegram restriction")
                         else:
                             failed_count += 1
-                            print(f"❌ Failed {entry['channel_id']}: {e}")
                     except Exception as e:
                         failed_count += 1
-                        print(f"❌ Failed {entry['channel_id']}: {e}")
                     
-                    # Progress update every 10
                     if i % 10 == 0 or i == total:
                         try:
                             await progress_msg.edit_text(
@@ -270,12 +294,10 @@ async def toggle_promo(client, message: Message):
                             pass
                     await asyncio.sleep(0.3)
             else:
-                await progress_msg.edit_text("📭 No DB records found. Channels will be cleaned on next promo cycle.")
+                await progress_msg.edit_text("📭 No DB records found.")
             
-            # 🧹 Step 3: Clear DB
             await apauthdb.delete_many({"post_type": "promo_track"})
             
-            # 📊 Step 4: Final Report
             final_report = (
                 f"🛑 **Promo System DISABLED**\n\n"
                 f"🗑️ **Cleanup Complete**\n\n"
@@ -298,7 +320,7 @@ async def toggle_promo(client, message: Message):
         await message.reply(f"❌ Error: {str(e)}")
 
 # ────────────────────────────────────────────────
-# Status Command
+# Status Command (Shows Sequential Post Info)
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["apstatus"]))
 async def check_status(client, message: Message):
@@ -326,6 +348,15 @@ async def check_status(client, message: Message):
                 ]
             })
             status_msg += f"📝 Tracked Posts: `{post_count}`\n\n"
+            
+            # Show last 5 posts with numbers
+            status_msg += "📊 **Recent Posts:**\n"
+            async for post in apauthdb.find(
+                {"channel_id": main_channel, "post_type": "main_channel"},
+                sort=[("post_number", -1)]
+            ).limit(5):
+                status_msg += f"  #{post.get('post_number', '?')} | Msg: `{post.get('message_id')}`\n"
+            status_msg += "\n"
         else:
             status_msg += "📢 Main Channel: `Not Set`\n\n"
             
@@ -333,7 +364,8 @@ async def check_status(client, message: Message):
         status_msg += f"⏰ Interval: `{format_time(config.get('promo_interval', 18000))}`\n"
         status_msg += f"🏷️ Forward Tag: `{'On' if config.get('forward_tag') else 'Off'}`\n"
         status_msg += f"🔄 Loop Running: `{'Yes' if config.get('loop_running') else 'No'}`\n"
-        status_msg += f"📍 Current Index: `{config.get('current_post_index', 0)}`"
+        status_msg += f"📍 Current Index: `{config.get('current_post_index', 0)}`\n"
+        status_msg += f"📈 Total Tracked: `{config.get('total_posts_tracked', 0)}`"
         
         await message.reply(status_msg)
     except Exception as e:
@@ -363,6 +395,10 @@ async def auth_main_channel(client, message: Message):
         except Exception as e:
             return await message.reply(f"❌ Channel access failed: `{e}`")
         
+        # Reset post numbers when changing main channel
+        await apauthdb.delete_many({"channel_id": config.get("main_channel") if 'config' in locals() else None, "post_type": "main_channel"})
+        await apauthdb.update_one({"_id": "config"}, {"$set": {"total_posts_tracked": 0, "current_post_index": 0}})
+        
         await apauthdb.update_one(
             {"_id": "config"},
             {"$set": {"main_channel": channel_id, "loop_running": True}},
@@ -386,7 +422,7 @@ async def unauth_main_channel(client, message: Message):
         
         await apauthdb.update_one(
             {"_id": "config"},
-            {"$set": {"main_channel": None, "current_post_index": 0, "loop_running": False}},
+            {"$set": {"main_channel": None, "current_post_index": 0, "loop_running": False, "total_posts_tracked": 0}},
             upsert=True
         )
         
@@ -661,7 +697,7 @@ async def cleanup_deleted_posts():
             await asyncio.sleep(3600)
 
 # ────────────────────────────────────────────────
-# MAIN PROMO LOOP
+# MAIN PROMO LOOP (FIXED + SEQUENTIAL)
 # ────────────────────────────────────────────────
 async def promo_loop():
     print("🚀 Promo loop started")
@@ -672,6 +708,7 @@ async def promo_loop():
         try:
             config = await get_config()
             
+            # Check if promo is enabled
             if not config.get("promo_enabled", True) or not config.get("loop_running", False):
                 await asyncio.sleep(120)
                 continue
@@ -689,6 +726,7 @@ async def promo_loop():
             cycle += 1
             print(f"🔄 Cycle #{cycle}")
             
+            # Fetch posts sorted by post_number (sequential order)
             posts_data = []
             async for post_doc in apauthdb.find({
                 "channel_id": main_channel,
@@ -697,33 +735,55 @@ async def promo_loop():
                     {"exists": {"$ne": False}},
                     {"exists": {"$exists": False}}
                 ]
-            }).sort("date", -1).limit(50):
+            }).sort("post_number", 1).limit(50):
                 posts_data.append(post_doc)
             
-            print(f"📊 Posts: {len(posts_data)}")
+            print(f"📊 Posts found: {len(posts_data)}")
+            
+            # ✅ FIXED: Proper check for empty posts
             if not posts_data:
+                print("⚠️ No posts to promote, waiting...")
                 await asyncio.sleep(300)
                 continue
             
+            # Safe index handling
             if current_index >= len(posts_data):
                 current_index = 0
             
             message_id = posts_data[current_index].get("message_id")
-            print(f"📤 Promoting post {message_id}")
+            post_number = posts_data[current_index].get("post_number", "?")
+            print(f"📤 Promoting post #{post_number} (ID: {message_id})")
             
             try:
+                # Check if message exists
                 if not await message_exists(main_channel, message_id):
-                    await apauthdb.update_one({"_id": posts_data[current_index]["_id"]}, {"$set": {"exists": False}})
+                    print(f"⚠️ Post {message_id} deleted, marking as exists=False")
+                    await apauthdb.update_one(
+                        {"_id": posts_data[current_index]["_id"]},
+                        {"$set": {"exists": False}}
+                    )
                     current_index = (current_index + 1) % len(posts_data)
-                    await apauthdb.update_one({"_id": "config"}, {"$set": {"current_post_index": current_index}}, upsert=True)
+                    await apauthdb.update_one(
+                        {"_id": "config"},
+                        {"$set": {"current_post_index": current_index}},
+                        upsert=True
+                    )
                     await asyncio.sleep(5)
                     continue
+                    
                 current_post = await app.get_messages(main_channel, message_id)
             except Exception as e:
                 print(f"❌ Get post failed: {e}")
-                await apauthdb.update_one({"_id": posts_data[current_index]["_id"]}, {"$set": {"exists": False}})
+                await apauthdb.update_one(
+                    {"_id": posts_data[current_index]["_id"]},
+                    {"$set": {"exists": False}}
+                )
                 current_index = (current_index + 1) % len(posts_data)
-                await apauthdb.update_one({"_id": "config"}, {"$set": {"current_post_index": current_index}}, upsert=True)
+                await apauthdb.update_one(
+                    {"_id": "config"},
+                    {"$set": {"current_post_index": current_index}},
+                    upsert=True
+                )
                 await asyncio.sleep(10)
                 continue
             
@@ -732,44 +792,66 @@ async def promo_loop():
             
             for channel_id in promo_channels:
                 try:
-                    last_msg = await apauthdb.find_one({"promo_channel_id": channel_id, "post_type": "promo_track"})
+                    # Delete last promo message if exists
+                    last_msg = await apauthdb.find_one({
+                        "promo_channel_id": channel_id,
+                        "post_type": "promo_track"
+                    })
                     if last_msg and last_msg.get("last_msg_id"):
                         try:
                             await app.delete_messages(channel_id, last_msg["last_msg_id"])
                         except:
                             pass
                     
+                    # Send promo
                     sent = await current_post.forward(channel_id) if forward_tag else await current_post.copy(channel_id)
                     
+                    # Track in DB
                     await apauthdb.update_one(
                         {"promo_channel_id": channel_id},
                         {"$set": {
                             "post_type": "promo_track",
                             "last_msg_id": sent.id,
                             "posted_at": datetime.utcnow(),
-                            "source_msg_id": message_id
+                            "source_msg_id": message_id,
+                            "post_number": post_number
                         }},
                         upsert=True
                     )
+                    
+                    # Update promo count for this post
+                    await apauthdb.update_one(
+                        {"_id": posts_data[current_index]["_id"]},
+                        {"$inc": {"promo_count": 1}}
+                    )
+                    
                     success += 1
                     await asyncio.sleep(2)
+                    
                 except FloodWait as e:
+                    print(f"⏳ FloodWait: {e.value}s")
                     await asyncio.sleep(e.value)
                     failed += 1
-                except:
+                except Exception as e:
+                    print(f"❌ Failed channel {channel_id}: {e}")
                     failed += 1
             
             print(f"✅ Done: {success} success, {failed} failed")
             
+            # Move to next post
             current_index = (current_index + 1) % len(posts_data)
             await apauthdb.update_one(
                 {"_id": "config"},
-                {"$set": {"current_post_index": current_index, "last_promo_time": datetime.utcnow()}},
+                {"$set": {
+                    "current_post_index": current_index,
+                    "last_promo_time": datetime.utcnow()
+                }},
                 upsert=True
             )
             
-            print(f"⏰ Next in {format_time(promo_interval)}")
+            print(f"⏰ Next promo in {format_time(promo_interval)}")
             
+            # Wait for interval or force trigger
             try:
                 await asyncio.wait_for(force_promo_event.wait(), timeout=promo_interval)
                 force_promo_event.clear()
@@ -782,7 +864,7 @@ async def promo_loop():
             await apauthdb.update_one({"_id": "config"}, {"$set": {"loop_running": False}}, upsert=True)
             break
         except Exception as e:
-            print(f"❌ Loop: {e}")
+            print(f"❌ Loop error: {e}")
             await asyncio.sleep(120)
 
 # ────────────────────────────────────────────────
