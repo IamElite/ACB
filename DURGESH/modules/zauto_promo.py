@@ -1,4 +1,4 @@
-# auto_promo.py - Final Stable Version (No Data Loss)
+# auto_promo.py - Final Fixed Version (Syntax Error Fixed)
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -320,7 +320,7 @@ async def toggle_promo(client, message: Message):
         await message.reply(f"❌ Error: {str(e)}")
 
 # ────────────────────────────────────────────────
-# Status Command (With DB Debug Info)
+# Status Command
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["apstatus"]))
 async def check_status(client, message: Message):
@@ -339,7 +339,7 @@ async def check_status(client, message: Message):
             bot_status = await get_bot_status(main_channel)
             status_msg += f"🤖 Bot Status: `{bot_status}`\n\n"
             
-            # ✅ Multiple query attempts for debugging
+            # Multiple query attempts for debugging
             post_count_strict = await apauthdb.count_documents({
                 "channel_id": main_channel,
                 "post_type": "main_channel",
@@ -695,7 +695,7 @@ async def cleanup_deleted_posts():
             await asyncio.sleep(3600)
 
 # ────────────────────────────────────────────────
-# MAIN PROMO LOOP (FIXED QUERY - NO DATA LOSS)
+# MAIN PROMO LOOP (FIXED SYNTAX)
 # ────────────────────────────────────────────────
 async def promo_loop():
     print("🚀 Promo loop started")
@@ -743,7 +743,8 @@ async def promo_loop():
             })
             print(f"🔍 DB Total: {total_in_db}, Filtered: {len(posts_data)}")
             
-            if not posts_
+            # ✅ FIXED SYNTAX HERE (Line 746 area)
+            if not posts_data:
                 print("⚠️ No posts to promote, waiting...")
                 await asyncio.sleep(300)
                 continue
