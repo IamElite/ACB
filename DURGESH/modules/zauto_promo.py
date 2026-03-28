@@ -1,4 +1,4 @@
-# auto_promo.py - Final Fixed Version (Escape Sequences + DB Query Fixed)
+# auto_promo.py - Final Clean Version (No Warnings + Full Wipe)
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -114,7 +114,7 @@ async def track_main_channel_posts(client, message: Message):
                         "date": message.date,
                         "has_text": bool(message.text),
                         "has_media": bool(message.media),
-                        "exists": True  # ✅ Always set exists=True when tracking
+                        "exists": True
                     }},
                     upsert=True
                 )
@@ -164,7 +164,7 @@ async def bulk_collector(client, message: Message):
                 pass
 
 # ────────────────────────────────────────────────
-# ON/OFF Toggle Commands (Escape Sequences FIXED)
+# ON/OFF Toggle Commands (FULL WIPE FEATURE)
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["promo", "promotoggle"]))
 async def toggle_promo(client, message: Message):
@@ -174,11 +174,10 @@ async def toggle_promo(client, message: Message):
         
         if len(args) < 2:
             state = "ON" if config.get("promo_enabled", True) else "OFF"
-            # ✅ Fixed: Doubled backslashes for Markdown
             return await message.reply(
-                f"🎛️ \\*\\*Promo System\\*\\*\\n\\n"
-                f"Current State: \\`{state}\\`\\n\\n"
-                f"Usage: \\`/promo on\\` | \\`/promo off\\`"
+                f"🎛️ **Promo System**\n\n"
+                f"Current State: `{state}`\n\n"
+                f"Usage: `/promo on` | `/promo off`"
             )
         
         action = args[1].lower()
@@ -189,30 +188,111 @@ async def toggle_promo(client, message: Message):
                 {"$set": {"promo_enabled": True, "loop_running": True}},
                 upsert=True
             )
-            await message.reply("✅ \\*\\*Promo System ENABLED\\*\\*\\n\\n🔄 Loop restart ho raha hai...")
+            await message.reply("✅ **Promo System ENABLED**\n\n🔄 Loop restart ho raha hai...")
             print("🔛 Promo system enabled by user")
             
         elif action == "off":
+            # 🛑 Step 1: Disable system first
             await apauthdb.update_one(
                 {"_id": "config"},
                 {"$set": {"promo_enabled": False, "loop_running": False}},
                 upsert=True
             )
-            result = await apauthdb.delete_many({"post_type": "promo_track"})
-            await message.reply(
-                f"🛑 \\*\\*Promo System DISABLED\\*\\*\\n\\n"
-                f"🗑️ Cleaned {result.deleted_count} promo entries from DB\\n"
-                f"💡 Use \\`/promo on\\` to restart"
+            
+            # 🗑️ Step 2: Fetch all promo_track entries
+            promo_entries = []
+            async for entry in apauthdb.find({"post_type": "promo_track"}):
+                if entry.get("promo_channel_id") and entry.get("last_msg_id"):
+                    promo_entries.append({
+                        "channel_id": entry["promo_channel_id"],
+                        "message_id": entry["last_msg_id"]
+                    })
+            
+            total = len(promo_entries)
+            if total == 0:
+                await apauthdb.delete_many({"post_type": "promo_track"})
+                return await message.reply("🛑 **Promo System DISABLED**\n\n📭 No promo posts to clean\n✅ DB cleared")
+            
+            # 🔄 Step 3: Send progress message
+            progress_msg = await message.reply(
+                f"🛑 **Promo System DISABLED**\n\n"
+                f"🗑️ Cleaning {total} promo posts from channels...\n"
+                f"⏳ Please wait, this may take a while..."
             )
-            print(f"🔌 Promo system disabled. Cleaned {result.deleted_count} entries")
+            
+            deleted_count = 0
+            failed_count = 0
+            skipped_count = 0
+            
+            # 🗑️ Step 4: Delete messages from each channel
+            for i, entry in enumerate(promo_entries, 1):
+                try:
+                    await app.delete_messages(
+                        chat_id=entry["channel_id"],
+                        message_ids=entry["message_id"],
+                        revoke=True
+                    )
+                    deleted_count += 1
+                    print(f"✅ Deleted promo from {entry['channel_id']} msg {entry['message_id']}")
+                except FloodWait as e:
+                    await asyncio.sleep(e.value)
+                    try:
+                        await app.delete_messages(
+                            chat_id=entry["channel_id"],
+                            message_ids=entry["message_id"],
+                            revoke=True
+                        )
+                        deleted_count += 1
+                    except:
+                        failed_count += 1
+                except ChatAdminRequired:
+                    skipped_count += 1
+                    print(f"⚠️ Skip {entry['channel_id']}: No delete permission")
+                except UserNotParticipant:
+                    skipped_count += 1
+                    print(f"⚠️ Skip {entry['channel_id']}: Bot not in channel")
+                except Exception as e:
+                    failed_count += 1
+                    print(f"❌ Failed {entry['channel_id']}: {e}")
+                
+                # Update progress every 10 messages
+                if i % 10 == 0 or i == total:
+                    try:
+                        await progress_msg.edit_text(
+                            f"🛑 **Promo System DISABLED**\n\n"
+                            f"🗑️ Cleaning progress: `{i}/{total}`\n"
+                            f"✅ Deleted: `{deleted_count}`\n"
+                            f"❌ Failed: `{failed_count}`\n"
+                            f"⚠️ Skipped: `{skipped_count}`"
+                        )
+                    except:
+                        pass
+                await asyncio.sleep(0.5)
+            
+            # 🧹 Step 5: Finally delete from DB
+            db_result = await apauthdb.delete_many({"post_type": "promo_track"})
+            
+            # 📊 Step 6: Send final report
+            final_report = (
+                f"🛑 **Promo System DISABLED**\n\n"
+                f"🗑️ **Cleanup Complete**\n\n"
+                f"✅ Messages Deleted: `{deleted_count}`\n"
+                f"❌ Failed (Permission/Error): `{failed_count}`\n"
+                f"⚠️ Skipped (Bot not admin): `{skipped_count}`\n"
+                f"🗄️ DB Entries Removed: `{db_result.deleted_count}`\n\n"
+                f"💡 Use `/promo on` to restart fresh"
+            )
+            await progress_msg.edit_text(final_report)
+            print(f"🔌 Promo OFF: {deleted_count} deleted, {failed_count} failed, {skipped_count} skipped")
+            
         else:
-            await message.reply("❌ Invalid option. Use: \\`/promo on\\` or \\`/promo off\\`")
+            await message.reply("❌ Invalid option. Use: `/promo on` or `/promo off`")
             
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
 
 # ────────────────────────────────────────────────
-# Status Command (Escape Sequences FIXED)
+# Status Command
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["apstatus"]))
 async def check_status(client, message: Message):
@@ -221,18 +301,17 @@ async def check_status(client, message: Message):
         main_channel = config.get("main_channel")
         promo_channels = config.get("promo_channels", [])
         
-        # ✅ Fixed: Doubled backslashes
-        status_msg = "🔍 \\*\\*Auto Promo Status\\*\\*\\n\\n"
+        status_msg = "🔍 **Auto Promo Status**\n\n"
         
         promo_state = "🟢 ON" if config.get("promo_enabled", True) else "🔴 OFF"
-        status_msg += f"⚡ System: \\`{promo_state}\\`\\n\\n"
+        status_msg += f"⚡ System: `{promo_state}`\n\n"
         
         if main_channel:
-            status_msg += f"📢 Main Channel: \\`{main_channel}\\`\\n"
+            status_msg += f"📢 Main Channel: `{main_channel}`\n"
             bot_status = await get_bot_status(main_channel)
-            status_msg += f"🤖 Bot Status: \\`{bot_status}\\`\\n\\n"
+            status_msg += f"🤖 Bot Status: `{bot_status}`\n\n"
             
-            # ✅ FIXED QUERY: Handle missing 'exists' field with $or
+            # ✅ FIXED QUERY: Handle missing 'exists' field
             post_count = await apauthdb.count_documents({
                 "channel_id": main_channel,
                 "post_type": "main_channel",
@@ -241,15 +320,15 @@ async def check_status(client, message: Message):
                     {"exists": {"$exists": False}}
                 ]
             })
-            status_msg += f"📝 Tracked Posts: \\`{post_count}\\`\\n\\n"
+            status_msg += f"📝 Tracked Posts: `{post_count}`\n\n"
         else:
-            status_msg += "📢 Main Channel: \\`Not Set\\`\\n\\n"
+            status_msg += "📢 Main Channel: `Not Set`\n\n"
             
-        status_msg += f"📊 Promo Channels: \\`{len(promo_channels)}\\`\\n"
-        status_msg += f"⏰ Interval: \\`{format_time(config.get('promo_interval', 18000))}\\`\\n"
-        status_msg += f"🏷️ Forward Tag: \\`{'On' if config.get('forward_tag') else 'Off'}\\`\\n"
-        status_msg += f"🔄 Loop Running: \\`{'Yes' if config.get('loop_running') else 'No'}\\`\\n"
-        status_msg += f"📍 Current Index: \\`{config.get('current_post_index', 0)}\\`"
+        status_msg += f"📊 Promo Channels: `{len(promo_channels)}`\n"
+        status_msg += f"⏰ Interval: `{format_time(config.get('promo_interval', 18000))}`\n"
+        status_msg += f"🏷️ Forward Tag: `{'On' if config.get('forward_tag') else 'Off'}`\n"
+        status_msg += f"🔄 Loop Running: `{'Yes' if config.get('loop_running') else 'No'}`\n"
+        status_msg += f"📍 Current Index: `{config.get('current_post_index', 0)}`"
         
         await message.reply(status_msg)
     except Exception as e:
@@ -272,12 +351,12 @@ async def auth_main_channel(client, message: Message):
             except:
                 channel_id = message.command[1]
         else:
-            return await message.reply("❌ Use: \\`/apauth <channel_id>\\` ya reply karo")
+            return await message.reply("❌ Use: `/apauth <channel_id>` ya reply karo")
         
         try:
             chat = await app.get_chat(channel_id)
         except Exception as e:
-            return await message.reply(f"❌ Channel access failed: \\`{e}\\`")
+            return await message.reply(f"❌ Channel access failed: `{e}`")
         
         await apauthdb.update_one(
             {"_id": "config"},
@@ -286,8 +365,8 @@ async def auth_main_channel(client, message: Message):
         )
         
         await message.reply(
-            f"✅ Main channel set: \\`{chat.title}\\`\\n"
-            f"🆔 ID: \\`{channel_id}\\`\\n\\n"
+            f"✅ Main channel set: `{chat.title}`\n"
+            f"🆔 ID: `{channel_id}`\n\n"
             f"📝 Channel me post karo, bot 👍 react karega!"
         )
         print(f"📢 Main channel set: {channel_id}")
@@ -317,7 +396,7 @@ async def unauth_main_channel(client, message: Message):
         await message.reply(f"❌ Error: {str(e)}")
 
 # ────────────────────────────────────────────────
-# Add Promo Channel (Escape Sequences FIXED)
+# Add Promo Channel
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["addpromochnl", "apc"]))
 async def add_promo_channel(client, message: Message):
@@ -350,7 +429,7 @@ async def add_promo_channel(client, message: Message):
             )
             
             del collected_channels[chat_id]
-            await message.reply(f"✅ Bulk Done!\\n\\n✅ Added: {added}\\n❌ Failed: {failed}\\n📊 Total: {len(existing)}")
+            await message.reply(f"✅ Bulk Done!\n\n✅ Added: {added}\n❌ Failed: {failed}\n📊 Total: {len(existing)}")
             return
         
         if message.reply_to_message:
@@ -364,7 +443,7 @@ async def add_promo_channel(client, message: Message):
             except:
                 channel_id = message.command[1]
         else:
-            return await message.reply("❌ Use: \\`/apc <id>\\` ya \\`/apc -b\\`")
+            return await message.reply("❌ Use: `/apc <id>` ya `/apc -b`")
         
         try:
             chat = await app.get_chat(channel_id)
@@ -372,11 +451,11 @@ async def add_promo_channel(client, message: Message):
             status_str = str(member.status).split('.')[-1].lower()
             
             if status_str not in ["administrator", "creator", "owner"]:
-                return await message.reply(f"❌ Bot is {member.status}\\n\\n⚠️ Bot ko Admin banao!")
+                return await message.reply(f"❌ Bot is {member.status}\n\n⚠️ Bot ko Admin banao!")
             if member.privileges and not member.privileges.can_post_messages:
-                return await message.reply(f"⚠️ Bot admin hai but Post Messages permission nahi!\\n\\n✅ Permission enable karo")
+                return await message.reply(f"⚠️ Bot admin hai but Post Messages permission nahi!\n\n✅ Permission enable karo")
         except Exception as e:
-            return await message.reply(f"❌ Check failed: \\`{str(e)}\\`")
+            return await message.reply(f"❌ Check failed: `{str(e)}`")
         
         config = await get_config()
         promo_channels = config.get("promo_channels", [])
@@ -388,7 +467,7 @@ async def add_promo_channel(client, message: Message):
                 {"$set": {"promo_channels": promo_channels}},
                 upsert=True
             )
-            await message.reply(f"✅ Added!\\n\\n📢 {chat.title}\\n📊 Total: {len(promo_channels)}")
+            await message.reply(f"✅ Added!\n\n📢 {chat.title}\n📊 Total: {len(promo_channels)}")
         else:
             await message.reply("ℹ️ Already added!")
     except Exception as e:
@@ -425,7 +504,7 @@ async def remove_promo_channel(client, message: Message):
             )
             
             del collected_channels[chat_id]
-            await message.reply(f"✅ Done!\\n\\n🗑️ Removed: {removed}\\n📊 Remaining: {len(promo_channels)}")
+            await message.reply(f"✅ Done!\n\n🗑️ Removed: {removed}\n📊 Remaining: {len(promo_channels)}")
             return
         
         if message.reply_to_message:
@@ -439,7 +518,7 @@ async def remove_promo_channel(client, message: Message):
             except:
                 channel_id = message.command[1]
         else:
-            return await message.reply("❌ Use: \\`/rmapc <id>\\`")
+            return await message.reply("❌ Use: `/rmapc <id>`")
         
         config = await get_config()
         promo_channels = config.get("promo_channels", [])
@@ -451,7 +530,7 @@ async def remove_promo_channel(client, message: Message):
                 {"$set": {"promo_channels": promo_channels}},
                 upsert=True
             )
-            await message.reply(f"✅ Removed: \\`{channel_id}\\`")
+            await message.reply(f"✅ Removed: `{channel_id}`")
         else:
             await message.reply("ℹ️ Not in list!")
     except Exception as e:
@@ -470,10 +549,10 @@ async def set_config(client, message: Message):
         
         if len(args) == 1:
             return await message.reply(
-                f"⚙️ \\*\\*Settings\\*\\*\\n\\n"
-                f"🏷️ Forward Tag: \\`{'On' if forward_tag else 'Off'}\\`\\n"
-                f"⏰ Interval: \\`{format_time(promo_interval)}\\`\\n\\n"
-                f"\\*\\*Usage:\\*\\* \\`/set -f on/off -t 5h\\`"
+                f"⚙️ **Settings**\n\n"
+                f"🏷️ Forward Tag: `{'On' if forward_tag else 'Off'}`\n"
+                f"⏰ Interval: `{format_time(promo_interval)}`\n\n"
+                f"**Usage:** `/set -f on/off -t 5h`"
             )
         
         if "-f" in args:
@@ -493,24 +572,24 @@ async def set_config(client, message: Message):
         )
         
         await message.reply(
-            f"✅ \\*\\*Updated\\*\\*\\n\\n"
-            f"🏷️ Forward Tag: \\`{'On' if forward_tag else 'Off'}\\`\\n"
-            f"⏰ Interval: \\`{format_time(promo_interval)}\\`"
+            f"✅ **Updated**\n\n"
+            f"🏷️ Forward Tag: `{'On' if forward_tag else 'Off'}`\n"
+            f"⏰ Interval: `{format_time(promo_interval)}`"
         )
     except Exception as e:
         await message.reply(f"❌ Error: {str(e)}")
 
 # ────────────────────────────────────────────────
-# Force Promo Command (Escape Sequences FIXED)
+# Force Promo Command
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["forcespromo", "fp", "fpromo"]))
 async def force_start_promo(client, message: Message):
     try:
         config = await get_config()
         if not config.get("main_channel"):
-            return await message.reply("❌ Main channel set nahi hai! Pehle \\`/apauth\\` use karo")
+            return await message.reply("❌ Main channel set nahi hai! Pehle `/apauth` use karo")
         if not config.get("promo_channels"):
-            return await message.reply("❌ Promo channels nahi hain! Pehle \\`/apc\\` use karo")
+            return await message.reply("❌ Promo channels nahi hain! Pehle `/apc` use karo")
         
         # ✅ FIXED QUERY: Same $or logic for consistency
         post_count = await apauthdb.count_documents({
@@ -532,11 +611,10 @@ async def force_start_promo(client, message: Message):
         )
         force_promo_event.set()
         
-        # ✅ Fixed: Doubled backslashes for Markdown
         await message.reply(
-            "🔄 \\*\\*Force Promo Triggered!\\*\\*\\n\\n"
-            "📍 Index reset to 0\\n"
-            f"📝 Total posts: {post_count}\\n"
+            "🔄 **Force Promo Triggered!**\n\n"
+            "📍 Index reset to 0\n"
+            f"📝 Total posts: {post_count}\n"
             "⚡ Immediate promo cycle starting..."
         )
         print("🔄 Force promo: Index=0, Immediate cycle triggered")
@@ -551,7 +629,6 @@ async def cleanup_deleted_posts():
         try:
             posts = []
             async for post in apauthdb.find({"post_type": "main_channel"}):
-                # ✅ Include docs without 'exists' field or with exists=True
                 if post.get("exists", True) is not False:
                     posts.append(post)
             
@@ -580,7 +657,7 @@ async def cleanup_deleted_posts():
             await asyncio.sleep(3600)
 
 # ────────────────────────────────────────────────
-# MAIN PROMO LOOP (Query FIXED + Toggle Check)
+# MAIN PROMO LOOP
 # ────────────────────────────────────────────────
 async def promo_loop():
     print("🚀 Promo loop started")
