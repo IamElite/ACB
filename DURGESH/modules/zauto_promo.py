@@ -1,4 +1,4 @@
-# auto_promo.py - Final Clean Version (No Warnings + Full Wipe)
+# auto_promo.py - Final Clean Version (Direct Delete + No Warnings)
 import asyncio
 from datetime import datetime, timedelta
 from pyrogram import filters
@@ -164,7 +164,7 @@ async def bulk_collector(client, message: Message):
                 pass
 
 # ────────────────────────────────────────────────
-# ON/OFF Toggle Commands (FULL WIPE FEATURE)
+# ON/OFF Toggle Commands (DIRECT DELETE LAST MSG)
 # ────────────────────────────────────────────────
 @app.on_message(filters.command(["promo", "promotoggle"]))
 async def toggle_promo(client, message: Message):
@@ -199,7 +199,13 @@ async def toggle_promo(client, message: Message):
                 upsert=True
             )
             
-            # 🗑️ Step 2: Fetch all promo_track entries
+            progress_msg = await message.reply("🛑 **Promo System DISABLED**\n\n⏳ Starting cleanup...")
+            
+            deleted_count = 0
+            failed_count = 0
+            skipped_count = 0
+            
+            # 🗑️ Step 2: Fetch DB records first (Fast)
             promo_entries = []
             async for entry in apauthdb.find({"post_type": "promo_track"}):
                 if entry.get("promo_channel_id") and entry.get("last_msg_id"):
@@ -208,34 +214,10 @@ async def toggle_promo(client, message: Message):
                         "message_id": entry["last_msg_id"]
                     })
             
-            total = len(promo_entries)
-            if total == 0:
-                await apauthdb.delete_many({"post_type": "promo_track"})
-                return await message.reply("🛑 **Promo System DISABLED**\n\n📭 No promo posts to clean\n✅ DB cleared")
-            
-            # 🔄 Step 3: Send progress message
-            progress_msg = await message.reply(
-                f"🛑 **Promo System DISABLED**\n\n"
-                f"🗑️ Cleaning {total} promo posts from channels...\n"
-                f"⏳ Please wait, this may take a while..."
-            )
-            
-            deleted_count = 0
-            failed_count = 0
-            skipped_count = 0
-            
-            # 🗑️ Step 4: Delete messages from each channel
-            for i, entry in enumerate(promo_entries, 1):
-                try:
-                    await app.delete_messages(
-                        chat_id=entry["channel_id"],
-                        message_ids=entry["message_id"],
-                        revoke=True
-                    )
-                    deleted_count += 1
-                    print(f"✅ Deleted promo from {entry['channel_id']} msg {entry['message_id']}")
-                except FloodWait as e:
-                    await asyncio.sleep(e.value)
+            # Delete from DB records
+            if promo_entries:
+                await progress_msg.edit_text(f"🗑️ Cleaning {len(promo_entries)} DB records...")
+                for entry in promo_entries:
                     try:
                         await app.delete_messages(
                             chat_id=entry["channel_id"],
@@ -243,47 +225,68 @@ async def toggle_promo(client, message: Message):
                             revoke=True
                         )
                         deleted_count += 1
-                    except:
+                    except Exception:
                         failed_count += 1
-                except ChatAdminRequired:
-                    skipped_count += 1
-                    print(f"⚠️ Skip {entry['channel_id']}: No delete permission")
-                except UserNotParticipant:
-                    skipped_count += 1
-                    print(f"⚠️ Skip {entry['channel_id']}: Bot not in channel")
-                except Exception as e:
-                    failed_count += 1
-                    print(f"❌ Failed {entry['channel_id']}: {e}")
+                    await asyncio.sleep(0.3)
+            
+            # 🚑 Step 3: Direct Channel Scan (For Anonymous/DB Missing)
+            promo_channels = config.get("promo_channels", [])
+            if promo_channels:
+                await progress_msg.edit_text(
+                    f"🔍 Scanning {len(promo_channels)} channels for last bot message..."
+                )
                 
-                # Update progress every 10 messages
-                if i % 10 == 0 or i == total:
+                for i, ch_id in enumerate(promo_channels, 1):
                     try:
-                        await progress_msg.edit_text(
-                            f"🛑 **Promo System DISABLED**\n\n"
-                            f"🗑️ Cleaning progress: `{i}/{total}`\n"
-                            f"✅ Deleted: `{deleted_count}`\n"
-                            f"❌ Failed: `{failed_count}`\n"
-                            f"⚠️ Skipped: `{skipped_count}`"
-                        )
-                    except:
-                        pass
-                await asyncio.sleep(0.5)
+                        # Get last 5 messages to find bot's last post
+                        async for msg in app.get_chat_history(ch_id, limit=5):
+                            if msg.from_user and msg.from_user.id == app.me.id:
+                                try:
+                                    await msg.delete()
+                                    deleted_count += 1
+                                    print(f"✅ Deleted last msg from {ch_id}")
+                                except:
+                                    failed_count += 1
+                                break # Only delete the last one found
+                    except ChatAdminRequired:
+                        skipped_count += 1
+                    except UserNotParticipant:
+                        skipped_count += 1
+                    except Exception as e:
+                        print(f"❌ Scan error {ch_id}: {e}")
+                        failed_count += 1
+                    
+                    # Progress update
+                    if i % 5 == 0 or i == len(promo_channels):
+                        try:
+                            await progress_msg.edit_text(
+                                f"🛑 **Promo System DISABLED**\n\n"
+                                f"🔍 Scanning: `{i}/{len(promo_channels)}`\n"
+                                f"✅ Deleted: `{deleted_count}`\n"
+                                f"❌ Failed: `{failed_count}`"
+                            )
+                        except:
+                            pass
+                    await asyncio.sleep(0.5)
             
-            # 🧹 Step 5: Finally delete from DB
-            db_result = await apauthdb.delete_many({"post_type": "promo_track"})
+            # 🧹 Step 4: Clear DB
+            await apauthdb.delete_many({"post_type": "promo_track"})
             
-            # 📊 Step 6: Send final report
+            # 📊 Step 5: Final Report
             final_report = (
                 f"🛑 **Promo System DISABLED**\n\n"
                 f"🗑️ **Cleanup Complete**\n\n"
                 f"✅ Messages Deleted: `{deleted_count}`\n"
-                f"❌ Failed (Permission/Error): `{failed_count}`\n"
-                f"⚠️ Skipped (Bot not admin): `{skipped_count}`\n"
-                f"🗄️ DB Entries Removed: `{db_result.deleted_count}`\n\n"
+                f"❌ Failed: `{failed_count}`\n"
+                f"⚠️ Skipped: `{skipped_count}`\n\n"
                 f"💡 Use `/promo on` to restart fresh"
             )
-            await progress_msg.edit_text(final_report)
-            print(f"🔌 Promo OFF: {deleted_count} deleted, {failed_count} failed, {skipped_count} skipped")
+            try:
+                await progress_msg.edit_text(final_report)
+            except:
+                await message.reply(final_report)
+                
+            print(f"🔌 Promo OFF: {deleted_count} deleted, {failed_count} failed")
             
         else:
             await message.reply("❌ Invalid option. Use: `/promo on` or `/promo off`")
@@ -311,7 +314,6 @@ async def check_status(client, message: Message):
             bot_status = await get_bot_status(main_channel)
             status_msg += f"🤖 Bot Status: `{bot_status}`\n\n"
             
-            # ✅ FIXED QUERY: Handle missing 'exists' field
             post_count = await apauthdb.count_documents({
                 "channel_id": main_channel,
                 "post_type": "main_channel",
@@ -591,7 +593,6 @@ async def force_start_promo(client, message: Message):
         if not config.get("promo_channels"):
             return await message.reply("❌ Promo channels nahi hain! Pehle `/apc` use karo")
         
-        # ✅ FIXED QUERY: Same $or logic for consistency
         post_count = await apauthdb.count_documents({
             "channel_id": config.get("main_channel"),
             "post_type": "main_channel",
@@ -685,7 +686,6 @@ async def promo_loop():
             cycle += 1
             print(f"🔄 Cycle #{cycle}")
             
-            # ✅ FIXED QUERY: Handle missing 'exists' field
             posts_data = []
             async for post_doc in apauthdb.find({
                 "channel_id": main_channel,
