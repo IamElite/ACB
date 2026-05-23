@@ -6,6 +6,20 @@ from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
 )
 from pyrogram.enums import ParseMode
+
+# -------------------- BUTTON STYLE ENUM IMPORT -------------------- #
+# Kurigram ke liye ButtonStyle safely import karne ka jugaad
+try:
+    from pyrogram.enums import ButtonStyle
+    RED_STYLE = ButtonStyle.DANGER
+    GREEN_STYLE = ButtonStyle.SUCCESS
+    BLUE_STYLE = ButtonStyle.PRIMARY
+except ImportError:
+    # Agar enum nahi mila toh direct string use karenge
+    RED_STYLE = "danger"
+    GREEN_STYLE = "success"
+    BLUE_STYLE = "primary"
+
 from DURGESH import app
 from DURGESH.database import db
 
@@ -16,7 +30,7 @@ authdb = db.auth_channels
 def parse_time_to_seconds(time_str: str) -> int:
     """Convert time string like 1s, 1m, 1h, 1d to seconds"""
     if not time_str:
-        return 1  # default 1 second
+        return 1
     
     time_str = time_str.strip().lower()
     match = re.match(r'^(\d+)([smhd])$', time_str)
@@ -28,10 +42,10 @@ def parse_time_to_seconds(time_str: str) -> int:
     unit = match.group(2)
     
     conversions = {
-        's': 1,           # seconds
-        'm': 60,          # minutes
-        'h': 3600,        # hours
-        'd': 86400        # days
+        's': 1,
+        'm': 60,
+        'h': 3600,
+        'd': 86400
     }
     
     return value * conversions.get(unit, 1)
@@ -39,7 +53,6 @@ def parse_time_to_seconds(time_str: str) -> int:
 # -------------------- AUTH HELPERS -------------------- #
 
 async def add_auth_channel(chat_id: int, forward_tag: bool = True, auto_accept_time: str = "1s"):
-    """Add/Update authorized channel with settings"""
     await authdb.update_one(
         {"chat_id": str(chat_id)},
         {"$set": {
@@ -59,7 +72,6 @@ async def is_channel_authed(chat_id: int) -> bool:
     return bool(data)
 
 async def get_channel_settings(chat_id: int) -> Dict:
-    """Get channel settings"""
     data = await authdb.find_one({"chat_id": str(chat_id)})
     if data:
         return {
@@ -73,11 +85,6 @@ async def get_channel_settings(chat_id: int) -> Dict:
 
 @app.on_message(filters.command(["auth"]))
 async def auth_channel_cmd(client, message: Message):
-    """
-    Usage: 
-    /auth <channel_id> -f on/off -ac 1s/1m/1h/1d
-    OR reply to forwarded channel message
-    """
     args = message.text.split()
     forward_tag = True  
     auto_accept_time = "1s"  
@@ -182,16 +189,16 @@ async def authlist_handler(client, message: Message):
 
 # -------------------- BUTTON HELPER & PARSER -------------------- #
 
-def create_button(text: str, url: str, style: str = "red"):
-    """Create button with fallback for unsupported 'style' parameter"""
+def create_button(text: str, url: str, style=RED_STYLE):
+    """Create button with Kurigram ButtonStyle and fallback"""
     try:
-        # Kurigram latest version might support 'style' for colors
+        # Kurigram latest version supports 'style' parameter
         return InlineKeyboardButton(text, url=url, style=style)
     except TypeError:
-        # Agar support nahi karta toh simple default button bana dega (Crash nahi hoga)
+        # Fallback to default button if style not supported (purane versions ke liye)
         return InlineKeyboardButton(text, url=url)
 
-def parse_buttons(text: str, style: str = "red") -> InlineKeyboardMarkup | None:
+def parse_buttons(text: str, style=RED_STYLE) -> InlineKeyboardMarkup | None:
     keyboard = []
     lines = text.strip().splitlines()
 
@@ -218,19 +225,19 @@ async def change_button_with_link(client, message: Message):
         return await message.reply_text(
             "❌ **Usage:** `/cb <link> [color]`\n\n"
             "**Colors:** `red` (r), `green` (g), `blue` (b)\n"
-            "**Default:** `red`"
+            "**Default:** `red` (danger)"
         )
 
     link = args[1]
     
-    # Color Logic (Default: red)
+    # Color Logic with Enums (Default: red/danger)
     color_arg = args[2].lower() if len(args) > 2 else "red"
     color_map = {
-        "r": "red", "red": "red",
-        "g": "green", "green": "green",
-        "b": "blue", "blue": "blue"
+        "r": RED_STYLE, "red": RED_STYLE,
+        "g": GREEN_STYLE, "green": GREEN_STYLE,
+        "b": BLUE_STYLE, "blue": BLUE_STYLE
     }
-    btn_style = color_map.get(color_arg, "red")
+    btn_style = color_map.get(color_arg, RED_STYLE)
 
     public_match = re.match(r"https?://t\.me/([a-zA-Z0-9_]{5,})/(\d+)", link)
     private_match = re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", link)
@@ -262,7 +269,10 @@ async def change_button_with_link(client, message: Message):
             message_id=msg_id,
             reply_markup=keyboard
         )
-        await message.reply_text(f"✅ Buttons updated successfully! (Color: {btn_style})")
+        
+        # Success message with style name
+        style_name = "Red (Danger)" if btn_style == RED_STYLE else ("Green (Success)" if btn_style == GREEN_STYLE else "Blue (Primary)")
+        await message.reply_text(f"✅ Buttons updated successfully!\n🎨 Style: `{style_name}`")
     except Exception as e:
         await message.reply_text(f"⚠️ Failed to edit message: {e}")
 
@@ -270,7 +280,6 @@ async def change_button_with_link(client, message: Message):
 # -------------------- FORWARD TAG REMOVER -------------------- #
 
 def is_forwarded(message: Message) -> bool:
-    """Check if message is forwarded"""
     return bool(
         message.forward_from or 
         message.forward_from_chat or 
@@ -280,7 +289,6 @@ def is_forwarded(message: Message) -> bool:
     )
 
 async def safe_copy_and_delete(msg: Message, chat_id: int):
-    """Copy message without forward tag and delete original"""
     try:
         web_preview = None
         if msg.web_page:
@@ -338,7 +346,6 @@ async def safe_copy_and_delete(msg: Message, chat_id: int):
 
 @app.on_message(filters.channel & ~filters.service)
 async def remove_forward_tag_handler(client, message: Message):
-    """Automatically remove forward tag from authorized channels"""
     settings = await get_channel_settings(message.chat.id)
     if not settings:
         return
@@ -357,7 +364,6 @@ async def remove_forward_tag_handler(client, message: Message):
 
 @app.on_chat_join_request()
 async def auto_approve_join_request(client, request: ChatJoinRequest):
-    """Auto approve join requests after specified time"""
     chat_id = request.chat.id
     settings = await get_channel_settings(chat_id)
     
