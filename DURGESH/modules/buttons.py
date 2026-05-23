@@ -77,18 +77,12 @@ async def auth_channel_cmd(client, message: Message):
     Usage: 
     /auth <channel_id> -f on/off -ac 1s/1m/1h/1d
     OR reply to forwarded channel message
-    
-    -f: Forward tag removal (default: on)
-    -ac: Auto-accept time (default: 1s)
     """
-    
-    # Parse arguments
     args = message.text.split()
-    forward_tag = True  # default
-    auto_accept_time = "1s"  # default
+    forward_tag = True  
+    auto_accept_time = "1s"  
     chat_id = None
     
-    # Check for flags in command
     if "-f" in args:
         idx = args.index("-f")
         if idx + 1 < len(args):
@@ -99,7 +93,6 @@ async def auth_channel_cmd(client, message: Message):
         if idx + 1 < len(args):
             auto_accept_time = args[idx + 1]
     
-    # Get channel_id
     if message.reply_to_message and message.reply_to_message.forward_from_chat:
         chat_id = message.reply_to_message.forward_from_chat.id
     elif len(args) >= 2:
@@ -122,7 +115,6 @@ async def auth_channel_cmd(client, message: Message):
             "`-ac` : Auto-accept time (1s/1m/1h/1d) - default: 1s"
         )
     
-    # Check bot permissions
     try:
         member = await client.get_chat_member(chat_id, "me")
         priv = getattr(member, "privileges", None)
@@ -131,10 +123,8 @@ async def auth_channel_cmd(client, message: Message):
     except Exception as e:
         return await message.reply_text(f"⚠️ Error: {e}")
     
-    # Save to database
     await add_auth_channel(chat_id, forward_tag, auto_accept_time)
     
-    # Confirmation message
     await message.reply_text(
         f"✅ **Channel Authorized!**\n\n"
         f"📌 **Channel ID:** `{chat_id}`\n"
@@ -190,9 +180,18 @@ async def authlist_handler(client, message: Message):
     await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 
-# -------------------- BUTTON PARSER -------------------- #
+# -------------------- BUTTON HELPER & PARSER -------------------- #
 
-def parse_buttons(text: str) -> InlineKeyboardMarkup | None:
+def create_button(text: str, url: str, style: str = "red"):
+    """Create button with fallback for unsupported 'style' parameter"""
+    try:
+        # Kurigram latest version might support 'style' for colors
+        return InlineKeyboardButton(text, url=url, style=style)
+    except TypeError:
+        # Agar support nahi karta toh simple default button bana dega (Crash nahi hoga)
+        return InlineKeyboardButton(text, url=url)
+
+def parse_buttons(text: str, style: str = "red") -> InlineKeyboardMarkup | None:
     keyboard = []
     lines = text.strip().splitlines()
 
@@ -200,7 +199,7 @@ def parse_buttons(text: str) -> InlineKeyboardMarkup | None:
         btns = []
         matches = re.findall(r"\[([^\]]+?)\s*\+\s*(https?://\S+)\]", line)
         for label, link in matches:
-            btns.append(InlineKeyboardButton(label.strip(), url=link.strip()))
+            btns.append(create_button(label.strip(), link.strip(), style))
         if btns:
             keyboard.append(btns)
 
@@ -212,13 +211,27 @@ def parse_buttons(text: str) -> InlineKeyboardMarkup | None:
 @app.on_message(filters.command(["cb"]))
 async def change_button_with_link(client, message: Message):
     if not message.reply_to_message or not message.reply_to_message.text:
-        return await message.reply_text("❌ Reply to a button-text message with /cb <post_link>")
+        return await message.reply_text("❌ Reply to a button-text message with /cb <post_link> [color]")
 
-    if len(message.command) != 2:
-        return await message.reply_text("❌ Usage: /cb <channel_post_link>")
+    args = message.command
+    if len(args) < 2:
+        return await message.reply_text(
+            "❌ **Usage:** `/cb <link> [color]`\n\n"
+            "**Colors:** `red` (r), `green` (g), `blue` (b)\n"
+            "**Default:** `red`"
+        )
 
-    link = message.command[1]
+    link = args[1]
     
+    # Color Logic (Default: red)
+    color_arg = args[2].lower() if len(args) > 2 else "red"
+    color_map = {
+        "r": "red", "red": "red",
+        "g": "green", "green": "green",
+        "b": "blue", "blue": "blue"
+    }
+    btn_style = color_map.get(color_arg, "red")
+
     public_match = re.match(r"https?://t\.me/([a-zA-Z0-9_]{5,})/(\d+)", link)
     private_match = re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", link)
 
@@ -239,7 +252,7 @@ async def change_button_with_link(client, message: Message):
     if not await is_channel_authed(channel_id):
         return await message.reply_text("❌ This channel is not authorized. Use /auth first.")
 
-    keyboard = parse_buttons(message.reply_to_message.text)
+    keyboard = parse_buttons(message.reply_to_message.text, style=btn_style)
     if not keyboard:
         return await message.reply_text("❌ Invalid button format!\n\n📝 Format:\n[Text + Link]\n[Another + Link]")
 
@@ -249,7 +262,7 @@ async def change_button_with_link(client, message: Message):
             message_id=msg_id,
             reply_markup=keyboard
         )
-        await message.reply_text("✅ Buttons updated successfully!")
+        await message.reply_text(f"✅ Buttons updated successfully! (Color: {btn_style})")
     except Exception as e:
         await message.reply_text(f"⚠️ Failed to edit message: {e}")
 
@@ -326,17 +339,13 @@ async def safe_copy_and_delete(msg: Message, chat_id: int):
 @app.on_message(filters.channel & ~filters.service)
 async def remove_forward_tag_handler(client, message: Message):
     """Automatically remove forward tag from authorized channels"""
-    
-    # Check if channel is authorized
     settings = await get_channel_settings(message.chat.id)
     if not settings:
         return
     
-    # Check if forward tag removal is enabled
     if not settings["forward_tag_removal"]:
         return
     
-    # Check if message is forwarded
     if not is_forwarded(message):
         return
     
@@ -349,14 +358,12 @@ async def remove_forward_tag_handler(client, message: Message):
 @app.on_chat_join_request()
 async def auto_approve_join_request(client, request: ChatJoinRequest):
     """Auto approve join requests after specified time"""
-    
     chat_id = request.chat.id
     settings = await get_channel_settings(chat_id)
     
     if not settings:
         return
     
-    # Wait for specified time before approving
     wait_time = settings["auto_accept_seconds"]
     await asyncio.sleep(wait_time)
     
