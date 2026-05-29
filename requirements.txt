@@ -3,8 +3,8 @@ tgcrypto
 asyncio
 python-dotenv
 aiohttp
-#Kurigram
-https://github.com/IamDvis/pyrogram/archive/dvis.zip
+Kurigram
+#https://github.com/IamDvis/pyrogram/archive/dvis.zip
 requests
 pillow
 
