@@ -25,8 +25,8 @@ authdb = db.auth_channels
 btn_templatedb = db.button_templates
 
 # -------------------- FONT STYLES -------------------- #
-FONT_S = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', 'ᴧʙᴄᴅєꜰɢʜɪᴊᴋʟϻησᴘǫʀꜱᴛᴜᴠᴡxʏᴢᴧʙᴄᴅєꜰɢʜɪᴊᴋʟϻησᴘǫʀꜱᴛᴜᴠᴡxʏᴢ'))
-FONT_SM = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', 'ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿'))
+FONT_S = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', 'ᴧʙᴄᴅєꜰɢʜɪᴊʟϻησǫʀꜱᴛᴜᴠᴡxʏᴢᴧʙᴄᴅєꜰɢʜɪᴊᴋʟϻησᴘǫʀꜱᴛᴜᴠᴡxʏᴢ'))
+FONT_SM = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', 'ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴠᴡxʏᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴠᴡxʏ𝟶𝟷𝟹𝟺𝟻𝟼𝟽𝟾𝟿'))
 
 def apply_sim(text: str) -> str:
     style = {"a": "𝖺", "b": "𝖻", "c": "𝖼", "d": "𝖽", "e": "𝖾", "f": "𝖿", "g": "𝗀", "h": "𝗁", "i": "𝗂", "j": "𝗃", "k": "𝗄", "l": "𝗅", "m": "𝗆", "n": "𝗇", "o": "𝗈", "p": "𝗉", "q": "𝗊", "r": "𝗋", "s": "𝗌", "t": "𝗍", "u": "𝗎", "v": "𝗏", "w": "𝗐", "x": "𝗑", "y": "𝗒", "z": "𝗓", "A": "𝖠", "B": "𝖡", "C": "𝖢", "D": "𝖣", "E": "𝖤", "F": "𝖥", "G": "𝖦", "H": "𝖧", "I": "𝖨", "J": "𝖩", "K": "𝖪", "L": "𝖫", "M": "𝖬", "N": "𝖭", "O": "𝖮", "P": "𝖯", "Q": "𝖰", "R": "𝖱", "S": "𝖲", "T": "𝖳", "U": "𝖴", "V": "𝖵", "W": "𝖶", "X": "𝖷", "Y": "𝖸", "Z": "𝖹"}
@@ -117,43 +117,71 @@ def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboard
             label = match.group(1).strip()
             link = match.group(2).strip()
             color_code = match.group(3).strip().lower()
-            # Button text ko touch nahi karenge
+            # Button text ko touch nahi karenge - jo template me hai wahi rahega
             color_map = {"r": RED_STYLE, "g": GREEN_STYLE, "b": BLUE_STYLE}
             btn_style = color_map.get(color_code, RED_STYLE)
             btns.append(create_button(label, link, style=btn_style))
         if btns: keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
-# -------------------- CAPTION FONT UPDATER -------------------- #
-EXCLUDED_CAPTION_LINE = "❖ 𝐌ᴧᴅє 𝐁ɣ ➛ ˹ SyntaxRealm.t.me ˼"
+# -------------------- CAPTION FONT UPDATER (FIXED VERSION) -------------------- #
+EXCLUDED_CAPTION_LINE = "❖ 𝐌ᴧᴅᴇ 𝐁  ˹ SyntaxRealm.t.me ˼"
 
 def apply_font_to_caption(caption: str, font_style: str) -> str:
-    if not caption or font_style == "normal": return caption
+    if not caption or font_style == "normal":
+        return caption
+
     lines = caption.split('\n')
     new_lines = []
+    
     for line in lines:
-        if EXCLUDED_CAPTION_LINE in line:
+        # Check if line contains the excluded text - skip completely
+        if EXCLUDED_CAPTION_LINE in line or "SyntaxRealm.t.me" in line:
             new_lines.append(line)
             continue
+            
+        # Protect all markdown and HTML formatting
         placeholders = {}
         counter = 0
-        def replace_with_placeholder(match):
+        
+        def protect(match):
             nonlocal counter
-            placeholder = f"@@{counter}@@"
-            placeholders[placeholder] = match.group(0)
+            key = f"__PROT{counter}__"
+            placeholders[key] = match.group(0)
             counter += 1
-            return placeholder
-        url_pattern = r'(https?://[^\s\]\)\*]+|tg://[^\s\]\)\*]+|t\.me/[^\s\]\)\*]+)'
-        html_tag_pattern = r'<[^>]+>'
-        temp_line = re.sub(url_pattern, replace_with_placeholder, line)
-        temp_line = re.sub(html_tag_pattern, replace_with_placeholder, temp_line)
-        styled_line = apply_font(temp_line, font_style)
-        for ph, original in placeholders.items():
-            styled_line = styled_line.replace(ph, original)
+            return key
+        
+        # Protect URLs first
+        line = re.sub(r'https?://[^\s]+', protect, line)
+        
+        # Protect Markdown formatting
+        line = re.sub(r'\*\*([^*]+)\*\*', protect, line)  # **bold**
+        line = re.sub(r'__([^_]+)__', protect, line)        # __italic__
+        line = re.sub(r'`([^`]+)`', protect, line)          # `code`
+        line = re.sub(r'#[\w]+', protect, line)             # #hashtags
+        
+        # Protect HTML tags
+        line = re.sub(r'<[^>]+>', protect, line)
+        
+        # Protect special characters and symbols
+        line = re.sub(r'[❖˹˼★☆✓✅➛]', protect, line)
+        
+        # Protect quoted text with special formatting
+        line = re.sub(r'"[^"]+"', protect, line)
+        line = re.sub(r"'[^']+'", protect, line)
+        
+        # Now apply font to remaining text only
+        styled_line = apply_font(line, font_style)
+        
+        # Restore protected content
+        for key, original in placeholders.items():
+            styled_line = styled_line.replace(key, original)
+            
         new_lines.append(styled_line)
+        
     return '\n'.join(new_lines)
 
-# -------------------- MASTER AUTO BUTTON HANDLER (/ab, /abset, /absee, /abrm) -------------------- #
+# -------------------- MASTER AUTO BUTTON HANDLER -------------------- #
 @app.on_message(filters.command(["ab", "abset", "absee", "abseen", "abrm"]))
 async def auto_button_handler(client, message: Message):
     cmd = message.command[0].lower()
