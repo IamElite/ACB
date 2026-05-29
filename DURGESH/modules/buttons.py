@@ -104,7 +104,7 @@ async def unauth_channel_cmd(client, message: Message):
     await remove_auth_channel(chat_id)
     await message.reply_text(f"✅ Un-Authorized: `{chat_id}`")
 
-# -------------------- SMART BUTTON PARSER (NO FONT ON BUTTONS) -------------------- #
+# -------------------- SMART BUTTON PARSER -------------------- #
 def create_button(text: str, url: str, style=RED_STYLE):
     try: return InlineKeyboardButton(text, url=url, style=style)
     except TypeError: return InlineKeyboardButton(text, url=url)
@@ -117,177 +117,158 @@ def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboard
             label = match.group(1).strip()
             link = match.group(2).strip()
             color_code = match.group(3).strip().lower()
-            
-            # Button text ko touch nahi karenge, jo template me hai wahi rahega
+            # Button text ko touch nahi karenge
             color_map = {"r": RED_STYLE, "g": GREEN_STYLE, "b": BLUE_STYLE}
             btn_style = color_map.get(color_code, RED_STYLE)
             btns.append(create_button(label, link, style=btn_style))
         if btns: keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
-# -------------------- CAPTION FONT UPDATER (PRO LOGIC) -------------------- #
+# -------------------- CAPTION FONT UPDATER -------------------- #
 EXCLUDED_CAPTION_LINE = "❖ 𝐌ᴧᴅє 𝐁ɣ ➛ ˹ SyntaxRealm.t.me ˼"
 
 def apply_font_to_caption(caption: str, font_style: str) -> str:
-    if not caption or font_style == "normal":
-        return caption
-
+    if not caption or font_style == "normal": return caption
     lines = caption.split('\n')
     new_lines = []
-    
     for line in lines:
-        # Specific line ko skip karna hai
         if EXCLUDED_CAPTION_LINE in line:
             new_lines.append(line)
             continue
-            
         placeholders = {}
         counter = 0
-        
         def replace_with_placeholder(match):
             nonlocal counter
             placeholder = f"@@{counter}@@"
             placeholders[placeholder] = match.group(0)
             counter += 1
             return placeholder
-            
-        # URLs aur HTML tags ko protect karna hai taki unka font change na ho
         url_pattern = r'(https?://[^\s\]\)\*]+|tg://[^\s\]\)\*]+|t\.me/[^\s\]\)\*]+)'
         html_tag_pattern = r'<[^>]+>'
-        
         temp_line = re.sub(url_pattern, replace_with_placeholder, line)
         temp_line = re.sub(html_tag_pattern, replace_with_placeholder, temp_line)
-        
-        # Baki bache text par font apply karo
         styled_line = apply_font(temp_line, font_style)
-        
-        # Wapas placeholders ko original text se replace karo
         for ph, original in placeholders.items():
             styled_line = styled_line.replace(ph, original)
-            
         new_lines.append(styled_line)
-        
     return '\n'.join(new_lines)
 
-# -------------------- AUTO BUTTON SET (/abset) -------------------- #
-@app.on_message(filters.command(["ab", "abset", "ab -s"]))
-async def set_auto_button_template(client, message: Message):
-    font_style = "sim"
-    text = message.text or message.caption or ""
-    
-    font_match = re.search(r"-f\s+(\w+)", text)
-    if font_match:
-        font_style = font_match.group(1).lower()
-        if font_style not in ["sim", "san", "s", "sm", "normal"]: font_style = "sim"
-            
-    template_text = ""
-    if message.reply_to_message and message.reply_to_message.text:
-        template_text = message.reply_to_message.text
-    else:
-        template_text = re.sub(r"^/(ab|abset|ab\s*-s)\s*", "", text, flags=re.IGNORECASE)
-        template_text = re.sub(r"-f\s+\w+", "", template_text, flags=re.IGNORECASE).strip()
-        
-    if not template_text: return await message.reply_text("❌ Bhai template text toh de! Reply to a message or type it after the command.")
-        
-    keyboard = parse_buttons(template_text, font_style=font_style)
-    if not keyboard: return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + URL] r`")
-        
-    await save_button_template(message.from_user.id, template_text, font_style)
-    
-    preview_text = template_text.replace("{link}", "https://t.me/PreviewDemo")
-    preview_keyboard = parse_buttons(preview_text, font_style=font_style)
-    
-    font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
-    
-    await message.reply_text(
-        f"✅ **Template Set Ho Gaya Bro!**\n"
-        f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
-        f"👇 **Niche Preview Dekh Le:**",
-        reply_markup=preview_keyboard
-    )
-
-@app.on_message(filters.command(["absee", "abseen"]))
-async def see_auto_button_template(client, message: Message):
-    data = await get_button_template(message.from_user.id)
-    if not data: return await message.reply_text("❌ Koi template set nahi hai bhai! Pehle `/abset` kar.")
-        
-    template_text, font_style = data["template"], data.get("font_style", "sim")
-    preview_text = template_text.replace("{link}", "https://t.me/PreviewDemo")
-    preview_keyboard = parse_buttons(preview_text, font_style=font_style)
-    
-    font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
-    
-    await message.reply_text(
-        f"📋 **Tera Set Kiya Hua Template:**\n`{template_text}`\n\n"
-        f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
-        f"👇 **Preview:**",
-        reply_markup=preview_keyboard
-    )
-
-@app.on_message(filters.command(["abrm"]))
-async def remove_auto_button_template(client, message: Message):
-    await delete_button_template(message.from_user.id)
-    await message.reply_text("🗑️ Template remove kar diya bhai!")
-
-# -------------------- APPLY TEMPLATE (/au) -------------------- #
-@app.on_message(filters.command(["au", "acbapply"]))
-async def apply_auto_button_cmd(client, message: Message):
-    template_data = await get_button_template(message.from_user.id)
-    if not template_data: return await message.reply_text("❌ Bhai pehle `/abset` se template set kar!")
-        
-    template, font_style = template_data["template"], template_data.get("font_style", "sim")
+# -------------------- MASTER AUTO BUTTON HANDLER (/ab, /abset, /absee, /abrm) -------------------- #
+@app.on_message(filters.command(["ab", "abset", "absee", "abseen", "abrm"]))
+async def auto_button_handler(client, message: Message):
+    cmd = message.command[0].lower()
     args = message.command[1:]
-    target_link, replacement_link = None, None
     
-    if message.reply_to_message:
-        replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-        url_match = re.search(r"(https?://t\.me/\S+)", replied_text)
-        if url_match: replacement_link = url_match.group(1)
-        if args and args[0].startswith("http"): target_link = args[0]
-    else:
-        if len(args) >= 2: target_link, replacement_link = args[0], args[1]
-        elif len(args) == 1: target_link = args[0]
-            
-    if not target_link: return await message.reply_text("❌ Usage: Reply to link with `/au <target_post_link>`")
-        
-    public_match = re.match(r"https?://t\.me/([a-zA-Z0-9_]{5,})/(\d+)", target_link)
-    private_match = re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", target_link)
-    
-    if public_match:
-        try: channel_id, msg_id = (await client.get_chat(public_match.group(1))).id, int(public_match.group(2))
-        except Exception as e: return await message.reply_text(f"❌ Channel nahi mila: {e}")
-    elif private_match: channel_id, msg_id = int("-100" + private_match.group(1)), int(private_match.group(2))
-    else: return await message.reply_text("❌ Invalid target link format!")
-        
-    if not await is_channel_authed(channel_id): return await message.reply_text("❌ Channel authorized nahi hai.")
-        
-    if not replacement_link:
-        try:
-            chat = await client.get_chat(channel_id)
-            replacement_link = f"https://t.me/{chat.username}" if chat.username else "https://t.me/YourChannel"
-        except: replacement_link = "https://t.me/YourChannel"
-            
-    final_text = re.sub(r"\{link\}", replacement_link, template, flags=re.IGNORECASE)
-    keyboard = parse_buttons(final_text, font_style=font_style)
-    if not keyboard: return await message.reply_text("❌ Buttons parse nahi hue!")
-        
-    try:
-        # 1. Pehle buttons edit karenge
-        await client.edit_message_reply_markup(chat_id=channel_id, message_id=msg_id, reply_markup=keyboard)
-        
-        # 2. Phir Caption ko Smartly Update karenge
-        target_msg = await client.get_messages(channel_id, msg_id)
-        if target_msg.caption and font_style != "normal":
-            new_caption = apply_font_to_caption(target_msg.caption, font_style)
-            if new_caption != target_msg.caption:
-                await client.edit_message_caption(
-                    chat_id=channel_id, 
-                    message_id=msg_id, 
-                    caption=new_caption
-                )
+    # 1. REMOVE TEMPLATE
+    if cmd == "abrm":
+        await delete_button_template(message.from_user.id)
+        return await message.reply_text("🗑️ Template remove kar diya bhai!")
+
+    # 2. SEE TEMPLATE
+    if cmd in ["absee", "abseen"]:
+        data = await get_button_template(message.from_user.id)
+        if not data: return await message.reply_text("❌ Koi template set nahi hai bhai! Pehle `/abset` kar.")
+        template_text, font_style = data["template"], data.get("font_style", "sim")
+        preview_text = template_text.replace("{link}", "https://t.me/PreviewDemo")
+        preview_keyboard = parse_buttons(preview_text, font_style=font_style)
+        font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
+        return await message.reply_text(
+            f"📋 **Tera Set Kiya Hua Template:**\n`{template_text}`\n\n"
+            f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
+            f"👇 **Preview:**",
+            reply_markup=preview_keyboard
+        )
+
+    # 3. SET TEMPLATE (/abset or /ab -s)
+    if cmd == "abset" or (cmd == "ab" and "-s" in message.text.lower()):
+        font_style = "sim"
+        text = message.text or message.caption or ""
+        font_match = re.search(r"-f\s+(\w+)", text)
+        if font_match:
+            font_style = font_match.group(1).lower()
+            if font_style not in ["sim", "san", "s", "sm", "normal"]: font_style = "sim"
                 
-        await message.reply_text(f"✅ **Pro Level Buttons & Caption Set!**\n🔥 Font: `{font_style}`")
-    except Exception as e: await message.reply_text(f"⚠️ Edit fail: {e}")
+        template_text = ""
+        if message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
+            template_text = message.reply_to_message.text or message.reply_to_message.caption
+        else:
+            template_text = re.sub(r"^/(ab|abset)\s*", "", text, flags=re.IGNORECASE)
+            template_text = re.sub(r"-s", "", template_text, flags=re.IGNORECASE)
+            template_text = re.sub(r"-f\s+\w+", "", template_text, flags=re.IGNORECASE).strip()
+            
+        if not template_text: return await message.reply_text("❌ Bhai template text toh de! Reply to a message or type it after the command.")
+            
+        keyboard = parse_buttons(template_text, font_style=font_style)
+        if not keyboard: return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + URL] r`")
+            
+        await save_button_template(message.from_user.id, template_text, font_style)
+        
+        preview_text = template_text.replace("{link}", "https://t.me/PreviewDemo")
+        preview_keyboard = parse_buttons(preview_text, font_style=font_style)
+        font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
+        
+        return await message.reply_text(
+            f"✅ **Template Set Ho Gaya Bro!**\n"
+            f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
+            f"👇 **Niche Preview Dekh Le:**",
+            reply_markup=preview_keyboard
+        )
+
+    # 4. APPLY TEMPLATE (/ab <target_post_link>)
+    if cmd == "ab":
+        if not args:
+            return await message.reply_text(
+                "❌ **Usage Guide:**\n"
+                "1️⃣ **Set Template:** `/abset` (reply to template text)\n"
+                "2️⃣ **Apply Template:** `/ab <target_post_link>` (reply to message containing replacement link)"
+            )
+            
+        target_link = args[0]
+        replacement_link = None
+        
+        if message.reply_to_message:
+            replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+            url_match = re.search(r"(https?://t\.me/\S+)", replied_text)
+            if url_match: replacement_link = url_match.group(1)
+            
+        if not replacement_link:
+            return await message.reply_text("❌ Bhai replacement link (channel link) wale message ko reply karke `/ab <target_post_link>` bhej!")
+            
+        template_data = await get_button_template(message.from_user.id)
+        if not template_data: return await message.reply_text("❌ Bhai pehle `/abset` se template set kar!")
+            
+        template, font_style = template_data["template"], template_data.get("font_style", "sim")
+            
+        public_match = re.match(r"https?://t\.me/([a-zA-Z0-9_]{5,})/(\d+)", target_link)
+        private_match = re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", target_link)
+        
+        if public_match:
+            try: channel_id, msg_id = (await client.get_chat(public_match.group(1))).id, int(public_match.group(2))
+            except Exception as e: return await message.reply_text(f"❌ Channel nahi mila: {e}")
+        elif private_match: channel_id, msg_id = int("-100" + private_match.group(1)), int(private_match.group(2))
+        else: return await message.reply_text("❌ Invalid target link format!")
+            
+        if not await is_channel_authed(channel_id): return await message.reply_text("❌ Channel authorized nahi hai.")
+                
+        final_text = re.sub(r"\{link\}", replacement_link, template, flags=re.IGNORECASE)
+        keyboard = parse_buttons(final_text, font_style=font_style)
+        if not keyboard: return await message.reply_text("❌ Buttons parse nahi hue!")
+            
+        try:
+            await client.edit_message_reply_markup(chat_id=channel_id, message_id=msg_id, reply_markup=keyboard)
+            
+            target_msg = await client.get_messages(channel_id, msg_id)
+            if target_msg.caption and font_style != "normal":
+                new_caption = apply_font_to_caption(target_msg.caption, font_style)
+                if new_caption != target_msg.caption:
+                    await client.edit_message_caption(
+                        chat_id=channel_id, 
+                        message_id=msg_id, 
+                        caption=new_caption
+                    )
+                    
+            await message.reply_text(f"✅ **Pro Level Buttons & Caption Set!**\n🔥 Font: `{font_style}`")
+        except Exception as e: await message.reply_text(f"⚠️ Edit fail: {e}")
 
 # -------------------- CHANGE BUTTON (/cb) -------------------- #
 @app.on_message(filters.command(["cb"]))
