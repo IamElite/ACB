@@ -1,6 +1,7 @@
 import re
 import asyncio
 from typing import Dict, Optional
+import pyrogram
 from pyrogram import filters
 from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
@@ -25,8 +26,8 @@ authdb = db.auth_channels
 btn_templatedb = db.button_templates
 
 # -------------------- FONT STYLES -------------------- #
-FONT_S = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', 'ᴧʙᴄᴅєꜰɢʜɪᴊʟϻησǫʀꜱᴛᴜᴠᴡxʏᴢᴧʙᴄᴅєꜰɢʜɪᴊᴋʟϻησᴘǫʀꜱᴛᴜᴠᴡxʏᴢ'))
-FONT_SM = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', 'ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴠᴡxʏᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴠᴡxʏ𝟶𝟷𝟹𝟺𝟻𝟼𝟽𝟾𝟿'))
+FONT_S = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', 'ᴧʙᴄᴅєꜰɢʜɪᴊᴋʟϻησᴘǫʀꜱᴛᴜᴠᴡxʏᴢᴧʙᴄᴅєꜰɢʜɪᴊᴋʟϻησᴘǫʀꜱᴛᴜᴠᴡxʏᴢ'))
+FONT_SM = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', 'ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿'))
 
 def apply_sim(text: str) -> str:
     style = {"a": "𝖺", "b": "𝖻", "c": "𝖼", "d": "𝖽", "e": "𝖾", "f": "𝖿", "g": "𝗀", "h": "𝗁", "i": "𝗂", "j": "𝗃", "k": "𝗄", "l": "𝗅", "m": "𝗆", "n": "𝗇", "o": "𝗈", "p": "𝗉", "q": "𝗊", "r": "𝗋", "s": "𝗌", "t": "𝗍", "u": "𝗎", "v": "𝗏", "w": "𝗐", "x": "𝗑", "y": "𝗒", "z": "𝗓", "A": "𝖠", "B": "𝖡", "C": "𝖢", "D": "𝖣", "E": "𝖤", "F": "𝖥", "G": "𝖦", "H": "𝖧", "I": "𝖨", "J": "𝖩", "K": "𝖪", "L": "𝖫", "M": "𝖬", "N": "𝖭", "O": "𝖮", "P": "𝖯", "Q": "𝖰", "R": "𝖱", "S": "𝖲", "T": "𝖳", "U": "𝖴", "V": "𝖵", "W": "𝖶", "X": "𝖷", "Y": "𝖸", "Z": "𝖹"}
@@ -117,71 +118,109 @@ def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboard
             label = match.group(1).strip()
             link = match.group(2).strip()
             color_code = match.group(3).strip().lower()
-            # Button text ko touch nahi karenge - jo template me hai wahi rahega
             color_map = {"r": RED_STYLE, "g": GREEN_STYLE, "b": BLUE_STYLE}
             btn_style = color_map.get(color_code, RED_STYLE)
             btns.append(create_button(label, link, style=btn_style))
         if btns: keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
-# -------------------- CAPTION FONT UPDATER (FIXED VERSION) -------------------- #
-EXCLUDED_CAPTION_LINE = "❖ 𝐌ᴧᴅᴇ 𝐁  ˹ SyntaxRealm.t.me ˼"
+# -------------------- ADVANCED ENTITY TO HTML CONVERTER -------------------- #
+# Yeh blockquotes (>) aur **bold** ko format banaye rakhega /ab set hone ke baad
+def get_html_text(text: str, entities: list) -> str:
+    if not text: return ""
+    if not entities: return text
+    
+    try: text_16 = text.encode('utf-16-le')
+    except: return text
+        
+    events = {}
+    for i, e in enumerate(entities):
+        start = e.offset * 2
+        end = (e.offset + e.length) * 2
+        start_tag = ""
+        end_tag = ""
+        
+        if e.type == pyrogram.enums.MessageEntityType.BOLD:
+            start_tag, end_tag = "<b>", "</b>"
+        elif e.type == pyrogram.enums.MessageEntityType.ITALIC:
+            start_tag, end_tag = "<i>", "</i>"
+        elif e.type == pyrogram.enums.MessageEntityType.CODE:
+            start_tag, end_tag = "<code>", "</code>"
+        elif e.type == pyrogram.enums.MessageEntityType.PRE:
+            lang = getattr(e, "language", "") or ""
+            start_tag, end_tag = f'<pre><code class="language-{lang}">', "</code></pre>"
+        elif e.type == pyrogram.enums.MessageEntityType.TEXT_LINK:
+            start_tag, end_tag = f'<a href="{e.url}">', "</a>"
+        elif e.type == pyrogram.enums.MessageEntityType.TEXT_MENTION:
+            start_tag, end_tag = f'<a href="tg://user?id={e.user.id}">', "</a>"
+        elif e.type == pyrogram.enums.MessageEntityType.STRIKETHROUGH:
+            start_tag, end_tag = "<s>", "</s>"
+        elif e.type == pyrogram.enums.MessageEntityType.UNDERLINE:
+            start_tag, end_tag = "<u>", "</u>"
+        elif e.type == pyrogram.enums.MessageEntityType.SPOILER:
+            start_tag, end_tag = "<spoiler>", "</spoiler>"
+        elif e.type == pyrogram.enums.MessageEntityType.BLOCKQUOTE:
+            start_tag, end_tag = "<blockquote>", "</blockquote>"
+        elif getattr(pyrogram.enums.MessageEntityType, "EXPANDABLE_BLOCKQUOTE", None) and e.type == pyrogram.enums.MessageEntityType.EXPANDABLE_BLOCKQUOTE:
+            start_tag, end_tag = "<blockquote expandable>", "</blockquote>"
 
+        if start_tag:
+            if start not in events: events[start] = []
+            if end not in events: events[end] = []
+            events[start].append(('start', i, start_tag))
+            events[end].append(('end', i, end_tag))
+            
+    res = ""
+    last_idx = 0
+    for idx in sorted(events.keys()):
+        res += text_16[last_idx:idx].decode('utf-16-le')
+        evs = events[idx]
+        ends = [e for e in evs if e[0] == 'end']
+        starts = [e for e in evs if e[0] == 'start']
+        
+        ends.sort(key=lambda x: x[1], reverse=True)
+        starts.sort(key=lambda x: x[1])
+        
+        for e in ends: res += e[2]
+        for e in starts: res += e[2]
+        last_idx = idx
+        
+    res += text_16[last_idx:].decode('utf-16-le')
+    return res
+
+# -------------------- CAPTION FONT UPDATER -------------------- #
 def apply_font_to_caption(caption: str, font_style: str) -> str:
-    if not caption or font_style == "normal":
-        return caption
-
+    if not caption or font_style == "normal": return caption
+    
     lines = caption.split('\n')
     new_lines = []
     
+    # HTML tag or basic URLs ko font change se bachane ke liye pattern
+    pattern = re.compile(r'(<[^>]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
+    
     for line in lines:
-        # Check if line contains the excluded text - skip completely
-        if EXCLUDED_CAPTION_LINE in line or "SyntaxRealm.t.me" in line:
+        # Watermark/Excluded lines ki strict checking
+        lower_line = line.lower()
+        if "syntaxrealm.t.me" in lower_line or "❖" in line or "made by" in lower_line:
             new_lines.append(line)
             continue
             
-        # Protect all markdown and HTML formatting
-        placeholders = {}
-        counter = 0
+        parts = pattern.split(line)
+        styled_parts = []
+        for part in parts:
+            if not part: continue
+            if part.startswith('<') and part.endswith('>'):
+                styled_parts.append(part)
+            elif part.startswith('http') or part.startswith('t.me') or part.startswith('tg://'):
+                styled_parts.append(part)
+            else:
+                styled_parts.append(apply_font(part, font_style))
         
-        def protect(match):
-            nonlocal counter
-            key = f"__PROT{counter}__"
-            placeholders[key] = match.group(0)
-            counter += 1
-            return key
-        
-        # Protect URLs first
-        line = re.sub(r'https?://[^\s]+', protect, line)
-        
-        # Protect Markdown formatting
-        line = re.sub(r'\*\*([^*]+)\*\*', protect, line)  # **bold**
-        line = re.sub(r'__([^_]+)__', protect, line)        # __italic__
-        line = re.sub(r'`([^`]+)`', protect, line)          # `code`
-        line = re.sub(r'#[\w]+', protect, line)             # #hashtags
-        
-        # Protect HTML tags
-        line = re.sub(r'<[^>]+>', protect, line)
-        
-        # Protect special characters and symbols
-        line = re.sub(r'[❖˹˼★☆✓✅➛]', protect, line)
-        
-        # Protect quoted text with special formatting
-        line = re.sub(r'"[^"]+"', protect, line)
-        line = re.sub(r"'[^']+'", protect, line)
-        
-        # Now apply font to remaining text only
-        styled_line = apply_font(line, font_style)
-        
-        # Restore protected content
-        for key, original in placeholders.items():
-            styled_line = styled_line.replace(key, original)
-            
-        new_lines.append(styled_line)
+        new_lines.append(''.join(styled_parts))
         
     return '\n'.join(new_lines)
 
-# -------------------- MASTER AUTO BUTTON HANDLER -------------------- #
+# -------------------- MASTER AUTO BUTTON HANDLER (/ab, /abset, /absee, /abrm) -------------------- #
 @app.on_message(filters.command(["ab", "abset", "absee", "abseen", "abrm"]))
 async def auto_button_handler(client, message: Message):
     cmd = message.command[0].lower()
@@ -280,23 +319,43 @@ async def auto_button_handler(client, message: Message):
                 
         final_text = re.sub(r"\{link\}", replacement_link, template, flags=re.IGNORECASE)
         keyboard = parse_buttons(final_text, font_style=font_style)
-        if not keyboard: return await message.reply_text("❌ Buttons parse nahi hue!")
+        if not keyboard: return await message.reply_text("❌ Buttons parse nahi hue! Sayad template me button formats galat hai.")
             
         try:
-            await client.edit_message_reply_markup(chat_id=channel_id, message_id=msg_id, reply_markup=keyboard)
-            
             target_msg = await client.get_messages(channel_id, msg_id)
-            if target_msg.caption and font_style != "normal":
-                new_caption = apply_font_to_caption(target_msg.caption, font_style)
-                if new_caption != target_msg.caption:
+            original_text = target_msg.caption or target_msg.text
+            original_entities = target_msg.caption_entities or target_msg.entities
+            
+            if original_text:
+                # Get HTML to preserve Bold, Quotes etc
+                html_text = get_html_text(original_text, original_entities)
+                # Apply Font skipping HTML tags and Watermarks
+                new_text = apply_font_to_caption(html_text, font_style) if font_style != "normal" else html_text
+                
+                if target_msg.media:
                     await client.edit_message_caption(
                         chat_id=channel_id, 
                         message_id=msg_id, 
-                        caption=new_caption
+                        caption=new_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=keyboard # Button aur caption ab ek sath set hoga
                     )
-                    
-            await message.reply_text(f"✅ **Pro Level Buttons & Caption Set!**\n🔥 Font: `{font_style}`")
-        except Exception as e: await message.reply_text(f"⚠️ Edit fail: {e}")
+                else:
+                    await client.edit_message_text(
+                        chat_id=channel_id, 
+                        message_id=msg_id, 
+                        text=new_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=keyboard
+                    )
+                await message.reply_text(f"✅ **Pro Level Buttons & Caption Set!**\n🔥 Font: `{font_style}`")
+            else:
+                # Agar text nahi hai to bas button add kardo
+                await client.edit_message_reply_markup(chat_id=channel_id, message_id=msg_id, reply_markup=keyboard)
+                await message.reply_text(f"✅ **Buttons Set!** (No caption to format)")
+                
+        except Exception as e: 
+            await message.reply_text(f"⚠️ Edit fail: {e}")
 
 # -------------------- CHANGE BUTTON (/cb) -------------------- #
 @app.on_message(filters.command(["cb"]))
