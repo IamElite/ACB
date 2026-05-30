@@ -118,14 +118,17 @@ def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboard
             label = match.group(1).strip()
             link = match.group(2).strip()
             color_code = match.group(3).strip().lower()
+            
+            # Yahan ab BUTTON LABEL par bhi same font apply hoga taaki caption aur button match kare!
+            styled_label = apply_font(label, font_style) if font_style != "normal" else label
+            
             color_map = {"r": RED_STYLE, "g": GREEN_STYLE, "b": BLUE_STYLE}
             btn_style = color_map.get(color_code, RED_STYLE)
-            btns.append(create_button(label, link, style=btn_style))
+            btns.append(create_button(styled_label, link, style=btn_style))
         if btns: keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 # -------------------- ADVANCED ENTITY TO HTML CONVERTER -------------------- #
-# Yeh blockquotes (>) aur **bold** ko format banaye rakhega /ab set hone ke baad
 def get_html_text(text: str, entities: list) -> str:
     if not text: return ""
     if not entities: return text
@@ -195,11 +198,10 @@ def apply_font_to_caption(caption: str, font_style: str) -> str:
     lines = caption.split('\n')
     new_lines = []
     
-    # HTML tag or basic URLs ko font change se bachane ke liye pattern
+    # HTML tag or basic URLs ko ignore karne ke liye pattern
     pattern = re.compile(r'(<[^>]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
     
     for line in lines:
-        # Watermark/Excluded lines ki strict checking
         lower_line = line.lower()
         if "syntaxrealm.t.me" in lower_line or "❖" in line or "made by" in lower_line:
             new_lines.append(line)
@@ -220,18 +222,16 @@ def apply_font_to_caption(caption: str, font_style: str) -> str:
         
     return '\n'.join(new_lines)
 
-# -------------------- MASTER AUTO BUTTON HANDLER (/ab, /abset, /absee, /abrm) -------------------- #
+# -------------------- MASTER AUTO BUTTON HANDLER -------------------- #
 @app.on_message(filters.command(["ab", "abset", "absee", "abseen", "abrm"]))
 async def auto_button_handler(client, message: Message):
     cmd = message.command[0].lower()
     args = message.command[1:]
     
-    # 1. REMOVE TEMPLATE
     if cmd == "abrm":
         await delete_button_template(message.from_user.id)
         return await message.reply_text("🗑️ Template remove kar diya bhai!")
 
-    # 2. SEE TEMPLATE
     if cmd in ["absee", "abseen"]:
         data = await get_button_template(message.from_user.id)
         if not data: return await message.reply_text("❌ Koi template set nahi hai bhai! Pehle `/abset` kar.")
@@ -246,7 +246,6 @@ async def auto_button_handler(client, message: Message):
             reply_markup=preview_keyboard
         )
 
-    # 3. SET TEMPLATE (/abset or /ab -s)
     if cmd == "abset" or (cmd == "ab" and "-s" in message.text.lower()):
         font_style = "sim"
         text = message.text or message.caption or ""
@@ -277,11 +276,10 @@ async def auto_button_handler(client, message: Message):
         return await message.reply_text(
             f"✅ **Template Set Ho Gaya Bro!**\n"
             f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
-            f"👇 **Niche Preview Dekh Le:**",
+            f"👇 **Niche Preview Dekh Le (Button Font synchronized):**",
             reply_markup=preview_keyboard
         )
 
-    # 4. APPLY TEMPLATE (/ab <target_post_link>)
     if cmd == "ab":
         if not args:
             return await message.reply_text(
@@ -327,9 +325,7 @@ async def auto_button_handler(client, message: Message):
             original_entities = target_msg.caption_entities or target_msg.entities
             
             if original_text:
-                # Get HTML to preserve Bold, Quotes etc
                 html_text = get_html_text(original_text, original_entities)
-                # Apply Font skipping HTML tags and Watermarks
                 new_text = apply_font_to_caption(html_text, font_style) if font_style != "normal" else html_text
                 
                 if target_msg.media:
@@ -338,7 +334,7 @@ async def auto_button_handler(client, message: Message):
                         message_id=msg_id, 
                         caption=new_text,
                         parse_mode=ParseMode.HTML,
-                        reply_markup=keyboard # Button aur caption ab ek sath set hoga
+                        reply_markup=keyboard 
                     )
                 else:
                     await client.edit_message_text(
@@ -348,9 +344,8 @@ async def auto_button_handler(client, message: Message):
                         parse_mode=ParseMode.HTML,
                         reply_markup=keyboard
                     )
-                await message.reply_text(f"✅ **Pro Level Buttons & Caption Set!**\n🔥 Font: `{font_style}`")
+                await message.reply_text(f"✅ **Perfect Format Applied!**\n🔥 Both Caption & Buttons synchronized with font: `{font_style}`")
             else:
-                # Agar text nahi hai to bas button add kardo
                 await client.edit_message_reply_markup(chat_id=channel_id, message_id=msg_id, reply_markup=keyboard)
                 await message.reply_text(f"✅ **Buttons Set!** (No caption to format)")
                 
