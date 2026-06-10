@@ -39,7 +39,7 @@ def main():
             logger.info("Installing dependencies...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req, "--quiet"])
         logger.info("Update applied! Restarting bot...")
-        os.execl(sys.executable, sys.executable, os.path.join(BASE, "bot.py"))
+        os.execl(sys.executable, sys.executable, "-m", "DURGESH")
     except Exception as e:
         logger.error(f"Update failed: {e}")
         sys.exit(1)
