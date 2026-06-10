@@ -41,10 +41,6 @@ def ping_url():
                 continue
 
 def keep_alive():
-    t1 = Thread(target=run_server)
-    t1.daemon = True
-    t1.start()
-    
-    t2 = Thread(target=ping_url)
-    t2.daemon = True
-    t2.start()
+    t = Thread(target=ping_url)
+    t.daemon = True
+    t.start()
