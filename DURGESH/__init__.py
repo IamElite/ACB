@@ -64,10 +64,10 @@ class Bot(Client):
                 while True:
                     try:
                         urlopen(BASE_URL, timeout=10)
-                        sleep(600)
+                        time.sleep(600)
                     except Exception as e:
                         logerror(f"Ping error: {e}")
-                        sleep(2)
+                        time.sleep(2)
             Thread(target=ping, daemon=True).start()
             print(f"[{time.time():.0f}] - DURGESH - 📡 Ping thread started for {BASE_URL}")
 
