@@ -1,1 +1,1 @@
-worker: python3 -m DURGESH
+worker: bash SyntaxRealm.sh
