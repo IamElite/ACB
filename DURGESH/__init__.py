@@ -2,6 +2,10 @@
 
 import time
 import asyncio
+from threading import Thread
+from os import getenv
+from urllib.request import urlopen
+from logging import error as logerror
 from pyrogram import Client, idle
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
@@ -51,6 +55,21 @@ class Bot(Client):
         site = web.TCPSite(app, "0.0.0.0", PORT)
         await site.start()
         print(f"[{time.time():.0f}] - DURGESH - 🌐 Web server started on port {PORT}")
+
+        # Start Ping Thread
+        BASE_URL = getenv("BASE_URL")
+        if BASE_URL:
+            BASE_URL = BASE_URL.rstrip("/")
+            def ping():
+                while True:
+                    try:
+                        urlopen(BASE_URL, timeout=10)
+                        sleep(600)
+                    except Exception as e:
+                        logerror(f"Ping error: {e}")
+                        sleep(2)
+            Thread(target=ping, daemon=True).start()
+            print(f"[{time.time():.0f}] - DURGESH - 📡 Ping thread started for {BASE_URL}")
 
     async def stop(self, *args):
         await super().stop()
