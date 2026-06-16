@@ -40,6 +40,7 @@ class Bot(Client):
             api_hash=API_HASH,
             workers=TG_BOT_WORKERS,
             bot_token=BOT_TOKEN,
+            dc_id=5,
         )
 
     async def start(self, *args, **kwargs):
