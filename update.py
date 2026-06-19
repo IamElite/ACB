@@ -39,7 +39,10 @@ def main():
             logger.info("Installing dependencies...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", req, "--quiet"])
         logger.info("Update applied! Restarting bot...")
-        os.execl(sys.executable, sys.executable, "-m", "DURGESH")
+        
+        # FIX: os.execl ki jagah os._exit(0) use kiya hai taaki Koyeb clean restart kare
+        os._exit(0)
+        
     except Exception as e:
         logger.error(f"Update failed: {e}")
         sys.exit(1)
