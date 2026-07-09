@@ -1,5 +1,3 @@
-# DURGESH/__init__.py
-
 import time
 import asyncio
 from threading import Thread
@@ -11,13 +9,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 from config import *
 
-# Replace logger with print
 START_TIME = time.time()
 print(f"[{START_TIME:.0f}] - DURGESH - Initializing...")
 
-# Database Connection
-db = AsyncIOMotorClient(MONGO_URL).Durgesh
-print(f"[{time.time():.0f}] - DURGESH - MongoDB connected.")
+db = None  # Will be initialized safely inside async start()
 
 # Web Server Setup
 routes = web.RouteTableDef()
@@ -44,12 +39,28 @@ class Bot(Client):
         )
 
     async def start(self, *args, **kwargs):
+        global db
         await super().start(*args, **kwargs)
         self.id = self.me.id
         self.name = self.me.first_name
         self.username = self.me.username
         print(f"[{time.time():.0f}] - DURGESH - Bot started as {self.name} (@{self.username}).")
         
+        # 🔥 MongoDB Connection with Proper Timeouts
+        try:
+            print(f"[{time.time():.0f}] - DURGESH - Connecting to MongoDB...")
+            db = AsyncIOMotorClient(
+                MONGO_URL,
+                serverSelectionTimeoutMS=30000,
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000
+            ).Durgesh
+            await db.command("ping")
+            print(f"[{time.time():.0f}] - DURGESH - ✅ MongoDB connected successfully!")
+        except Exception as e:
+            print(f"❌ MongoDB Connection Failed: {e}")
+            raise e
+
         # Start Web Server
         app = web.AppRunner(await web_server())
         await app.setup()
@@ -81,5 +92,3 @@ class Bot(Client):
         return f"[{self.name}](tg://user?id={self.id})"
 
 app = Bot()
-
-
