@@ -12,6 +12,7 @@ def _get(m):
 def _extract_imgurl(u):
     try:
         parsed = urlparse(u)
+        # Check YouTube first!
         if parsed.netloc in ('youtu.be', 'www.youtu.be', 'youtube.com', 'www.youtube.com', 'm.youtube.com'):
             vid = parsed.path.strip('/').split('/')[-1] if (parsed.netloc in ('youtu.be', 'www.youtu.be') or '/shorts/' in parsed.path or '/embed/' in parsed.path) else parse_qs(parsed.query).get('v', [None])[0]
             if vid:
@@ -27,14 +28,33 @@ def _download_url_data(url):
     req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            return r.read(), r.getheader("Content-Type", "")
+            data = r.read()
+            content_type = r.getheader("Content-Type", "")
+            
+            if "text/html" in content_type:
+                html_text = html.unescape(data.decode("utf-8", errors="ignore"))
+                # 1. Lookaside/Instagram specific search
+                matches = re.findall(r'(https?://[^\s\"\'><]+?cdninstagram\.com/[^\s\"\'><]+)', html_text)
+                match = next((m for m in matches if 'static' not in m and 'rsrc.php' not in m), None)
+                # 2. General metadata og:image / twitter:image
+                if not match:
+                    m_og = re.search(r'<meta\s+[^>]*?property=["\']og:image["\']\s+content=["\'](https?://.*?)["\']', html_text)
+                    if m_og: match = m_og.group(1)
+                if not match:
+                    m_tw = re.search(r'<meta\s+[^>]*?name=["\']twitter:image["\']\s+content=["\'](https?://.*?)["\']', html_text)
+                    if m_tw: match = m_tw.group(1)
+                
+                if match:
+                    img_url = match.replace("&amp;", "&")
+                    req = urllib.request.Request(img_url, headers={"User-Agent":"Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=15) as r2:
+                        return r2.read(), r2.getheader("Content-Type", "")
+            return data, content_type
     except Exception:
         if "maxresdefault.jpg" in url:
             try:
                 fallback_url = url.replace("maxresdefault.jpg", "hqdefault.jpg")
-                req = urllib.request.Request(fallback_url, headers={"User-Agent":"Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=15) as r:
-                    return r.read(), r.getheader("Content-Type", "")
+                return _download_url_data(fallback_url)
             except Exception:
                 pass
         raise
