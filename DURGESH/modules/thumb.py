@@ -11,29 +11,46 @@ def _get(m):
 
 def _extract_imgurl(u):
     try:
-        q = parse_qs(urlparse(u).query)
+        parsed = urlparse(u)
+        if parsed.netloc in ('youtu.be', 'www.youtu.be', 'youtube.com', 'www.youtube.com', 'm.youtube.com'):
+            vid = parsed.path.strip('/').split('/')[-1] if (parsed.netloc in ('youtu.be', 'www.youtu.be') or '/shorts/' in parsed.path or '/embed/' in parsed.path) else parse_qs(parsed.query).get('v', [None])[0]
+            if vid:
+                return f"https://img.youtube.com/vi/{vid}/maxresdefault.jpg"
+        q = parse_qs(parsed.query)
         if "imgurl" in q:
             return unquote(q["imgurl"][0])
     except:
         pass
     return u
 
-def _is_image_resp(r): return r.getheader("Content-Type","").startswith("image/")
+def _download_url_data(url):
+    req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.read(), r.getheader("Content-Type", "")
+    except Exception:
+        if "maxresdefault.jpg" in url:
+            try:
+                fallback_url = url.replace("maxresdefault.jpg", "hqdefault.jpg")
+                req = urllib.request.Request(fallback_url, headers={"User-Agent":"Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return r.read(), r.getheader("Content-Type", "")
+            except Exception:
+                pass
+        raise
 
 async def _process_and_send(m_target, data):
-    in_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg"); in_f.write(data); in_f.close()
-    out_f = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg"); out_f.close()
+    inf, outf = tempfile.mktemp(".jpg"), tempfile.mktemp(".jpg")
     try:
-        subprocess.run(["convert", in_f.name,
-                        "-modulate","100,115","-sigmoidal-contrast","4x50%","-enhance",
-                        "-contrast-stretch","0.5%x0.5%", out_f.name], check=True)
-        with open(out_f.name,"rb") as f: await m_target.reply_photo(f)
+        with open(inf, "wb") as f: f.write(data)
+        subprocess.run(["convert", inf, "-modulate", "100,115", "-sigmoidal-contrast", "4x50%", "-enhance", "-contrast-stretch", "0.5%x0.5%", outf], check=True)
+        await m_target.reply_photo(outf)
     except Exception:
-        bio = BytesIO(data); bio.name="img.jpg"; bio.seek(0)
+        bio = BytesIO(data); bio.name="img.jpg"
         await m_target.reply_photo(bio)
     finally:
-        for p in (in_f.name, out_f.name):
-            if p and os.path.exists(p): os.remove(p)
+        for p in (inf, outf):
+            if os.path.exists(p): os.remove(p)
 
 # single-url command
 @app.on_message(filters.command(["thumbnail","thumb","t"], prefixes=["/","!",".",""]))
@@ -49,96 +66,55 @@ async def send_thumb(_, m):
     except: pass
 
     wait = await m.reply_text("processing...")
-    req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            if not _is_image_resp(r): return await wait.edit_text("url not image")
-            data = r.read()
+        data, content_type = _download_url_data(url)
+        if not content_type.startswith("image/"):
+            return await wait.edit_text("url not image")
     except Exception:
         return await wait.edit_text("can't fetch url")
     await _process_and_send(m, data)
     await wait.delete()
 
-# getall / ga — improved extraction
+# getall / ga
 @app.on_message(filters.command(["getall","ga"], prefixes=["/","!",".",""]))
 async def get_all_images(_, m):
     if not m.reply_to_message or not (m.reply_to_message.text or m.reply_to_message.caption):
         return await m.reply_text("reply karo us message ko jisme links hain")
 
-    raw_text = m.reply_to_message.text or m.reply_to_message.caption or ""
-    # unescape HTML entities (like &amp;)
-    msg_text = html.unescape(raw_text)
-
-    # 1) Telegram entities (text_link/url)
-    entities = []
-    if getattr(m.reply_to_message, "entities", None):
-        entities += m.reply_to_message.entities
-    if getattr(m.reply_to_message, "caption_entities", None):
-        entities += m.reply_to_message.caption_entities
-
+    raw_text = html.unescape(m.reply_to_message.text or m.reply_to_message.caption or "")
     urls = []
-    for ent in entities:
-        t = ent.type
-        if t == "text_link" and getattr(ent, "url", None):
-            urls.append(ent.url)
-        elif t == "url":
-            off, length = ent.offset, ent.length
-            try:
-                urls.append(msg_text[off:off+length])
-            except:
-                pass
+    for ent in (getattr(m.reply_to_message, "entities", None) or []) + (getattr(m.reply_to_message, "caption_entities", None) or []):
+        if ent.type == "text_link": urls.append(ent.url)
+        elif ent.type == "url": urls.append(raw_text[ent.offset : ent.offset + ent.length])
 
-    # 2) markdown-style [text]( url ) with optional spaces/newlines between ] and (
-    md_links = re.findall(r'\[[^\]]+\]\s*\(\s*(https?://[^\s)]+)\s*\)', msg_text)
-    if md_links:
-        urls.extend(md_links)
+    urls += re.findall(r'\[[^\]]+\]\s*\(\s*(https?://[^\s)]+)\s*\)', raw_text)
+    urls += [u for _, u in re.findall(r'<a\s+[^>]*?href\s*=\s*([\'"])(https?://.*?)\1', raw_text, re.I)]
+    urls += re.findall(r'https?://[^\s)>\]]+', raw_text)
 
-    # 3) HTML <a ... href="..."> or href='...'
-    html_links = re.findall(r'<a\s+[^>]*?href\s*=\s*([\'"])(https?://.*?)\1', msg_text, flags=re.IGNORECASE)
-    if html_links:
-        urls.extend([u for _, u in html_links])
-
-    # 4) plain URLs fallback (captures urls inside () too)
-    plain = re.findall(r'https?://[^\s)>\]]+', msg_text)
-    if plain:
-        urls.extend(plain)
-
-    # sanitize & dedupe while preserving order
     seen = set(); final_urls = []
     for u in urls:
         if not u: continue
-        u = u.strip(' \n\r\t\0\x0b\x1b')
-        # remove numbering prefixes like "1." or "1)" at start
-        u = re.sub(r'^[0-9]{1,3}[\.\)]\s*', '', u)
-        # strip wrapping <> or trailing punctuation
-        u = u.strip('<>.,;:()[]')
-        u = u.replace("&amp;", "&")
+        u = re.sub(r'^[0-9]{1,3}[\.\)]\s*', '', u.strip(' \n\r\t\0\x0b\x1b')).strip('<>.,;:()[]').replace("&amp;", "&")
         if u not in seen:
             seen.add(u); final_urls.append(u)
 
-    if not final_urls:
-        return await m.reply_text("koi url nahi mila us message mein")
+    if not final_urls: return await m.reply_text("koi url nahi mila us message mein")
 
-    # debug: show what we found
-    dbg = "\n".join(f"{i+1}. {u}" for i,u in enumerate(final_urls))
+    dbg = "\n".join(f"{i+1}. {u}" for i, u in enumerate(final_urls))
     wait = await m.reply_text(f"found {len(final_urls)} links:\n{dbg}\n\nprocessing...")
 
-    MAX = 25
-    if len(final_urls) > MAX:
-        final_urls = final_urls[:MAX]
-        await m.reply_text(f"zyaada links — pehle {MAX} hi process kar raha hoon")
+    if len(final_urls) > 25:
+        final_urls = final_urls[:25]
+        await m.reply_text("zyaada links — pehle 25 hi process kar raha hoon")
 
     for idx, raw in enumerate(final_urls, 1):
         url = _extract_imgurl(raw)
         if not re.match(r"https?://", url):
             await m.reply_text(f"[{idx}] invalid: {url}"); continue
         try:
-            req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=15) as r:
-                if not _is_image_resp(r):
-                    await m.reply_text(f"[{idx}] not an image: {url}")
-                    continue
-                data = r.read()
+            data, content_type = _download_url_data(url)
+            if not content_type.startswith("image/"):
+                await m.reply_text(f"[{idx}] not an image: {url}"); continue
             await _process_and_send(m, data)
             await asyncio.sleep(0.5)
         except Exception:
