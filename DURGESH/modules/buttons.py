@@ -82,6 +82,49 @@ def apply_font(text: str, font_style: str) -> str:
     elif font_style in ['san', 'b']: return ''.join(STYLE_SAN.get(c, c) for c in normalized_text)
     return normalized_text
 
+# -------------------- URL SANITIZER & VALIDATOR -------------------- #
+def sanitize_button_url(url: str) -> Optional[str]:
+    """
+    Cleans and standardizes button URLs to prevent [400 BUTTON_URL_INVALID]:
+    - Strips quotes, brackets, and invisible Unicode whitespace.
+    - Converts @usernames to https://t.me/usernames.
+    - Converts t.me/ and .t.me short-links to full https:// URLs.
+    - Validates scheme (http://, https://, tg://).
+    """
+    if not url:
+        return None
+    # Strip quotes, angle brackets, and backticks
+    clean = url.strip().strip("'\"<>`").strip()
+    # Remove zero-width spaces and invisible characters
+    clean = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0\r\n]+', '', clean).strip()
+
+    # Reject unreplaced placeholders
+    if re.match(r'^\{.*\}$', clean):
+        return None
+
+    # Handle @username -> https://t.me/username
+    if clean.startswith("@"):
+        return f"https://t.me/{clean.lstrip('@')}"
+
+    # Handle custom domain shortlink: Name.t.me -> https://t.me/Name
+    custom_tg = re.match(r'^([a-zA-Z0-9_]{4,})\.t\.me(?:/(.*))?$', clean, re.IGNORECASE)
+    if custom_tg:
+        ch = custom_tg.group(1)
+        path = custom_tg.group(2)
+        return f"https://t.me/{ch}{'/' + path if path else ''}"
+
+    # Handle t.me/ or telegram.me/ without https://
+    if re.match(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/', clean, re.IGNORECASE):
+        return f"https://{clean}"
+
+    # Handle standard web URLs without scheme: www.example.com or domain.com
+    if not clean.startswith(("http://", "https://", "tg://")):
+        if re.match(r'^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}', clean):
+            return f"https://{clean}"
+        return None
+
+    return clean
+
 # -------------------- DB HELPERS & TIME PARSER -------------------- #
 def parse_time_to_seconds(time_str: str) -> int:
     if not time_str: return 1
@@ -246,10 +289,10 @@ def create_button(text: str, url: str, style=None):
 
 def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboardMarkup]:
     """
-    Supports versatile button syntax with color options:
+    Supports versatile button syntax with color options and robust URL sanitization:
     1. Outside bracket: [Text + URL] r  (or red, g, green, b, blue)
     2. Inside bracket:  [Text + URL + r] or [Text | URL | red]
-    3. Handles both real URLs and {link} placeholders cleanly.
+    3. Handles real URLs, deep-links, @handles, and {link} placeholders cleanly.
     """
     if not text:
         return None
@@ -267,21 +310,26 @@ def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboard
             if len(parts) < 2:
                 continue
             label = parts[0].strip()
-            link = parts[1].strip()
-            
+            raw_link = parts[1].strip()
+
+            # Sanitize and validate the button URL
+            clean_link = sanitize_button_url(raw_link)
+            if not clean_link:
+                logger.warning(f"[AUTO-BUTTON] Skipping button with invalid URL: '{raw_link}' (Label: '{label}')")
+                continue
+
             # Resolve color code from inside or outside the bracket
             color_str = ""
             if len(parts) >= 3:
                 color_str = parts[2].strip().lower()
             elif outside_color:
                 color_str = outside_color.strip().lower()
-            
+
             btn_style = COLOR_MAP.get(color_str, None)
-            
             styled_label = apply_font(label, font_style) if font_style != "normal" else label
-            btns.append(create_button(styled_label, link, style=btn_style))
-            
-        if btns: 
+            btns.append(create_button(styled_label, clean_link, style=btn_style))
+
+        if btns:
             keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
@@ -515,8 +563,8 @@ async def auto_button_handler(client, message: Message):
         if not template_text: 
             return await message.reply_text("❌ Template text provide karein! Message ko reply karke `/abset` karein.")
             
-        # Test parse replacing {link} with dummy URL to validate syntax and colors
-        test_text = re.sub(r"\{link\}", "https://t.me/PreviewDemo", template_text, flags=re.IGNORECASE)
+        # Test parse replacing all {link}/{url} variations with dummy URL
+        test_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", "https://t.me/PreviewDemo", template_text, flags=re.IGNORECASE)
         test_keyboard = parse_buttons(test_text, font_style=font_style)
         if not test_keyboard: 
             return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + {link}] r` ya `[Text + URL] b`")
@@ -587,7 +635,7 @@ async def auto_button_handler(client, message: Message):
             if not replacement_link:
                 return await message.reply_text("❌ Replacement link wale message ko reply karein!")
 
-            final_text = re.sub(r"\{link\}", replacement_link, template, flags=re.IGNORECASE)
+            final_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", replacement_link, template, flags=re.IGNORECASE)
             keyboard = parse_buttons(final_text, font_style=font_style)
             if not keyboard: 
                 return await message.reply_text("❌ Buttons parse nahi ho paye.")
@@ -777,9 +825,13 @@ async def process_channel_post_auto_buttons(client, message: Message):
             template = template_data.get("template", "")
             font_style = template_data.get("font_style", "sim")
             
-            # Substitute {link} with the extracted destination link
-            final_btn_text = re.sub(r"\{link\}", extracted_link, template, flags=re.IGNORECASE)
+            # Substitute {link}, {url}, { link } with the extracted destination link
+            final_btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_link, template, flags=re.IGNORECASE)
             keyboard = parse_buttons(final_btn_text, font_style=font_style)
+
+            if not keyboard:
+                logger.error("[AUTO-BUTTON] No valid buttons generated after parsing template!")
+                return
             
             # Format the remaining caption with chosen font
             final_caption_html = apply_font_to_caption(cleaned_html, font_style) if font_style != "normal" else cleaned_html
