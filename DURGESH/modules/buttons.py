@@ -421,6 +421,28 @@ def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 # -------------------- ADVANCED ENTITY TO HTML CONVERTER -------------------- #
+def _extract_entity_type(entity) -> str:
+    """Safely extracts entity type name as lowercase string across all Pyrogram/Pyrofork versions."""
+    etype = getattr(entity, "type", None)
+    if etype is None:
+        return ""
+    if isinstance(etype, str):
+        return etype.lower()
+    # If enum has a string name (e.g. BOLD, TEXT_LINK, MENTION)
+    name = getattr(etype, "name", None)
+    if isinstance(name, str):
+        return name.lower()
+    # If .value is a string
+    val = getattr(etype, "value", None)
+    if isinstance(val, str):
+        return val.lower()
+    # If .value or etype is a class/type object (e.g. raw.types.MessageEntityMention)
+    if isinstance(val, type):
+        return val.__name__.lower()
+    if isinstance(etype, type):
+        return etype.__name__.lower()
+    return str(etype).lower()
+
 def get_html_text(text: str, entities: list) -> str:
     if not text: return ""
     if not entities: return text
@@ -436,7 +458,7 @@ def get_html_text(text: str, entities: list) -> str:
         end = (e.offset + e.length) * 2
         start_tag, end_tag = "", ""
         
-        type_str = getattr(e.type, "value", str(e.type)).lower()
+        type_str = _extract_entity_type(e)
         if "bold" in type_str:
             start_tag, end_tag = "<b>", "</b>"
         elif "italic" in type_str:
@@ -446,16 +468,19 @@ def get_html_text(text: str, entities: list) -> str:
         elif "pre" in type_str:
             lang = getattr(e, "language", "") or ""
             start_tag, end_tag = f'<pre><code class="language-{lang}">', "</code></pre>"
-        elif "text_link" in type_str and getattr(e, "url", None):
-            start_tag, end_tag = f'<a href="{e.url}">', "</a>"
-        elif "text_mention" in type_str and getattr(e, "user", None):
+        elif "text_link" in type_str or "texturl" in type_str:
+            url = getattr(e, "url", "") or ""
+            start_tag, end_tag = f'<a href="{url}">', "</a>"
+        elif ("text_mention" in type_str or "mentionname" in type_str) and getattr(e, "user", None):
             start_tag, end_tag = f'<a href="tg://user?id={e.user.id}">', "</a>"
-        elif "strikethrough" in type_str:
+        elif "strikethrough" in type_str or "strike" in type_str:
             start_tag, end_tag = "<s>", "</s>"
         elif "underline" in type_str:
             start_tag, end_tag = "<u>", "</u>"
         elif "spoiler" in type_str:
             start_tag, end_tag = "<spoiler>", "</spoiler>"
+        elif "expandable_blockquote" in type_str or "expandableblockquote" in type_str:
+            start_tag, end_tag = "<blockquote expandable>", "</blockquote>"
         elif "blockquote" in type_str:
             start_tag, end_tag = "<blockquote>", "</blockquote>"
 
