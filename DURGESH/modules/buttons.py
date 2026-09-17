@@ -101,31 +101,24 @@ def sanitize_button_url(url: str) -> Optional[str]:
     """
     if not url:
         return None
-    # Strip quotes, angle brackets, and backticks
     clean = url.strip().strip("'\"<>`").strip()
-    # Remove zero-width spaces and invisible characters
     clean = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0\r\n]+', '', clean).strip()
 
-    # Reject unreplaced placeholders
     if re.match(r'^\{.*\}$', clean):
         return None
 
-    # Handle @username -> https://t.me/username
     if clean.startswith("@"):
         return f"https://t.me/{clean.lstrip('@')}"
 
-    # Handle custom domain shortlink: Name.t.me -> https://t.me/Name
     custom_tg = re.match(r'^([a-zA-Z0-9_]{4,})\.t\.me(?:/(.*))?$', clean, re.IGNORECASE)
     if custom_tg:
         ch = custom_tg.group(1)
         path = custom_tg.group(2)
         return f"https://t.me/{ch}{'/' + path if path else ''}"
 
-    # Handle t.me/ or telegram.me/ without https://
     if re.match(r'^(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/', clean, re.IGNORECASE):
         return f"https://{clean}"
 
-    # Handle standard web URLs without scheme: www.example.com or domain.com
     if not clean.startswith(("http://", "https://", "tg://")):
         if re.match(r'^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}', clean):
             return f"https://{clean}"
@@ -150,7 +143,6 @@ async def add_auth_channel(chat_id: int, forward_tag: bool = True, auto_accept_t
     }
     if admin_id:
         payload["admin_id"] = str(admin_id)
-    # Upsert matching both string and integer chat_id formats
     await authdb.update_one(
         {"$or": [{"chat_id": cid_str}, {"chat_id": chat_id}]}, 
         {"$set": payload}, 
@@ -203,14 +195,9 @@ async def is_channel_authed(chat_id: int, username: Optional[str] = None) -> boo
     return bool(await get_channel_settings(chat_id, username))
 
 async def save_button_template(user_id: int, template: str, font_style: str = "sim"):
-    """
-    Saves the button template for the specific admin AND updates the active global template
-    so automatic channel posting always gets the latest colors and styles.
-    """
     uid_str = str(user_id)
     now = time.time()
     
-    # 1. Update user specific template
     await btn_templatedb.update_one(
         {"$or": [{"user_id": uid_str}, {"user_id": user_id}]}, 
         {"$set": {
@@ -222,7 +209,6 @@ async def save_button_template(user_id: int, template: str, font_style: str = "s
         upsert=True
     )
     
-    # 2. Update global active template reference (guarantees auto-buttons pick latest color format)
     await btn_templatedb.update_one(
         {"_id": "GLOBAL_ACTIVE_TEMPLATE"},
         {"$set": {
@@ -234,7 +220,6 @@ async def save_button_template(user_id: int, template: str, font_style: str = "s
         upsert=True
     )
     
-    # 3. Synchronize authorized channels to link with this active admin
     try:
         await authdb.update_many(
             {}, 
@@ -248,22 +233,17 @@ async def get_button_template(user_id: Union[int, str]) -> Optional[Dict]:
     tmpl = await btn_templatedb.find_one({"$or": [{"user_id": uid_str}, {"user_id": int(uid_str) if uid_str.isdigit() else uid_str}]})
     if tmpl and tmpl.get("template"):
         return tmpl
-    # Fallback to global active template
     return await btn_templatedb.find_one({"_id": "GLOBAL_ACTIVE_TEMPLATE"})
 
-async def get_effective_template(chat_id: int, username: Optional[str] = None) -> Optional[Dict]:
-    """
-    Finds the active button template:
-    1. Channel specific admin template if set.
-    2. Global active template updated via /abset.
-    3. Most recently updated template across all users in DB.
-    """
+async def get_effective_template(chat_id: Optional[int] = None, username: Optional[str] = None) -> Optional[Dict]:
+    """Finds the active button template with fallback to global active and latest updated."""
     global_tmpl = await btn_templatedb.find_one({"_id": "GLOBAL_ACTIVE_TEMPLATE"})
     
-    settings = await get_channel_settings(chat_id, username)
     admin_tmpl = None
-    if settings and settings.get("admin_id"):
-        admin_tmpl = await get_button_template(settings["admin_id"])
+    if chat_id:
+        settings = await get_channel_settings(chat_id, username)
+        if settings and settings.get("admin_id"):
+            admin_tmpl = await get_button_template(settings["admin_id"])
         
     latest_tmpl = await btn_templatedb.find_one(
         {"template": {"$exists": True, "$ne": ""}}, 
@@ -273,14 +253,12 @@ async def get_effective_template(chat_id: int, username: Optional[str] = None) -
     candidates = [t for t in [global_tmpl, admin_tmpl, latest_tmpl] if t and t.get("template")]
     if not candidates:
         return None
-    # Prioritize candidate with the most recent updated_at timestamp
     candidates.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
     return candidates[0]
 
 async def delete_button_template(user_id: int):
     uid_str = str(user_id)
     await btn_templatedb.delete_many({"$or": [{"user_id": uid_str}, {"user_id": user_id}]})
-    # Reset global active if it was created by this user
     await btn_templatedb.delete_many({"_id": "GLOBAL_ACTIVE_TEMPLATE", "user_id": uid_str})
 
 # -------------------- LINK & ID EXTRACTORS -------------------- #
@@ -531,7 +509,7 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
         cleaned_raw = html_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
         return sanitize_button_url(extracted_url), re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
 
-    # Pattern 2: Standard prefixed link: -https://... or 👉 https://...
+    # Pattern 2: Standard prefixed link: -https://... (handles ?start= query params properly)
     prefix_pattern = re.compile(
         r'(?:^|\n|\s)[-–—~•👉🔗>]\s*(https?://[^\s<>"\']+|t\.me/[^\s<>"\']+)',
         re.IGNORECASE
@@ -543,7 +521,7 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
         cleaned_raw = prefix_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
         return sanitize_button_url(extracted_url), re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
 
-    # Pattern 3: Standalone URL on its own line (without prefix)
+    # Pattern 3: Standalone URL on its own line
     standalone_line_pattern = re.compile(
         r'(?:^|\n)\s*(https?://[^\s<>"\']+|t\.me/[^\s<>"\']+)\s*(?:\n|$)',
         re.IGNORECASE
@@ -941,20 +919,29 @@ async def process_channel_post_auto_buttons(client, message: Message):
     chat_id = message.chat.id
     chat_username = message.chat.username
 
-    # Step 1: Verify channel authorization; auto-authorize if bot is admin
+    # Step 1: Ensure channel is authorized; auto-authorize if channel has bot
     settings = await get_channel_settings(chat_id, chat_username)
     if not settings:
         try:
-            member = await client.get_chat_member(chat_id, "me")
+            bot_user = getattr(client, "me", None) or await client.get_me()
+            bot_id = bot_user.id
+            member = await client.get_chat_member(chat_id, bot_id)
             priv = getattr(member, "privileges", None)
             if priv and (getattr(priv, "can_post_messages", False) or getattr(priv, "can_edit_messages", False)):
                 await add_auth_channel(chat_id, forward_tag=False, auto_accept_time="1s")
                 settings = await get_channel_settings(chat_id, chat_username)
         except Exception as e:
-            logger.debug(f"[AUTO-BUTTON] Chat {chat_id} is not authorized: {e}")
+            logger.debug(f"[AUTO-BUTTON] Channel auto-auth check: {e}")
 
+    # If still not in DB, create standard in-memory default settings so posts are never dropped
     if not settings:
-        return
+        settings = {
+            "chat_id": str(chat_id),
+            "forward_tag_removal": False,
+            "auto_accept_time": "1s",
+            "auto_accept_seconds": 1
+        }
+        await add_auth_channel(chat_id, forward_tag=False, auto_accept_time="1s")
 
     raw_text = message.caption or message.text or ""
     entities = message.caption_entities or message.entities or []
@@ -962,7 +949,6 @@ async def process_channel_post_auto_buttons(client, message: Message):
     # Step 2: Fetch the active button template
     template_data = await get_effective_template(chat_id, chat_username)
     if not template_data:
-        # Fallback to any recent template in database
         template_data = await btn_templatedb.find_one({"template": {"$exists": True, "$ne": ""}}, sort=[("updated_at", -1), ("_id", -1)])
         if not template_data:
             return
@@ -975,9 +961,8 @@ async def process_channel_post_auto_buttons(client, message: Message):
     html_text = get_html_text(raw_text, entities)
     extracted_link, cleaned_raw, cleaned_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
 
-    # If the template requires a {link} placeholder, but no link was found in the post, skip
+    # If template requires {link} and no trigger link was in post, do not attach buttons
     if needs_link and not extracted_link:
-        # If forwarded and tag removal is enabled, still clean forward tag
         if settings.get("forward_tag_removal") and is_forwarded(message):
             await asyncio.sleep(0.3)
             await safe_copy_and_delete(message, chat_id)
@@ -999,13 +984,14 @@ async def process_channel_post_auto_buttons(client, message: Message):
     final_caption_html = apply_font_to_caption(cleaned_html, font_style) if font_style != "normal" else cleaned_html
     final_caption_raw = apply_font_to_caption(cleaned_raw, font_style) if font_style != "normal" else cleaned_raw
 
-    # Step 6: If forward tag removal is enabled and message is forwarded, copy and delete
+    # Step 6: If forward tag removal is enabled and message is forwarded, clone and delete
     if settings.get("forward_tag_removal") and is_forwarded(message):
         await asyncio.sleep(0.3)
         await safe_copy_and_delete(message, chat_id, custom_caption=final_caption_html, reply_markup=keyboard)
         return
 
-    # Step 7: Edit the post in place with buttons and formatted text
+    # Step 7: Attempt editing the post in place with buttons and formatted text
+    edit_successful = False
     try:
         if message.media:
             await client.edit_message_caption(
@@ -1023,14 +1009,14 @@ async def process_channel_post_auto_buttons(client, message: Message):
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
-        # Re-enforce reply markup to guarantee color rendering
         try:
             await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
         except Exception:
             pass
-        logger.info(f"[AUTO-BUTTON] Successfully auto-attached buttons to post {message.id}!")
+        edit_successful = True
+        logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} with buttons!")
     except Exception as html_err:
-        logger.warning(f"[AUTO-BUTTON] HTML edit failed: {html_err}. Retrying with plain text...")
+        logger.warning(f"[AUTO-BUTTON] HTML edit attempt failed: {html_err}. Retrying plain text...")
         try:
             if message.media:
                 await client.edit_message_caption(
@@ -1052,24 +1038,23 @@ async def process_channel_post_auto_buttons(client, message: Message):
                 await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
             except Exception:
                 pass
-            logger.info(f"[AUTO-BUTTON] Successfully auto-attached buttons (Plain Text) to post {message.id}!")
+            edit_successful = True
+            logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} (Plain text)!")
         except Exception as plain_err:
-            err_str = str(plain_err).upper()
-            if "MESSAGE_NOT_MODIFIED" in err_str:
-                try:
-                    await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
-                except Exception:
-                    pass
-            elif any(k in err_str for k in ["MESSAGE_AUTHOR_REQUIRED", "CHAT_ADMIN_REQUIRED", "CHAT_WRITE_FORBIDDEN"]):
-                logger.warning("[AUTO-BUTTON] Bot lacks edit rights of others. Reposting to apply buttons...")
-                await safe_copy_and_delete(
-                    message, 
-                    chat_id, 
-                    custom_caption=final_caption_html, 
-                    reply_markup=keyboard
-                )
-            else:
-                logger.error(f"[AUTO-BUTTON] Failed to update post {message.id}: {plain_err}")
+            logger.warning(f"[AUTO-BUTTON] Direct editing failed: {plain_err}. Reposting with buttons...")
+
+    # Step 8: If editing failed (e.g. Bot lacks edit rights of other admins), repost message with buttons and delete old post
+    if not edit_successful:
+        try:
+            await safe_copy_and_delete(
+                message,
+                chat_id,
+                custom_caption=final_caption_html,
+                reply_markup=keyboard
+            )
+            logger.info(f"[AUTO-BUTTON] Successfully reposted post {message.id} with buttons attached!")
+        except Exception as repost_err:
+            logger.error(f"[AUTO-BUTTON] Repost fallback also failed: {repost_err}")
 
 @app.on_message((filters.channel | filters.group) & ~filters.service)
 async def channel_post_listener(client, message: Message):
