@@ -112,21 +112,26 @@ BUTTON_REGEX = re.compile(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\
 def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -> Optional[InlineKeyboardMarkup]:
     """
     Parses button templates with support for:
-    - Stacked syntax: [Btn 1][Btn 2] or [Btn 1] [Btn 2]
+    - 1-2-1 Grid Layout: Buttons on the same line stay in the same row.
+    - Newlines separate rows.
     - Titles containing '+' like '18+ Zone'
-    - Trailing and internal color tags (e.g., [Text + link] r)
+    - Trailing and internal color tags
     - Default Danger/Red color style
     """
     if not text:
         return None
-    lines = re.sub(r'\]\s*\[', ']\n[', text.strip()).splitlines()
+
+    # Preserve multi-button rows on the same line; split rows by explicit newlines
+    raw_lines = text.strip().splitlines()
     keyboard = []
 
-    for line in lines:
-        if not line.strip():
+    for line in raw_lines:
+        line_clean = line.strip()
+        if not line_clean:
             continue
+
         row = []
-        for content, out_color in BUTTON_REGEX.findall(line):
+        for content, out_color in BUTTON_REGEX.findall(line_clean):
             color_suffix = (out_color or "").strip().lower()
 
             match = URL_REGEX.search(content)
@@ -388,42 +393,42 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
 
 def apply_font_to_caption(caption: str, font_style: str) -> str:
     if not caption or font_style == "normal":
-        return caption
+        return hyperlink_syntax_realm(caption)
+    
     pattern = re.compile(r'(<[^>]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
     lines = []
     for line in caption.split('\n'):
+        # Keep credit lines untouched by font style changes
+        lower_line = line.lower()
+        if "syntaxrealm" in lower_line or "made by" in lower_line:
+            lines.append(line)
+            continue
+
         parts = pattern.split(line)
         styled = [p if (p.startswith('<') and p.endswith('>')) or p.startswith(('http', 't.me', 'tg://')) else apply_font(p, font_style) for p in parts if p]
         lines.append(''.join(styled))
-    return '\n'.join(lines)
+    
+    formatted_caption = '\n'.join(lines)
+    return hyperlink_syntax_realm(formatted_caption)
 
-async def safe_copy_and_delete(msg: Message, chat_id: int, caption: Optional[str] = None, reply_markup: Optional[InlineKeyboardMarkup] = None) -> Optional[Message]:
-    markup = reply_markup if reply_markup is not None else msg.reply_markup
-    cap = caption if caption is not None else (msg.caption or "")
-    for _ in range(3):
-        try:
-            if msg.media:
-                sent = await msg.copy(chat_id, caption=cap, parse_mode=ParseMode.HTML, reply_markup=markup)
-            else:
-                sent = await app.send_message(chat_id, text=caption or msg.text or "", parse_mode=ParseMode.HTML, reply_markup=markup)
-            await asyncio.sleep(0.4)
-            await msg.delete()
-            return sent
-        except Exception as e:
-            if "FLOOD_WAIT" in str(e):
-                await asyncio.sleep(int(re.search(r'\d+', str(e)).group()) + 2)
-                continue
-            # Retry copy in plain text if HTML parsing caused the failure
-            try:
-                if msg.media:
-                    sent = await msg.copy(chat_id, caption=cap, parse_mode=None, reply_markup=markup)
-                else:
-                    sent = await app.send_message(chat_id, text=caption or msg.text or "", parse_mode=None, reply_markup=markup)
-                await asyncio.sleep(0.4)
-                await msg.delete()
-                return sent
-            except Exception:
-                pass
+def hyperlink_syntax_realm(text: str) -> str:
+    """Hyperlinks SyntaxRealm references to https://t.me/SyntaxRealm."""
+    if not text:
+        return text
+
+    # If already hyperlinked, leave it
+    if 'href="https://t.me/SyntaxRealm"' in text:
+        return text
+
+    # Replaces 'SyntaxRealm.t.me', '˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼' with hyperlinked version
+    credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
+    
+    # Matches variations of SyntaxRealm credit line
+    credit_pattern = re.compile(
+        r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?",
+        re.IGNORECASE
+    )
+    return credit_pattern.sub(credit_link, text)
             logger.error(f"[AUTO-BUTTON] safe_copy_and_delete failed: {e}")
             break
     return None
