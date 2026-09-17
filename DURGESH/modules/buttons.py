@@ -429,6 +429,43 @@ def hyperlink_syntax_realm(text: str) -> str:
         re.IGNORECASE
     )
     return credit_pattern.sub(credit_link, text)
+
+async def safe_copy_and_delete(
+    msg: Message,
+    chat_id: int,
+    caption: Optional[str] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None
+) -> Optional[Message]:
+    """Clones the post to remove forward tags or replace posts when edit rights are restricted."""
+    markup = reply_markup if reply_markup is not None else msg.reply_markup
+    for _ in range(5):
+        try:
+            if msg.media:
+                c = caption if caption is not None else (msg.caption or "")
+                sent = await msg.copy(
+                    chat_id,
+                    caption=c,
+                    parse_mode=ParseMode.HTML if caption else None,
+                    reply_markup=markup
+                )
+            else:
+                t = caption if caption is not None else (msg.text or "")
+                sent = await app.send_message(
+                    chat_id=chat_id,
+                    text=t,
+                    parse_mode=ParseMode.HTML if caption else None,
+                    reply_markup=markup,
+                    disable_web_page_preview=False
+                )
+            await asyncio.sleep(0.4)
+            await msg.delete()
+            return sent
+        except Exception as e:
+            if "FLOOD_WAIT" in str(e).upper():
+                wait_match = re.search(r'(\d+)', str(e))
+                wait_sec = int(wait_match.group(1)) + 2 if wait_match else 5
+                await asyncio.sleep(wait_sec)
+                continue
             logger.error(f"[AUTO-BUTTON] safe_copy_and_delete failed: {e}")
             break
     return None
