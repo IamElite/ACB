@@ -112,15 +112,14 @@ BUTTON_REGEX = re.compile(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\
 def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -> Optional[InlineKeyboardMarkup]:
     """
     Parses button templates with support for:
-    - Stacked syntax: [Btn 1][Btn 2]
+    - Stacked syntax: [Btn 1][Btn 2] or [Btn 1] [Btn 2]
     - Titles containing '+' like '18+ Zone'
     - Trailing and internal color tags (e.g., [Text + link] r)
     - Default Danger/Red color style
     """
     if not text:
         return None
-    # Normalize adjacent buttons onto newlines
-    lines = re.sub(r'\]\[', ']\n[', text.strip()).splitlines()
+    lines = re.sub(r'\]\s*\[', ']\n[', text.strip()).splitlines()
     keyboard = []
 
     for line in lines:
@@ -129,8 +128,7 @@ def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -
         row = []
         for content, out_color in BUTTON_REGEX.findall(line):
             color_suffix = (out_color or "").strip().lower()
-            
-            # Locate the actual URL inside the button content
+
             match = URL_REGEX.search(content)
             if match:
                 label = re.sub(r'[\s+|:–—\->]+$', '', content[:match.start()]).strip()
@@ -222,7 +220,6 @@ async def save_button_template(user_id: int, template: str, font_style: str = "s
         {"$set": {"user_id": uid_str, "template": template, "font_style": font_style, "updated_at": now}},
         upsert=True
     )
-    # Maintain global active record for quick fallback in channel post events
     await btn_templatedb.update_one(
         {"_id": "GLOBAL_ACTIVE_TEMPLATE"},
         {"$set": {"template": template, "font_style": font_style, "updated_at": now, "admin_id": uid_str}},
@@ -355,44 +352,38 @@ def get_html_text(text: str, entities: list) -> str:
     res += text_16[last_idx:].decode('utf-16-le')
     return res
 
-# STRICT DASH REQUIREMENT: Only triggers if link has a preceding dash: -, –, or —
 TRIGGER_HTML_REGEX = re.compile(
-    r'(?:^|\n|\s)[-–—]\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
+    r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
     re.IGNORECASE
 )
 TRIGGER_PLAIN_REGEX = re.compile(
-    r'(?:^|\n|\s)[-–—]\s*(https?://[^\s<>"\']+)',
+    r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*(https?://[^\s<>"\']+|tg://[^\s<>"\']+|t\.me/[^\s<>"\']+)',
     re.IGNORECASE
 )
 
 def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tuple[Optional[str], str, str]:
     """
-    Strictly checks for trigger links prefixed with a dash (-, –, or —).
-    Plain links without a dash are ignored completely to prevent touching regular chat/group messages.
+    Strictly checks for trigger links prefixed with a dash or trigger symbol (-, –, —, •, ▪, etc.).
+    Ordinary URLs without a dash are ignored so group chat discussions are completely untouched.
     """
     if not raw_text and not html_text:
         return None, "", ""
     target_text = html_text or raw_text
 
-    # Match HTML hyperlinked trigger strictly requiring dash prefix: -<a href="...">...</a>
+    # 1. Hyperlinked HTML tag with dash prefix: -<a href="...">...</a>
     if m_html := TRIGGER_HTML_REGEX.search(target_text):
         url = m_html.group(1).strip()
-        cl_html = (target_text[:m_html.start()] + target_text[m_html.end():]).strip()
-        if raw_text:
-            cl_raw = TRIGGER_HTML_REGEX.sub('', raw_text).strip()
-            cl_raw = TRIGGER_PLAIN_REGEX.sub('', cl_raw).strip()
-        else:
-            cl_raw = cl_html
+        cl_html = TRIGGER_HTML_REGEX.sub('', target_text).strip()
+        cl_raw = TRIGGER_HTML_REGEX.sub('', raw_text).strip() if raw_text else cl_html
         return url, cl_raw, cl_html
 
-    # Match raw trigger link strictly requiring dash prefix: -https://... or - https://...
+    # 2. Plain trigger link with dash prefix: -https://...
     if m_plain := TRIGGER_PLAIN_REGEX.search(target_text):
         url = m_plain.group(1).strip()
-        cl_html = (target_text[:m_plain.start()] + target_text[m_plain.end():]).strip()
-        cl_raw = (raw_text[:m_plain.start()] + raw_text[m_plain.end():]).strip() if raw_text else cl_html
+        cl_html = TRIGGER_PLAIN_REGEX.sub('', target_text).strip()
+        cl_raw = TRIGGER_PLAIN_REGEX.sub('', raw_text).strip() if raw_text else cl_html
         return url, cl_raw, cl_html
 
-    # Strictly NO match if there is no dash prefix
     return None, raw_text, html_text
 
 def apply_font_to_caption(caption: str, font_style: str) -> str:
@@ -422,6 +413,17 @@ async def safe_copy_and_delete(msg: Message, chat_id: int, caption: Optional[str
             if "FLOOD_WAIT" in str(e):
                 await asyncio.sleep(int(re.search(r'\d+', str(e)).group()) + 2)
                 continue
+            # Retry copy in plain text if HTML parsing caused the failure
+            try:
+                if msg.media:
+                    sent = await msg.copy(chat_id, caption=cap, parse_mode=None, reply_markup=markup)
+                else:
+                    sent = await app.send_message(chat_id, text=caption or msg.text or "", parse_mode=None, reply_markup=markup)
+                await asyncio.sleep(0.4)
+                await msg.delete()
+                return sent
+            except Exception:
+                pass
             logger.error(f"[AUTO-BUTTON] safe_copy_and_delete failed: {e}")
             break
     return None
@@ -614,7 +616,7 @@ async def dispatch_channel_post(client, message: Message):
     if not raw_text:
         return
 
-    # Check for trigger link strictly with - prefix
+    # Check for trigger link strictly with a leading dash or trigger symbol
     entities = message.caption_entities or message.entities
     html_text = get_html_text(raw_text, entities)
     extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
@@ -626,22 +628,18 @@ async def dispatch_channel_post(client, message: Message):
         # If it's a forwarded post in an authorized channel, remove forward tag if enabled
         if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
             await safe_copy_and_delete(message, chat_id)
-        # Otherwise completely ignore regular chat and group messages
+        # Completely ignore ordinary group chat and channel messages that lack a trigger
         return
 
-    # Auto authorize channel if bot is administrator
+    # If trigger link is present but channel wasn't authorized, initialize default settings
     if not settings:
-        try:
-            bot_id = client.me.id if getattr(client, "me", None) else (await client.get_me()).id
-            member = await client.get_chat_member(chat_id, bot_id)
-            if member.privileges and (member.privileges.can_post_messages or member.privileges.can_edit_messages):
-                await add_auth_channel(chat_id, forward_tag=True, auto_accept_time="1s")
-                settings = await get_channel_settings(chat_id, message.chat.username)
-        except Exception:
-            pass
-
-    if not settings:
-        return
+        settings = {
+            "chat_id": str(chat_id),
+            "forward_tag_removal": True,
+            "auto_accept_time": "1s",
+            "auto_accept_seconds": 1
+        }
+        asyncio.create_task(add_auth_channel(chat_id, forward_tag=True, auto_accept_time="1s"))
 
     tmpl_data = await get_effective_template(chat_id, message.chat.username)
     if not tmpl_data or not tmpl_data.get("template"):
@@ -656,13 +654,15 @@ async def dispatch_channel_post(client, message: Message):
         return
 
     final_caption = apply_font_to_caption(cl_html, font_style) if font_style != "normal" else cl_html
+    raw_caption = apply_font_to_caption(cl_raw, font_style) if font_style != "normal" else cl_raw
 
     # Forward tag removal branch
-    if settings.get("forward_tag_removal") and is_forwarded_post(message):
+    if settings.get("forward_tag_removal", True) and is_forwarded_post(message):
         await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
         return
 
-    # In-place edit branch
+    # In-place edit branch with fallback
+    edit_success = False
     try:
         if message.media:
             await client.edit_message_caption(
@@ -680,17 +680,41 @@ async def dispatch_channel_post(client, message: Message):
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
+        edit_success = True
     except Exception as err:
         err_str = str(err).upper()
         if "MESSAGE_NOT_MODIFIED" in err_str:
             try:
                 await client.edit_message_reply_markup(chat_id, message.id, reply_markup=keyboard)
+                edit_success = True
             except Exception:
                 pass
-        elif any(k in err_str for k in ["MESSAGE_AUTHOR_REQUIRED", "CHAT_ADMIN_REQUIRED", "CHAT_WRITE_FORBIDDEN"]):
-            await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
         else:
-            logger.error(f"[AUTO-BUTTON] Channel post edit error: {err}")
+            # Fallback: Retry edit with plain text if HTML tags failed
+            try:
+                if message.media:
+                    await client.edit_message_caption(
+                        chat_id=chat_id,
+                        message_id=message.id,
+                        caption=raw_caption,
+                        parse_mode=None,
+                        reply_markup=keyboard
+                    )
+                else:
+                    await client.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message.id,
+                        text=raw_caption,
+                        parse_mode=None,
+                        reply_markup=keyboard
+                    )
+                edit_success = True
+            except Exception:
+                pass
+
+    # If in-place editing failed (e.g. MESSAGE_AUTHOR_REQUIRED), clone post with buttons and delete old post
+    if not edit_success:
+        await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
 
 @app.on_message((filters.channel | filters.group) & ~filters.service)
 async def channel_post_listener(client, message: Message):
