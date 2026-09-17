@@ -2,7 +2,7 @@ import re
 import asyncio
 import time
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List, Union
 import pyrogram
 from pyrogram import filters
 from pyrogram.types import (
@@ -13,7 +13,7 @@ from pyrogram.enums import ParseMode
 logger = logging.getLogger("buttons")
 logging.basicConfig(level=logging.INFO)
 
-# -------------------- BUTTON STYLE ENUM IMPORT -------------------- #
+# -------------------- BUTTON STYLE ENUM & COLOR MAP -------------------- #
 try:
     from pyrogram.enums import ButtonStyle
     RED_STYLE = ButtonStyle.DANGER
@@ -25,14 +25,17 @@ except ImportError:
     BLUE_STYLE = "primary"
 
 COLOR_MAP = {
+    # Red / Danger
     "r": RED_STYLE,
     "red": RED_STYLE,
     "danger": RED_STYLE,
     "d": RED_STYLE,
+    # Green / Success
     "g": GREEN_STYLE,
     "green": GREEN_STYLE,
     "success": GREEN_STYLE,
     "s": GREEN_STYLE,
+    # Blue / Primary
     "b": BLUE_STYLE,
     "blue": BLUE_STYLE,
     "primary": BLUE_STYLE,
@@ -195,8 +198,14 @@ async def is_channel_authed(chat_id: int, username: Optional[str] = None) -> boo
     return bool(await get_channel_settings(chat_id, username))
 
 async def save_button_template(user_id: int, template: str, font_style: str = "sim"):
+    """
+    Saves the button template for the specific admin AND updates the active global template
+    so automatic channel posting always gets the latest colors and styles.
+    """
     uid_str = str(user_id)
     now = time.time()
+    
+    # 1. Update user specific template
     await btn_templatedb.update_one(
         {"$or": [{"user_id": uid_str}, {"user_id": user_id}]}, 
         {"$set": {
@@ -207,43 +216,71 @@ async def save_button_template(user_id: int, template: str, font_style: str = "s
         }}, 
         upsert=True
     )
-    # Link this admin to authorized channels that don't have an admin_id set yet
+    
+    # 2. Update global active template reference (guarantees auto-buttons pick latest color format)
+    await btn_templatedb.update_one(
+        {"_id": "GLOBAL_ACTIVE_TEMPLATE"},
+        {"$set": {
+            "template": template,
+            "font_style": font_style,
+            "user_id": uid_str,
+            "updated_at": now
+        }},
+        upsert=True
+    )
+    
+    # 3. Synchronize authorized channels to link with this active admin
     try:
         await authdb.update_many(
-            {"$or": [{"admin_id": {"$exists": False}}, {"admin_id": None}, {"admin_id": ""}]},
+            {}, 
             {"$set": {"admin_id": uid_str}}
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[TEMPLATE-SYNC] Error updating channel admin_id: {e}")
 
-async def get_button_template(user_id: int) -> Optional[Dict]:
+async def get_button_template(user_id: Union[int, str]) -> Optional[Dict]:
     uid_str = str(user_id)
-    return await btn_templatedb.find_one({"$or": [{"user_id": uid_str}, {"user_id": user_id}]})
+    tmpl = await btn_templatedb.find_one({"$or": [{"user_id": uid_str}, {"user_id": int(uid_str) if uid_str.isdigit() else uid_str}]})
+    if tmpl and tmpl.get("template"):
+        return tmpl
+    # Fallback to global active template
+    return await btn_templatedb.find_one({"_id": "GLOBAL_ACTIVE_TEMPLATE"})
 
 async def get_effective_template(chat_id: int, username: Optional[str] = None) -> Optional[Dict]:
-    """Finds the button template configured for the channel's admin or falls back to the most recently updated template."""
+    """
+    Finds the active button template:
+    1. Channel specific admin template if set.
+    2. Global active template updated via /abset.
+    3. Most recently updated template across all users in DB.
+    """
+    global_tmpl = await btn_templatedb.find_one({"_id": "GLOBAL_ACTIVE_TEMPLATE"})
+    
     settings = await get_channel_settings(chat_id, username)
+    admin_tmpl = None
     if settings and settings.get("admin_id"):
-        tmpl = await get_button_template(settings["admin_id"])
-        if tmpl and tmpl.get("template"):
-            return tmpl
-            
-    # Always fetch the most recently updated template from database
-    return await btn_templatedb.find_one(
+        admin_tmpl = await get_button_template(settings["admin_id"])
+        
+    latest_tmpl = await btn_templatedb.find_one(
         {"template": {"$exists": True, "$ne": ""}}, 
         sort=[("updated_at", -1), ("_id", -1)]
     )
+    
+    candidates = [t for t in [global_tmpl, admin_tmpl, latest_tmpl] if t and t.get("template")]
+    if not candidates:
+        return None
+    # Prioritize candidate with the most recent updated_at timestamp
+    candidates.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
+    return candidates[0]
 
 async def delete_button_template(user_id: int):
     uid_str = str(user_id)
     await btn_templatedb.delete_many({"$or": [{"user_id": uid_str}, {"user_id": user_id}]})
+    # Reset global active if it was created by this user
+    await btn_templatedb.delete_many({"_id": "GLOBAL_ACTIVE_TEMPLATE", "user_id": uid_str})
 
 # -------------------- LINK & ID EXTRACTORS -------------------- #
 def get_forward_chat(msg: Optional[Message]):
-    """
-    Safely retrieves the forwarded chat object supporting modern 
-    message.forward_origin without triggering deprecation warnings.
-    """
+    """Safely retrieves the forwarded chat object without triggering deprecation warnings."""
     if not msg:
         return None
     origin = getattr(msg, "forward_origin", None)
@@ -254,7 +291,6 @@ def get_forward_chat(msg: Optional[Message]):
         if chat_obj:
             return getattr(chat_obj, "sender_chat", chat_obj)
             
-    # Only fallback to legacy property if forward_origin attribute does not exist on the message
     if not hasattr(msg, "forward_origin"):
         try:
             return getattr(msg, "forward_from_chat", None)
@@ -275,55 +311,77 @@ def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
         return chat_id, int(priv.group(2))
     return None, None
 
-def create_button(text: str, url: str, style=None):
+def create_button(text: str, url: str, style=None) -> InlineKeyboardButton:
+    """Creates an InlineKeyboardButton ensuring style is applied across all Pyrogram/Pyrofork forks."""
     if style is not None:
+        # 1. Try passing the style enum directly
         try:
             return InlineKeyboardButton(text, url=url, style=style)
-        except (TypeError, ValueError):
-            try:
-                style_val = getattr(style, "value", str(style).lower())
-                return InlineKeyboardButton(text, url=url, style=style_val)
-            except Exception:
-                pass
+        except Exception:
+            pass
+        # 2. Try passing style value/string (e.g. 'danger', 'success', 'primary')
+        try:
+            style_val = getattr(style, "value", str(style).lower())
+            return InlineKeyboardButton(text, url=url, style=style_val)
+        except Exception:
+            pass
+        # 3. Fallback for forks using 'color' attribute
+        try:
+            return InlineKeyboardButton(text, url=url, color=style)
+        except Exception:
+            pass
     return InlineKeyboardButton(text, url=url)
 
 def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboardMarkup]:
     """
-    Supports versatile button syntax with color options and robust URL sanitization:
-    1. Outside bracket: [Text + URL] r  (or red, g, green, b, blue)
-    2. Inside bracket:  [Text + URL + r] or [Text | URL | red]
-    3. Handles real URLs, deep-links, @handles, and {link} placeholders cleanly.
+    Versatile parser that correctly parses button colors for both /ab and Auto-Buttons:
+    - Outside bracket syntax: [Text + URL] r   (or red, danger, g, green, b, blue, etc.)
+    - Outside bracket with separator: [Text + URL] : r  or [Text + URL] - r or [Text + URL] [r]
+    - Inside bracket syntax: [Text + URL + r] or [Text | URL | red] or [Text -> URL -> b]
+    - Preserves complex links like https://t.me/+InviteHash without breaking on '+' sign.
     """
     if not text:
         return None
     keyboard = []
+    
+    # Delimiter for inner button parts that avoids splitting inside 't.me/+' invite links
+    inner_split_regex = re.compile(r'\s+(?:\+|\->|\|)\s+|\s*\|\s*|\s*->\s*|(?<!t\.me/)\s*\+\s*')
+
     for line in text.strip().splitlines():
         line = line.strip()
         if not line:
             continue
         btns = []
-        # Matches [Content] with optional trailing color like: [Button + link] r
-        raw_matches = re.findall(r'\[([^\]]+)\](?:\s*[:\-]?\s*([a-zA-Z]+))?', line)
-        for content, outside_color in raw_matches:
-            # Splits label, link, and optional internal color
-            parts = re.split(r'\s*(?:\+|\->|\|)\s*', content.strip())
+        
+        # Matches [Content] with optional trailing color indicator outside brackets
+        raw_matches = re.findall(
+            r'\[([^\]]+)\](?:\s*(?:[:\-–—|]|\b)\s*(?:\[([a-zA-Z]+)\]|\(([a-zA-Z]+)\)|([a-zA-Z]+)))?', 
+            line
+        )
+        
+        for match in raw_matches:
+            content = match[0].strip()
+            # Capture outside color from [color], (color), or plain color
+            outside_color = (match[1] or match[2] or match[3] or "").strip().lower()
+            
+            parts = inner_split_regex.split(content)
             if len(parts) < 2:
                 continue
+                
             label = parts[0].strip()
             raw_link = parts[1].strip()
 
-            # Sanitize and validate the button URL
             clean_link = sanitize_button_url(raw_link)
             if not clean_link:
                 logger.warning(f"[AUTO-BUTTON] Skipping button with invalid URL: '{raw_link}' (Label: '{label}')")
                 continue
 
-            # Resolve color code from inside or outside the bracket
+            # Determine color from inside brackets (parts[2]) or outside brackets
             color_str = ""
             if len(parts) >= 3:
                 color_str = parts[2].strip().lower()
             elif outside_color:
-                color_str = outside_color.strip().lower()
+                color_str = outside_color
 
             btn_style = COLOR_MAP.get(color_str, None)
             styled_label = apply_font(label, font_style) if font_style != "normal" else label
@@ -331,6 +389,7 @@ def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboard
 
         if btns:
             keyboard.append(btns)
+            
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 # -------------------- ADVANCED ENTITY TO HTML CONVERTER -------------------- #
@@ -418,7 +477,7 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
         extracted_url = match_html.group(1).strip()
         cleaned_html = html_pattern.sub('', target_text).strip()
         cleaned_raw = html_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
-        return extracted_url, cleaned_raw, cleaned_html
+        return extracted_url, re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
 
     # Pattern 2: Standard plain link: -https://... (with optional space and dash variants)
     plain_pattern = re.compile(
@@ -430,7 +489,7 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
         extracted_url = match_plain.group(1).strip()
         cleaned_html = plain_pattern.sub('', target_text).strip()
         cleaned_raw = plain_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
-        return extracted_url, cleaned_raw, cleaned_html
+        return extracted_url, re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
 
     return None, raw_text, html_text
 
@@ -533,13 +592,13 @@ async def auto_button_handler(client, message: Message):
         if not data: 
             return await message.reply_text("❌ Koi template set nahi hai! Pehle `/abset` karein.")
         template_text, font_style = data["template"], data.get("font_style", "sim")
-        preview_text = template_text.replace("{link}", "https://t.me/PreviewDemo")
+        preview_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", "https://t.me/PreviewDemo", template_text, flags=re.IGNORECASE)
         preview_keyboard = parse_buttons(preview_text, font_style=font_style)
         font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
         return await message.reply_text(
             f"📋 **Aapka Button Template:**\n`{template_text}`\n\n"
             f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
-            f"👇 **Button Preview:**",
+            f"👇 **Button Preview (Color & Format):**",
             reply_markup=preview_keyboard
         )
 
@@ -567,7 +626,7 @@ async def auto_button_handler(client, message: Message):
         test_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", "https://t.me/PreviewDemo", template_text, flags=re.IGNORECASE)
         test_keyboard = parse_buttons(test_text, font_style=font_style)
         if not test_keyboard: 
-            return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + {link}] r` ya `[Text + URL] b`")
+            return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + {link}] r` ya `[Text + {link} + red]`")
             
         await save_button_template(message.from_user.id, template_text, font_style)
         
@@ -596,14 +655,6 @@ async def auto_button_handler(client, message: Message):
             if url_match: 
                 replacement_link = url_match.group(1)
             
-        template_data = await get_button_template(message.from_user.id)
-        if not template_data: 
-            template_data = await btn_templatedb.find_one({"template": {"$exists": True, "$ne": ""}}, sort=[("_id", -1)])
-            if not template_data:
-                return await message.reply_text("❌ Pehle `/abset` se template set karein!")
-            
-        template, font_style = template_data["template"], template_data.get("font_style", "sim")
-            
         channel_id, msg_id = extract_chat_and_msg_id(target_link)
         if not channel_id:
             pub_match = re.match(r"https?://t\.me/([a-zA-Z0-9_]{5,})/(\d+)", target_link)
@@ -617,6 +668,15 @@ async def auto_button_handler(client, message: Message):
             
         if not await is_channel_authed(channel_id): 
             return await message.reply_text("❌ Channel authorized nahi hai.")
+
+        # Always fetch effective template with newest colors
+        template_data = await get_effective_template(channel_id)
+        if not template_data: 
+            template_data = await get_button_template(message.from_user.id)
+            if not template_data:
+                return await message.reply_text("❌ Pehle `/abset` se template set karein!")
+            
+        template, font_style = template_data["template"], template_data.get("font_style", "sim")
                 
         try:
             target_msg = await client.get_messages(channel_id, msg_id)
@@ -650,7 +710,7 @@ async def auto_button_handler(client, message: Message):
                             chat_id=channel_id, 
                             message_id=msg_id, 
                             caption=new_text,
-                            parse_mode=ParseMode.HTML,
+                            parse_mode=ParseMode.HTML, 
                             reply_markup=keyboard 
                         )
                     else:
@@ -658,9 +718,14 @@ async def auto_button_handler(client, message: Message):
                             chat_id=channel_id, 
                             message_id=msg_id, 
                             text=new_text,
-                            parse_mode=ParseMode.HTML,
+                            parse_mode=ParseMode.HTML, 
                             reply_markup=keyboard
                         )
+                    # Re-enforce reply markup to ensure button color rendering
+                    try:
+                        await client.edit_message_reply_markup(chat_id=channel_id, message_id=msg_id, reply_markup=keyboard)
+                    except Exception:
+                        pass
                     await message.reply_text("✅ **Buttons & Font Successfully Applied!**")
                 except Exception as edit_err:
                     if "MESSAGE_NOT_MODIFIED" in str(edit_err).upper():
@@ -726,10 +791,7 @@ async def change_button_with_link(client, message: Message):
 
 # -------------------- FORWARD TAG REMOVER & AUTO APPROVE -------------------- #
 def is_forwarded(message: Message) -> bool:
-    """
-    Checks if a message is forwarded without triggering deprecation warnings
-    on modern Pyrogram / Pyrofork installations.
-    """
+    """Checks if a message is forwarded without deprecation warnings."""
     if hasattr(message, "forward_origin"):
         return message.forward_origin is not None
     try:
@@ -748,10 +810,11 @@ async def safe_copy_and_delete(
     reply_markup: Optional[InlineKeyboardMarkup] = None,
     parse_mode: Optional[ParseMode] = ParseMode.HTML
 ) -> Optional[Message]:
-    """Clones the post to remove forward tags or replace posts when edit rights are restricted."""
+    """Clones the post to remove forward tags and re-applies exact button styles."""
     markup = reply_markup if reply_markup is not None else msg.reply_markup
     for _ in range(5):
         try:
+            sent = None
             if msg.media:
                 caption = custom_caption if custom_caption is not None else (msg.caption.html if msg.caption else "")
                 sent = await msg.copy(
@@ -771,6 +834,14 @@ async def safe_copy_and_delete(
                     disable_notification=True, 
                     disable_web_page_preview=False
                 )
+            
+            # Explicitly enforce reply markup with colors after copying to avoid Telegram client stripping
+            if sent and markup:
+                try:
+                    await app.edit_message_reply_markup(chat_id=chat_id, message_id=sent.id, reply_markup=markup)
+                except Exception:
+                    pass
+                    
             await asyncio.sleep(0.4)
             await msg.delete()
             return sent
@@ -787,7 +858,7 @@ async def safe_copy_and_delete(
 async def process_channel_post_auto_buttons(client, message: Message):
     """
     Detects trigger links (-https...) in captions/text, strips them,
-    replaces {link} in the button template, and attaches buttons to the post.
+    replaces {link} in the active button template, and attaches colored buttons to the post.
     """
     chat_id = message.chat.id
     chat_username = message.chat.username
@@ -798,8 +869,11 @@ async def process_channel_post_auto_buttons(client, message: Message):
     raw_text = message.caption or message.text or ""
     entities = message.caption_entities or message.entities
 
-    # Quick check for trigger prefix: -, –, or — followed by optional spaces and http
-    has_trigger = bool(re.search(r'(?:^|\n|\s)[-–—]\s*(?:https?://|<a\s)', raw_text, re.IGNORECASE))
+    # Quick check for trigger prefix in plain or hyperlinked text
+    html_target = (message.caption.html if hasattr(message.caption, "html") and message.caption else None) or \
+                  (message.text.html if hasattr(message.text, "html") and message.text else None) or raw_text
+                  
+    has_trigger = bool(re.search(r'(?:^|\n|\s)[-–—]\s*(?:https?://|<a\s)', html_target, re.IGNORECASE))
     
     if has_trigger:
         logger.info(f"[AUTO-BUTTON] Found trigger link pattern in chat {chat_id} msg {message.id}")
@@ -817,6 +891,8 @@ async def process_channel_post_auto_buttons(client, message: Message):
         
         if extracted_link:
             logger.info(f"[AUTO-BUTTON] Extracted Link: {extracted_link}")
+            
+            # Fetch active effective template with accurate color styles
             template_data = await get_effective_template(chat_id, chat_username)
             if not template_data:
                 logger.warning(f"[AUTO-BUTTON] No button template found in database! Please set via /abset.")
@@ -825,7 +901,7 @@ async def process_channel_post_auto_buttons(client, message: Message):
             template = template_data.get("template", "")
             font_style = template_data.get("font_style", "sim")
             
-            # Substitute {link}, {url}, { link } with the extracted destination link
+            # Substitute {link}, {url}, { target } with the destination link
             final_btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_link, template, flags=re.IGNORECASE)
             keyboard = parse_buttons(final_btn_text, font_style=font_style)
 
@@ -843,7 +919,7 @@ async def process_channel_post_auto_buttons(client, message: Message):
                 await safe_copy_and_delete(message, chat_id, custom_caption=final_caption_html, reply_markup=keyboard)
                 return
 
-            # Attempt editing the post in place with HTML formatting
+            # Attempt editing the post in place with HTML formatting and styled keyboard
             edit_success = False
             try:
                 if message.media:
@@ -862,11 +938,15 @@ async def process_channel_post_auto_buttons(client, message: Message):
                         parse_mode=ParseMode.HTML,
                         reply_markup=keyboard
                     )
+                # Re-enforce reply markup to guarantee color rendering
+                try:
+                    await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
+                except Exception:
+                    pass
                 edit_success = True
-                logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} with buttons (HTML)!")
+                logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} with colored buttons (HTML)!")
             except Exception as html_err:
                 logger.warning(f"[AUTO-BUTTON] HTML edit error: {html_err}. Retrying with plain text...")
-                # Fallback: Retry with plain text without HTML parse mode
                 try:
                     if message.media:
                         await client.edit_message_caption(
@@ -884,18 +964,20 @@ async def process_channel_post_auto_buttons(client, message: Message):
                             parse_mode=None,
                             reply_markup=keyboard
                         )
+                    try:
+                        await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
+                    except Exception:
+                        pass
                     edit_success = True
-                    logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} with buttons (Plain Text)!")
+                    logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} with colored buttons (Plain Text)!")
                 except Exception as plain_err:
                     err_str = str(plain_err).upper()
                     if "MESSAGE_NOT_MODIFIED" in err_str and keyboard:
                         try:
                             await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
                             edit_success = True
-                            logger.info(f"[AUTO-BUTTON] Successfully updated reply markup for post {message.id}!")
                         except Exception:
                             pass
-                    # If editing fails due to author rights, repost without link and delete old message
                     elif any(k in err_str for k in ["MESSAGE_AUTHOR_REQUIRED", "CHAT_ADMIN_REQUIRED", "CHAT_WRITE_FORBIDDEN"]):
                         logger.warning("[AUTO-BUTTON] Bot lacks edit rights of others. Reposting to apply buttons...")
                         await safe_copy_and_delete(
