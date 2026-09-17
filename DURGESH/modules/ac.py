@@ -28,7 +28,6 @@ DEFAULT_CAPTION = """<blockquote><b>
 # Default sticker file_id for episode separator
 DEFAULT_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
 
-
 def extract_episode(fname: str) -> str:
     """Extract episode number from filename."""
     for pat, grp in (
@@ -62,7 +61,6 @@ def extract_season(fname: str) -> str:
         if m:
             return m.group(1).zfill(2)
     return "N/A"
-
 
 def extract_quality(text: str) -> str:
     """Extract video quality from filename."""
@@ -112,67 +110,71 @@ def format_duration(duration: Optional[int]) -> str:
     except Exception:
         return "N/A"
 
-
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
     """
-    Normalizes input into an integer peer or username string.
-    Fixes [400 BOT_METHOD_INVALID] caused by passing string IDs to get_chat().
+    Normalizes input into an integer channel ID or username string.
+    Crucial for Kurigram: Any numeric ID MUST be an integer, otherwise
+    Pyrogram / Kurigram assumes it's a phone number and calls contacts.ResolvePhone.
     """
     if isinstance(val, int):
         return val
 
     clean = str(val).strip()
 
-    # If it's a telegram channel / message link:
+    # Link format: t.me/c/2906536289 or https://t.me/c/2906536289/123
     m_link = re.search(r'(?:https?://)?t\.me/c/(\d+)', clean)
     if m_link:
         return int(f"-100{m_link.group(1)}")
 
+    # Public username link: t.me/username
     m_user = re.search(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)', clean)
     if m_user:
         return f"@{m_user.group(1)}"
 
-    # If username
+    # Public username string
     if clean.startswith("@"):
         return clean
 
-    # Strip negative signs and format as integer channel ID
-    digits_only = clean.lstrip('-')
-    if digits_only.startswith("100"):
-        return int(f"-{digits_only}")
-    elif digits_only.isdigit():
-        return int(f"-100{digits_only}")
+    # Clean leading dashes and ensure -100 prefix as an integer
+    clean_digits = clean.lstrip('-')
+    if clean_digits.isdigit():
+        if clean_digits.startswith("100"):
+            return int(f"-{clean_digits}")
+        return int(f"-100{clean_digits}")
 
     return clean
 
 
 async def resolve_target_channel(client, message: Message, arg_index: int = 1) -> Tuple[Optional[str], Optional[Chat]]:
     """
-    Safely resolves the channel from either command arguments or replied message.
-    Returns (channel_id_str, chat_obj).
+    Safely resolves the channel ID and Chat object from commands or replied messages.
+    Bypasses contacts.ResolvePhone by utilizing message.reply_to_message objects directly.
     """
-    raw_target = None
-
-    if len(message.command) > arg_index:
-        raw_target = message.command[arg_index]
-    elif message.reply_to_message:
+    # Check if replied to a forwarded message from a channel
+    if message.reply_to_message:
         r = message.reply_to_message
         if r.forward_from_chat:
-            raw_target = r.forward_from_chat.id
-        elif r.sender_chat:
-            raw_target = r.sender_chat.id
-        elif r.text or r.caption:
-            content = (r.text or r.caption).strip().split()
-            if content:
-                raw_target = content[0]
+            return str(r.forward_from_chat.id), r.forward_from_chat
+        if r.sender_chat:
+            return str(r.sender_chat.id), r.sender_chat
+
+    # Extract target argument from message command or replied text
+    raw_target = None
+    if len(message.command) > arg_index:
+        raw_target = message.command[arg_index]
+    elif message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
+        body = (message.reply_to_message.text or message.reply_to_message.caption).strip().split()
+        if body:
+            raw_target = body[0]
 
     if raw_target is None:
         return None, None
 
     peer = normalize_channel_peer(raw_target)
+    
+    # Resolve chat using the normalized peer
     chat = await client.get_chat(peer)
     return str(chat.id), chat
-
 
 async def add_auth_channel(chat_id: str):
     await authchanneldb.update_one(
@@ -233,7 +235,6 @@ async def load_episode_header_setting(chat_id: str) -> bool:
 async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": str(chat_id)})
 
-
 @app.on_message(filters.command(["capauth", "ca"]))
 async def auth_channel_cmd(client, message: Message):
     try:
@@ -241,22 +242,22 @@ async def auth_channel_cmd(client, message: Message):
             channel_id, chat = await resolve_target_channel(client, message, arg_index=1)
         except Exception as e:
             return await message.reply_text(
-                f"⚠️ <b>Error:</b> Cannot access channel!\n\n"
+                f"⚠️ <b>Error: Cannot access channel!</b>\n\n"
                 f"<b>Reason:</b> {html.escape(str(e))}\n\n"
-                f"<i>Make sure bot is added as an admin with full rights in the channel.</i>",
+                f"<i>Make sure the bot has been added as an admin with post privileges in the channel.</i>",
                 parse_mode=ParseMode.HTML
             )
 
         if not channel_id or not chat:
             return await message.reply_text(
                 "❌ <b>Usage:</b>\n\n"
-                "• <code>/capauth &lt;channel_id or @username&gt;</code>\n"
-                "• Reply to any forwarded message from the channel with <code>/ca</code>\n\n"
+                "• <code>/ca &lt;channel_id or @username&gt;</code>\n"
+                "• Or reply to a forwarded message from the channel with <code>/ca</code>\n\n"
                 "<b>Example:</b> <code>/ca -1003100372976</code>",
                 parse_mode=ParseMode.HTML
             )
 
-        chat_name = chat.title or "Unknown"
+        chat_name = chat.title or "Authorized Channel"
 
         await add_auth_channel(channel_id)
         await save_caption(channel_id, DEFAULT_CAPTION, DEFAULT_STICKER, True)
@@ -265,12 +266,12 @@ async def auth_channel_cmd(client, message: Message):
             f"✅ <b>Channel Authorized Successfully!</b>\n\n"
             f"📺 <b>Channel:</b> {html.escape(chat_name)}\n"
             f"🆔 <b>ID:</b> <code>{channel_id}</code>\n\n"
-            f"⚙️ <b>Default settings applied:</b>\n"
+            f"⚙️ <b>Default Settings Configured:</b>\n"
             f"• Episode Header: <code>ON ✅</code>\n"
-            f"• Default Separator Sticker: <code>Set ✅</code>\n\n"
-            f"<b>Commands:</b>\n"
-            f"• <code>/gc {channel_id}</code> — View settings\n"
-            f"• <code>/sc {channel_id} &lt;caption&gt; -ep off</code> — Turn off headers",
+            f"• Separator Sticker: <code>Set ✅</code>\n\n"
+            f"<b>Useful Commands:</b>\n"
+            f"• <code>/gc {channel_id}</code> — View current settings\n"
+            f"• <code>/sc {channel_id} &lt;caption&gt; -ep off</code> — Change caption & settings",
             parse_mode=ParseMode.HTML
         )
 
@@ -279,7 +280,6 @@ async def auth_channel_cmd(client, message: Message):
             f"❌ <b>Error:</b> {html.escape(str(e))}",
             parse_mode=ParseMode.HTML
         )
-
 
 @app.on_message(filters.command(["capunauth", "cua"]))
 async def unauth_channel_cmd(client, message: Message):
@@ -325,7 +325,6 @@ async def list_auth_channels_cmd(client, message: Message):
         text = "✅ <b>Authorized Channels:</b>\n\n"
         for i, ch_id in enumerate(channels, 1):
             try:
-                # Must be int to prevent contacts.ResolvePhone error in Kurigram
                 peer = int(ch_id) if str(ch_id).lstrip("-").isdigit() else ch_id
                 chat = await client.get_chat(peer)
                 name = chat.title or "Unknown"
@@ -342,7 +341,6 @@ async def list_auth_channels_cmd(client, message: Message):
             parse_mode=ParseMode.HTML
         )
 
-
 @app.on_message(filters.command(["setcaption", "sc"]))
 async def set_caption_cmd(client, message: Message):
     try:
@@ -352,8 +350,7 @@ async def set_caption_cmd(client, message: Message):
                 "<b>Examples:</b>\n"
                 "1. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt;</code>\n"
                 "2. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -ep off</code>\n"
-                "3. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA...</code>\n"
-                "4. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA... -ep off</code>\n\n"
+                "3. <code>/sc -1001234567890 &lt;b&gt;{filename}&lt;/b&gt; -s CAACAgUA...</code>\n\n"
                 "<b>Variables:</b> {filename}, {filesize}, {duration}, {quality}, {season}, {episode}",
                 parse_mode=ParseMode.HTML
             )
@@ -361,7 +358,6 @@ async def set_caption_cmd(client, message: Message):
         raw_id = message.command[1]
         peer = normalize_channel_peer(raw_id)
 
-        # Convert to string id used in db
         if isinstance(peer, int):
             channel_id = str(peer)
         else:
@@ -386,14 +382,12 @@ async def set_caption_cmd(client, message: Message):
 
         full_text = parts[2].strip()
 
-        # Parse -s and -ep flags flexibly using regex
         sticker_match = re.search(r'(?:^|\s)-s\s+([^\s]+)', full_text)
         ep_match = re.search(r'(?:^|\s)-ep\s+(on|off)\b', full_text, re.IGNORECASE)
 
         sticker_id = sticker_match.group(1).strip() if sticker_match else None
         episode_header = (ep_match.group(1).lower() == "on") if ep_match else None
 
-        # Clean caption text by removing flag segments
         cleaned_caption = full_text
         if sticker_match:
             cleaned_caption = cleaned_caption.replace(sticker_match.group(0), "")
@@ -418,7 +412,6 @@ async def set_caption_cmd(client, message: Message):
             f"❌ <b>Error:</b> {html.escape(str(e))}",
             parse_mode=ParseMode.HTML
         )
-
 
 @app.on_message(filters.command(["getcaption", "gc"]))
 async def get_caption_cmd(client, message: Message):
@@ -561,7 +554,6 @@ async def remove_caption_cmd(client, message: Message):
             parse_mode=ParseMode.HTML
         )
 
-
 bulk_bucket: dict[str, list[Message]] = defaultdict(list)
 bulk_tasks: dict[str, asyncio.Task] = {}
 BULK_WAIT = 3
@@ -593,7 +585,6 @@ def _int_episode(fname: str) -> int:
         pass
     return 9999
 
-
 @app.on_message(
     (filters.document | filters.video) &
     filters.channel,
@@ -623,7 +614,6 @@ async def handle_bulk_channel(client, message: Message):
     except Exception as e:
         print(f"❌ Handler error: {e}")
 
-
 async def _flush_bulk(client, chat_id: str, delay: int):
     try:
         await asyncio.sleep(delay)
@@ -643,7 +633,6 @@ async def _flush_bulk(client, chat_id: str, delay: int):
     if not caption_template:
         return
 
-    # Group by episode
     episodes = defaultdict(list)
     for msg in messages:
         fname = None
@@ -661,9 +650,9 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             episodes[ep_num].append(msg)
 
     sorted_episodes = sorted(episodes.items())
+    int_chat_id = int(chat_id)
 
     for ep_num, msgs_in_episode in sorted_episodes:
-        # Sort by quality within episode
         sorted_msgs = sorted(
             msgs_in_episode,
             key=lambda m: _quality_val(
@@ -673,11 +662,10 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             )
         )
 
-        # Send episode header at START if valid episode
         if episode_header_enabled and ep_num != 9999:
             try:
                 await client.send_message(
-                    int(chat_id),
+                    int_chat_id,
                     f"<b>━━━ Episode {ep_num:02d} ━━━</b>",
                     parse_mode=ParseMode.HTML
                 )
@@ -687,7 +675,6 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             except Exception as e:
                 print(f"❌ Header error: {e}")
 
-        # Process all files
         for msg in sorted_msgs:
             filename = filesize = duration = None
 
@@ -720,7 +707,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
             try:
                 await msg.copy(
-                    int(chat_id),
+                    int_chat_id,
                     caption=cap,
                     parse_mode=ParseMode.HTML
                 )
@@ -733,7 +720,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 await asyncio.sleep(fw.value)
                 try:
                     await msg.copy(
-                        int(chat_id),
+                        int_chat_id,
                         caption=cap,
                         parse_mode=ParseMode.HTML
                     )
@@ -743,16 +730,14 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             except Exception as e:
                 print(f"❌ Copy error: {e}")
 
-        # Send sticker separator at END
         if ep_num != 9999:
             try:
-                await client.send_sticker(int(chat_id), sticker_id)
+                await client.send_sticker(int_chat_id, sticker_id)
                 await asyncio.sleep(1)
             except FloodWait as fw:
                 await asyncio.sleep(fw.value)
             except Exception as e:
                 print(f"❌ Sticker error: {e}")
-
 
 @app.on_message(filters.private & filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
@@ -788,15 +773,13 @@ async def auto_cap_cmd(client, message: Message):
 
         if src1_internal != src2_internal:
             return await message.reply_text(
-                "❌ <b>Start aur end links alag channels ke hain! Dono same channel se hone chahiye.</b>",
+                "❌ <b>Start and end links must be from the same channel!</b>",
                 parse_mode=ParseMode.HTML
             )
 
         from_channel = int(f"-100{src1_internal}")
-
         dest_peer = normalize_channel_peer(dest_arg)
 
-        # Resolve destination chat
         try:
             dest_chat = await client.get_chat(dest_peer)
             real_dest_id = str(dest_chat.id)
@@ -804,7 +787,7 @@ async def auto_cap_cmd(client, message: Message):
         except Exception as e:
             return await message.reply_text(
                 f"⚠️ <b>Cannot access destination channel:</b> {html.escape(str(e))}\n\n"
-                f"Make sure bot is admin in the destination channel.",
+                f"Make sure bot is an admin in the destination channel.",
                 parse_mode=ParseMode.HTML
             )
 
@@ -834,7 +817,7 @@ async def auto_cap_cmd(client, message: Message):
         except Exception as e:
             return await message.reply_text(
                 f"⚠️ <b>Cannot access source channel:</b> {html.escape(str(e))}\n\n"
-                f"Make sure bot is member/admin in the source channel.",
+                f"Make sure the bot is a member/admin in the source channel.",
                 parse_mode=ParseMode.HTML
             )
 
