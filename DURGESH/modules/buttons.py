@@ -107,6 +107,8 @@ def create_button(text: str, url: str, style=RED_STYLE) -> InlineKeyboardButton:
                 pass
     return InlineKeyboardButton(text, url=url)
 
+BUTTON_REGEX = re.compile(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\)?\]?)?')
+
 def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -> Optional[InlineKeyboardMarkup]:
     """
     Parses button templates with support for:
@@ -120,9 +122,6 @@ def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -
     # Normalize adjacent buttons onto newlines
     lines = re.sub(r'\]\[', ']\n[', text.strip()).splitlines()
     keyboard = []
-
-    # Exactly 2 capturing groups: Group 1 = content, Group 2 = trailing color tag
-    BUTTON_REGEX = re.compile(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\)?\]?)?')
 
     for line in lines:
         if not line.strip():
@@ -356,25 +355,44 @@ def get_html_text(text: str, entities: list) -> str:
     res += text_16[last_idx:].decode('utf-16-le')
     return res
 
+# STRICT DASH REQUIREMENT: Only triggers if link has a preceding dash: -, –, or —
+TRIGGER_HTML_REGEX = re.compile(
+    r'(?:^|\n|\s)[-–—]\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
+    re.IGNORECASE
+)
+TRIGGER_PLAIN_REGEX = re.compile(
+    r'(?:^|\n|\s)[-–—]\s*(https?://[^\s<>"\']+)',
+    re.IGNORECASE
+)
+
 def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tuple[Optional[str], str, str]:
+    """
+    Strictly checks for trigger links prefixed with a dash (-, –, or —).
+    Plain links without a dash are ignored completely to prevent touching regular chat/group messages.
+    """
     if not raw_text and not html_text:
         return None, "", ""
     target_text = html_text or raw_text
 
-    # Match HTML hyperlinked trigger
-    if m_html := re.search(r'(?:^|\n|\s)[-–—•~👉🔗]?\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>', target_text, re.IGNORECASE):
+    # Match HTML hyperlinked trigger strictly requiring dash prefix: -<a href="...">...</a>
+    if m_html := TRIGGER_HTML_REGEX.search(target_text):
         url = m_html.group(1).strip()
-        cl_html = target_text[:m_html.start()] + target_text[m_html.end():]
-        cl_raw = raw_text[:m_html.start()] + raw_text[m_html.end():] if raw_text else cl_html
-        return url, cl_raw.strip(), cl_html.strip()
+        cl_html = (target_text[:m_html.start()] + target_text[m_html.end():]).strip()
+        if raw_text:
+            cl_raw = TRIGGER_HTML_REGEX.sub('', raw_text).strip()
+            cl_raw = TRIGGER_PLAIN_REGEX.sub('', cl_raw).strip()
+        else:
+            cl_raw = cl_html
+        return url, cl_raw, cl_html
 
-    # Match raw trigger link: -https://... or plain URL
-    if m_plain := re.search(r'(?:^|\n|\s)[-–—•~👉🔗]?\s*(https?://[^\s<>"\']+)', target_text, re.IGNORECASE):
+    # Match raw trigger link strictly requiring dash prefix: -https://... or - https://...
+    if m_plain := TRIGGER_PLAIN_REGEX.search(target_text):
         url = m_plain.group(1).strip()
-        cl_html = target_text[:m_plain.start()] + target_text[m_plain.end():]
-        cl_raw = raw_text[:m_plain.start()] + raw_text[m_plain.end():] if raw_text else cl_html
-        return url, cl_raw.strip(), cl_html.strip()
+        cl_html = (target_text[:m_plain.start()] + target_text[m_plain.end():]).strip()
+        cl_raw = (raw_text[:m_plain.start()] + raw_text[m_plain.end():]).strip() if raw_text else cl_html
+        return url, cl_raw, cl_html
 
+    # Strictly NO match if there is no dash prefix
     return None, raw_text, html_text
 
 def apply_font_to_caption(caption: str, font_style: str) -> str:
@@ -540,7 +558,7 @@ async def manual_ab_cmd(client, message: Message):
                 original_entities = []
 
         if not replacement_link and "{link}" in template.lower():
-            return await message.reply_text("❌ Replacement link nahi mila! Link reply karein ya post me link dalein.")
+            return await message.reply_text("❌ Replacement link nahi mila! Link reply karein ya post me -link dalein.")
 
         btn_str = re.sub(r"\{\s*(?:link|url|target)\s*\}", replacement_link or "", template, flags=re.IGNORECASE)
         keyboard = parse_buttons(btn_str, font_style=font_style, default_color=RED_STYLE)
@@ -592,9 +610,26 @@ async def change_buttons_cmd(client, message: Message):
 
 async def dispatch_channel_post(client, message: Message):
     chat_id = message.chat.id
+    raw_text = message.caption or message.text or ""
+    if not raw_text:
+        return
+
+    # Check for trigger link strictly with - prefix
+    entities = message.caption_entities or message.entities
+    html_text = get_html_text(raw_text, entities)
+    extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
+
     settings = await get_channel_settings(chat_id, message.chat.username)
 
-    # Auto authorize if bot is admin
+    # If NO trigger link is present:
+    if not extracted_url:
+        # If it's a forwarded post in an authorized channel, remove forward tag if enabled
+        if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
+            await safe_copy_and_delete(message, chat_id)
+        # Otherwise completely ignore regular chat and group messages
+        return
+
+    # Auto authorize channel if bot is administrator
     if not settings:
         try:
             bot_id = client.me.id if getattr(client, "me", None) else (await client.get_me()).id
@@ -608,28 +643,13 @@ async def dispatch_channel_post(client, message: Message):
     if not settings:
         return
 
-    raw_text = message.caption or message.text or ""
-    entities = message.caption_entities or message.entities
-    html_text = get_html_text(raw_text, entities)
-
-    extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
     tmpl_data = await get_effective_template(chat_id, message.chat.username)
-
     if not tmpl_data or not tmpl_data.get("template"):
-        if settings.get("forward_tag_removal") and is_forwarded_post(message):
-            await safe_copy_and_delete(message, chat_id)
-        return
-
-    needs_link = bool(re.search(r"\{\s*(?:link|url|target)\s*\}", tmpl_data.get("template", ""), re.IGNORECASE))
-    if needs_link and not extracted_url:
-        if settings.get("forward_tag_removal") and is_forwarded_post(message):
-            await safe_copy_and_delete(message, chat_id)
         return
 
     font_style = tmpl_data.get("font_style", "sim")
     btn_text = tmpl_data.get("template", "")
-    if extracted_url:
-        btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_url, btn_text, flags=re.IGNORECASE)
+    btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_url, btn_text, flags=re.IGNORECASE)
 
     keyboard = parse_buttons(btn_text, font_style=font_style, default_color=RED_STYLE)
     if not keyboard:
