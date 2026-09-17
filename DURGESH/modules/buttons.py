@@ -19,13 +19,13 @@ try:
     RED_STYLE = ButtonStyle.DANGER
     GREEN_STYLE = ButtonStyle.SUCCESS
     BLUE_STYLE = ButtonStyle.PRIMARY
-except ImportError:
+except (ImportError, AttributeError):
     RED_STYLE = "danger"
     GREEN_STYLE = "success"
     BLUE_STYLE = "primary"
 
 COLOR_MAP = {
-    # Red / Danger
+    # Red / Danger (Default)
     "r": RED_STYLE,
     "red": RED_STYLE,
     "danger": RED_STYLE,
@@ -40,6 +40,11 @@ COLOR_MAP = {
     "blue": BLUE_STYLE,
     "primary": BLUE_STYLE,
     "p": BLUE_STYLE,
+    # Normal / Unstyled
+    "none": None,
+    "normal": None,
+    "default": None,
+    "off": None,
 }
 
 from DURGESH import app
@@ -311,8 +316,11 @@ def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
         return chat_id, int(priv.group(2))
     return None, None
 
-def create_button(text: str, url: str, style=None) -> InlineKeyboardButton:
-    """Creates an InlineKeyboardButton ensuring style is applied across all Pyrogram/Pyrofork forks."""
+def create_button(text: str, url: str, style=RED_STYLE) -> InlineKeyboardButton:
+    """Creates an InlineKeyboardButton defaulting to Red (danger) across all Pyrogram/Pyrofork forks."""
+    if style in ["none", "normal", "default", "off"]:
+        style = None
+
     if style is not None:
         # 1. Try passing the style enum directly
         try:
@@ -321,7 +329,7 @@ def create_button(text: str, url: str, style=None) -> InlineKeyboardButton:
             pass
         # 2. Try passing style value/string (e.g. 'danger', 'success', 'primary')
         try:
-            style_val = getattr(style, "value", str(style).lower())
+            style_val = getattr(style, "value", str(style)).lower()
             return InlineKeyboardButton(text, url=url, style=style_val)
         except Exception:
             pass
@@ -330,66 +338,108 @@ def create_button(text: str, url: str, style=None) -> InlineKeyboardButton:
             return InlineKeyboardButton(text, url=url, color=style)
         except Exception:
             pass
+        # 4. Attach attribute directly if supported
+        try:
+            btn = InlineKeyboardButton(text, url=url)
+            style_val = getattr(style, "value", str(style)).lower()
+            try:
+                setattr(btn, "style", style_val)
+            except Exception:
+                pass
+            return btn
+        except Exception:
+            pass
     return InlineKeyboardButton(text, url=url)
 
-def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboardMarkup]:
+# Regex to detect URLs, placeholders, @handles, or domain links without splitting on '+' in button labels
+URL_OR_PLACEHOLDER_REGEX = re.compile(
+    r'(\{\s*(?:link|url|target)\s*\}|https?://[^\s<>"\']+|tg://[^\s<>"\']+|t\.me/[^\s<>"\']+|@[a-zA-Z0-9_]{4,}|(?:[a-zA-Z0-9_\-]+\.)+[a-zA-Z]{2,}/[^\s<>"\']*)',
+    re.IGNORECASE
+)
+
+def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -> Optional[InlineKeyboardMarkup]:
     """
-    Versatile parser that correctly parses button colors for both /ab and Auto-Buttons:
-    - Outside bracket syntax: [Text + URL] r   (or red, danger, g, green, b, blue, etc.)
-    - Outside bracket with separator: [Text + URL] : r  or [Text + URL] - r or [Text + URL] [r]
-    - Inside bracket syntax: [Text + URL + r] or [Text | URL | red] or [Text -> URL -> b]
-    - Preserves complex links like https://t.me/+InviteHash without breaking on '+' sign.
+    Versatile parser that:
+    1. Preserves button names with '+' (e.g. '18+ Zone', 'Disney+', 'C++') without breaking URL splitting.
+    2. Defaults every button to RED (Danger) style unless another color is explicitly provided.
+    3. Handles both single-row and multi-row templates cleanly (including compact ][ formatting).
     """
     if not text:
         return None
+
+    # Convert compact '][' without space to newline so each button stays on its own row
+    text = re.sub(r'\]\[', ']\n[', text)
+
     keyboard = []
-    
-    # Delimiter for inner button parts that avoids splitting inside 't.me/+' invite links
-    inner_split_regex = re.compile(r'\s+(?:\+|\->|\|)\s+|\s*\|\s*|\s*->\s*|(?<!t\.me/)\s*\+\s*')
 
     for line in text.strip().splitlines():
         line = line.strip()
         if not line:
             continue
         btns = []
-        
+
         # Matches [Content] with optional trailing color indicator outside brackets
         raw_matches = re.findall(
             r'\[([^\]]+)\](?:\s*(?:[:\-–—|]|\b)\s*(?:\[([a-zA-Z]+)\]|\(([a-zA-Z]+)\)|([a-zA-Z]+)))?', 
             line
         )
-        
+
         for match in raw_matches:
             content = match[0].strip()
-            # Capture outside color from [color], (color), or plain color
             outside_color = (match[1] or match[2] or match[3] or "").strip().lower()
-            
-            parts = inner_split_regex.split(content)
-            if len(parts) < 2:
+
+            label = ""
+            raw_link = ""
+            inside_color = ""
+
+            # Step 1: Detect URL / placeholder position inside content to avoid breaking titles with '+' like '18+ Zone'
+            url_match = URL_OR_PLACEHOLDER_REGEX.search(content)
+            if url_match:
+                start_pos = url_match.start()
+                end_pos = url_match.end()
+
+                raw_link = url_match.group(1).strip()
+
+                # Label is everything before the URL match minus the trailing separator (+, |, ->, :)
+                before_str = content[:start_pos].strip()
+                label = re.sub(r'[\s+|:–—\->]+$', '', before_str).strip()
+
+                # Inside color is anything after the URL match minus leading separator
+                after_str = content[end_pos:].strip()
+                if after_str:
+                    inside_color = re.sub(r'^[\s+|:–—\->]+', '', after_str).strip().lower()
+            else:
+                # Fallback: Split requiring spaces around separator to avoid breaking '18+'
+                parts = re.split(r'\s+(?:\+|\->|\|)\s+', content)
+                if len(parts) >= 2:
+                    label = parts[0].strip()
+                    raw_link = parts[1].strip()
+                    if len(parts) >= 3:
+                        inside_color = parts[2].strip().lower()
+                else:
+                    continue
+
+            if not label or not raw_link:
                 continue
-                
-            label = parts[0].strip()
-            raw_link = parts[1].strip()
 
             clean_link = sanitize_button_url(raw_link)
             if not clean_link:
                 logger.warning(f"[AUTO-BUTTON] Skipping button with invalid URL: '{raw_link}' (Label: '{label}')")
                 continue
 
-            # Determine color from inside brackets (parts[2]) or outside brackets
-            color_str = ""
-            if len(parts) >= 3:
-                color_str = parts[2].strip().lower()
-            elif outside_color:
-                color_str = outside_color
+            # Determine button color style: inside bracket > outside bracket > default red
+            chosen_color_str = inside_color or outside_color
+            if chosen_color_str:
+                btn_style = COLOR_MAP.get(chosen_color_str, RED_STYLE)
+            else:
+                btn_style = default_color  # DEFAULT IS RED!
 
-            btn_style = COLOR_MAP.get(color_str, None)
             styled_label = apply_font(label, font_style) if font_style != "normal" else label
             btns.append(create_button(styled_label, clean_link, style=btn_style))
 
         if btns:
             keyboard.append(btns)
-            
+
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 # -------------------- ADVANCED ENTITY TO HTML CONVERTER -------------------- #
@@ -597,6 +647,7 @@ async def auto_button_handler(client, message: Message):
         font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
         return await message.reply_text(
             f"📋 **Aapka Button Template:**\n`{template_text}`\n\n"
+            f"🔴 **Default Button Color:** `Red (Danger)`\n"
             f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
             f"👇 **Button Preview (Color & Format):**",
             reply_markup=preview_keyboard
@@ -626,15 +677,16 @@ async def auto_button_handler(client, message: Message):
         test_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", "https://t.me/PreviewDemo", template_text, flags=re.IGNORECASE)
         test_keyboard = parse_buttons(test_text, font_style=font_style)
         if not test_keyboard: 
-            return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + {link}] r` ya `[Text + {link} + red]`")
+            return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + {link}]`")
             
         await save_button_template(message.from_user.id, template_text, font_style)
         
         font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
         return await message.reply_text(
             f"✅ **Button Template Set Ho Gaya!**\n"
+            f"🔴 **Default Button Color:** `Red (Danger)`\n"
             f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
-            f"👇 **Live Preview (Color & Format):**",
+            f"👇 **Live Preview (4 Buttons in Red):**",
             reply_markup=test_keyboard
         )
 
