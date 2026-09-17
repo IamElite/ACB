@@ -458,29 +458,28 @@ def get_html_text(text: str, entities: list) -> str:
         end = (e.offset + e.length) * 2
         start_tag, end_tag = "", ""
         
-        if e.type == pyrogram.enums.MessageEntityType.BOLD:
+        type_str = getattr(e.type, "value", str(e.type)).lower()
+        if "bold" in type_str:
             start_tag, end_tag = "<b>", "</b>"
-        elif e.type == pyrogram.enums.MessageEntityType.ITALIC:
+        elif "italic" in type_str:
             start_tag, end_tag = "<i>", "</i>"
-        elif e.type == pyrogram.enums.MessageEntityType.CODE:
+        elif "code" in type_str:
             start_tag, end_tag = "<code>", "</code>"
-        elif e.type == pyrogram.enums.MessageEntityType.PRE:
+        elif "pre" in type_str:
             lang = getattr(e, "language", "") or ""
             start_tag, end_tag = f'<pre><code class="language-{lang}">', "</code></pre>"
-        elif e.type == pyrogram.enums.MessageEntityType.TEXT_LINK:
+        elif "text_link" in type_str and getattr(e, "url", None):
             start_tag, end_tag = f'<a href="{e.url}">', "</a>"
-        elif e.type == pyrogram.enums.MessageEntityType.TEXT_MENTION:
+        elif "text_mention" in type_str and getattr(e, "user", None):
             start_tag, end_tag = f'<a href="tg://user?id={e.user.id}">', "</a>"
-        elif e.type == pyrogram.enums.MessageEntityType.STRIKETHROUGH:
+        elif "strikethrough" in type_str:
             start_tag, end_tag = "<s>", "</s>"
-        elif e.type == pyrogram.enums.MessageEntityType.UNDERLINE:
+        elif "underline" in type_str:
             start_tag, end_tag = "<u>", "</u>"
-        elif e.type == pyrogram.enums.MessageEntityType.SPOILER:
+        elif "spoiler" in type_str:
             start_tag, end_tag = "<spoiler>", "</spoiler>"
-        elif e.type == pyrogram.enums.MessageEntityType.BLOCKQUOTE:
+        elif "blockquote" in type_str:
             start_tag, end_tag = "<blockquote>", "</blockquote>"
-        elif getattr(pyrogram.enums.MessageEntityType, "EXPANDABLE_BLOCKQUOTE", None) and e.type == pyrogram.enums.MessageEntityType.EXPANDABLE_BLOCKQUOTE:
-            start_tag, end_tag = "<blockquote expandable>", "</blockquote>"
 
         if start_tag:
             if start not in events: events[start] = []
@@ -509,7 +508,10 @@ def get_html_text(text: str, entities: list) -> str:
 # -------------------- CAPTION FONT UPDATER & LINK CLEANER -------------------- #
 def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tuple[Optional[str], str, str]:
     """
-    Detects trigger links prefixed by -, –, or — (e.g. -https://... or - https://...).
+    Detects trigger links:
+    1. Prefixed by -, –, —, ~, •, 👉, 🔗, > (e.g. -https://... or - https://...)
+    2. Hyperlinked HTML tag: -<a href="...">...</a>
+    3. Standalone URLs on their own line or at the bottom of the caption
     Returns: (extracted_url, cleaned_raw_text, cleaned_html_text)
     """
     if not raw_text and not html_text:
@@ -517,9 +519,9 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
 
     target_text = html_text or raw_text
 
-    # Pattern 1: Hyperlinked HTML tag: -<a href="...">...</a>
+    # Pattern 1: Hyperlinked HTML tag with trigger prefix: -<a href="...">...</a>
     html_pattern = re.compile(
-        r'(?:^|\n|\s)[-–—]\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
+        r'(?:^|\n|\s)[-–—~•👉🔗>]\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
         re.IGNORECASE
     )
     match_html = html_pattern.search(target_text)
@@ -527,19 +529,43 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
         extracted_url = match_html.group(1).strip()
         cleaned_html = html_pattern.sub('', target_text).strip()
         cleaned_raw = html_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
-        return extracted_url, re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
+        return sanitize_button_url(extracted_url), re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
 
-    # Pattern 2: Standard plain link: -https://... (with optional space and dash variants)
-    plain_pattern = re.compile(
-        r'(?:^|\n|\s)[-–—]\s*(https?://[^\s<>"\']+)',
+    # Pattern 2: Standard prefixed link: -https://... or 👉 https://...
+    prefix_pattern = re.compile(
+        r'(?:^|\n|\s)[-–—~•👉🔗>]\s*(https?://[^\s<>"\']+|t\.me/[^\s<>"\']+)',
         re.IGNORECASE
     )
-    match_plain = plain_pattern.search(target_text)
-    if match_plain:
-        extracted_url = match_plain.group(1).strip()
-        cleaned_html = plain_pattern.sub('', target_text).strip()
-        cleaned_raw = plain_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
-        return extracted_url, re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
+    match_prefix = prefix_pattern.search(target_text)
+    if match_prefix:
+        extracted_url = match_prefix.group(1).strip()
+        cleaned_html = prefix_pattern.sub('', target_text).strip()
+        cleaned_raw = prefix_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
+        return sanitize_button_url(extracted_url), re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
+
+    # Pattern 3: Standalone URL on its own line (without prefix)
+    standalone_line_pattern = re.compile(
+        r'(?:^|\n)\s*(https?://[^\s<>"\']+|t\.me/[^\s<>"\']+)\s*(?:\n|$)',
+        re.IGNORECASE
+    )
+    match_standalone = standalone_line_pattern.search(target_text)
+    if match_standalone:
+        extracted_url = match_standalone.group(1).strip()
+        cleaned_html = standalone_line_pattern.sub('\n', target_text).strip()
+        cleaned_raw = standalone_line_pattern.sub('\n', raw_text).strip() if raw_text else cleaned_html
+        return sanitize_button_url(extracted_url), re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
+
+    # Pattern 4: Fallback - any URL present in text
+    any_url_pattern = re.compile(
+        r'(https?://[^\s<>"\']+|t\.me/[^\s<>"\']+)',
+        re.IGNORECASE
+    )
+    match_any = any_url_pattern.search(target_text)
+    if match_any:
+        extracted_url = match_any.group(1).strip()
+        cleaned_html = any_url_pattern.sub('', target_text).strip()
+        cleaned_raw = any_url_pattern.sub('', raw_text).strip() if raw_text else cleaned_html
+        return sanitize_button_url(extracted_url), re.sub(r'\n{3,}', '\n\n', cleaned_raw).strip(), re.sub(r'\n{3,}', '\n\n', cleaned_html).strip()
 
     return None, raw_text, html_text
 
@@ -868,7 +894,7 @@ async def safe_copy_and_delete(
         try:
             sent = None
             if msg.media:
-                caption = custom_caption if custom_caption is not None else (msg.caption.html if msg.caption else "")
+                caption = custom_caption if custom_caption is not None else (msg.caption or "")
                 sent = await msg.copy(
                     chat_id, 
                     caption=caption, 
@@ -877,7 +903,7 @@ async def safe_copy_and_delete(
                     disable_notification=True
                 )
             else:
-                text = custom_caption if custom_caption is not None else (msg.text.html if msg.text else "")
+                text = custom_caption if custom_caption is not None else (msg.text or "")
                 sent = await app.send_message(
                     chat_id=chat_id, 
                     text=text, 
@@ -887,7 +913,7 @@ async def safe_copy_and_delete(
                     disable_web_page_preview=False
                 )
             
-            # Explicitly enforce reply markup with colors after copying to avoid Telegram client stripping
+            # Explicitly enforce reply markup with colors after copying
             if sent and markup:
                 try:
                     await app.edit_message_reply_markup(chat_id=chat_id, message_id=sent.id, reply_markup=markup)
@@ -909,144 +935,141 @@ async def safe_copy_and_delete(
 # -------------------- AUTOMATIC CAPTION LINK & BUTTON DISPATCHER -------------------- #
 async def process_channel_post_auto_buttons(client, message: Message):
     """
-    Detects trigger links (-https...) in captions/text, strips them,
+    Detects trigger links or URLs in channel posts, strips them,
     replaces {link} in the active button template, and attaches colored buttons to the post.
     """
     chat_id = message.chat.id
     chat_username = message.chat.username
+
+    # Step 1: Verify channel authorization; auto-authorize if bot is admin
     settings = await get_channel_settings(chat_id, chat_username)
+    if not settings:
+        try:
+            member = await client.get_chat_member(chat_id, "me")
+            priv = getattr(member, "privileges", None)
+            if priv and (getattr(priv, "can_post_messages", False) or getattr(priv, "can_edit_messages", False)):
+                await add_auth_channel(chat_id, forward_tag=False, auto_accept_time="1s")
+                settings = await get_channel_settings(chat_id, chat_username)
+        except Exception as e:
+            logger.debug(f"[AUTO-BUTTON] Chat {chat_id} is not authorized: {e}")
+
     if not settings:
         return
 
     raw_text = message.caption or message.text or ""
-    entities = message.caption_entities or message.entities
+    entities = message.caption_entities or message.entities or []
 
-    # Quick check for trigger prefix in plain or hyperlinked text
-    html_target = (message.caption.html if hasattr(message.caption, "html") and message.caption else None) or \
-                  (message.text.html if hasattr(message.text, "html") and message.text else None) or raw_text
-                  
-    has_trigger = bool(re.search(r'(?:^|\n|\s)[-–—]\s*(?:https?://|<a\s)', html_target, re.IGNORECASE))
-    
-    if has_trigger:
-        logger.info(f"[AUTO-BUTTON] Found trigger link pattern in chat {chat_id} msg {message.id}")
-        
-        # Build HTML representation with entities
-        html_text = ""
-        if hasattr(message.caption, "html") and message.caption:
-            html_text = message.caption.html
-        elif hasattr(message.text, "html") and message.text:
-            html_text = message.text.html
+    # Step 2: Fetch the active button template
+    template_data = await get_effective_template(chat_id, chat_username)
+    if not template_data:
+        # Fallback to any recent template in database
+        template_data = await btn_templatedb.find_one({"template": {"$exists": True, "$ne": ""}}, sort=[("updated_at", -1), ("_id", -1)])
+        if not template_data:
+            return
+
+    template = template_data.get("template", "")
+    font_style = template_data.get("font_style", "sim")
+    needs_link = bool(re.search(r"\{\s*(?:link|url|target)\s*\}", template, re.IGNORECASE))
+
+    # Step 3: Extract the URL from post
+    html_text = get_html_text(raw_text, entities)
+    extracted_link, cleaned_raw, cleaned_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
+
+    # If the template requires a {link} placeholder, but no link was found in the post, skip
+    if needs_link and not extracted_link:
+        # If forwarded and tag removal is enabled, still clean forward tag
+        if settings.get("forward_tag_removal") and is_forwarded(message):
+            await asyncio.sleep(0.3)
+            await safe_copy_and_delete(message, chat_id)
+        return
+
+    logger.info(f"[AUTO-BUTTON] Processing post {message.id} in {chat_id} (Link: {extracted_link})")
+
+    # Step 4: Generate Keyboard with replacement link
+    final_btn_text = template
+    if extracted_link:
+        final_btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_link, template, flags=re.IGNORECASE)
+
+    keyboard = parse_buttons(final_btn_text, font_style=font_style)
+    if not keyboard:
+        logger.error("[AUTO-BUTTON] Could not parse buttons from template!")
+        return
+
+    # Step 5: Format the cleaned caption
+    final_caption_html = apply_font_to_caption(cleaned_html, font_style) if font_style != "normal" else cleaned_html
+    final_caption_raw = apply_font_to_caption(cleaned_raw, font_style) if font_style != "normal" else cleaned_raw
+
+    # Step 6: If forward tag removal is enabled and message is forwarded, copy and delete
+    if settings.get("forward_tag_removal") and is_forwarded(message):
+        await asyncio.sleep(0.3)
+        await safe_copy_and_delete(message, chat_id, custom_caption=final_caption_html, reply_markup=keyboard)
+        return
+
+    # Step 7: Edit the post in place with buttons and formatted text
+    try:
+        if message.media:
+            await client.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message.id,
+                caption=final_caption_html,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
         else:
-            html_text = get_html_text(raw_text, entities)
-
-        extracted_link, cleaned_raw, cleaned_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
-        
-        if extracted_link:
-            logger.info(f"[AUTO-BUTTON] Extracted Link: {extracted_link}")
-            
-            # Fetch active effective template with accurate color styles
-            template_data = await get_effective_template(chat_id, chat_username)
-            if not template_data:
-                logger.warning(f"[AUTO-BUTTON] No button template found in database! Please set via /abset.")
-                return
-
-            template = template_data.get("template", "")
-            font_style = template_data.get("font_style", "sim")
-            
-            # Substitute {link}, {url}, { target } with the destination link
-            final_btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_link, template, flags=re.IGNORECASE)
-            keyboard = parse_buttons(final_btn_text, font_style=font_style)
-
-            if not keyboard:
-                logger.error("[AUTO-BUTTON] No valid buttons generated after parsing template!")
-                return
-            
-            # Format the remaining caption with chosen font
-            final_caption_html = apply_font_to_caption(cleaned_html, font_style) if font_style != "normal" else cleaned_html
-            final_caption_raw = apply_font_to_caption(cleaned_raw, font_style) if font_style != "normal" else cleaned_raw
-            
-            # If forward tag removal is enabled and post is forwarded, clone and delete
-            if settings.get("forward_tag_removal") and is_forwarded(message):
-                await asyncio.sleep(0.3)
-                await safe_copy_and_delete(message, chat_id, custom_caption=final_caption_html, reply_markup=keyboard)
-                return
-
-            # Attempt editing the post in place with HTML formatting and styled keyboard
-            edit_success = False
+            await client.edit_message_text(
+                chat_id=chat_id,
+                message_id=message.id,
+                text=final_caption_html,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+        # Re-enforce reply markup to guarantee color rendering
+        try:
+            await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
+        except Exception:
+            pass
+        logger.info(f"[AUTO-BUTTON] Successfully auto-attached buttons to post {message.id}!")
+    except Exception as html_err:
+        logger.warning(f"[AUTO-BUTTON] HTML edit failed: {html_err}. Retrying with plain text...")
+        try:
+            if message.media:
+                await client.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message.id,
+                    caption=final_caption_raw,
+                    parse_mode=None,
+                    reply_markup=keyboard
+                )
+            else:
+                await client.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message.id,
+                    text=final_caption_raw,
+                    parse_mode=None,
+                    reply_markup=keyboard
+                )
             try:
-                if message.media:
-                    await client.edit_message_caption(
-                        chat_id=chat_id,
-                        message_id=message.id,
-                        caption=final_caption_html,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=keyboard
-                    )
-                else:
-                    await client.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message.id,
-                        text=final_caption_html,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=keyboard
-                    )
-                # Re-enforce reply markup to guarantee color rendering
+                await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
+            except Exception:
+                pass
+            logger.info(f"[AUTO-BUTTON] Successfully auto-attached buttons (Plain Text) to post {message.id}!")
+        except Exception as plain_err:
+            err_str = str(plain_err).upper()
+            if "MESSAGE_NOT_MODIFIED" in err_str:
                 try:
                     await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
                 except Exception:
                     pass
-                edit_success = True
-                logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} with colored buttons (HTML)!")
-            except Exception as html_err:
-                logger.warning(f"[AUTO-BUTTON] HTML edit error: {html_err}. Retrying with plain text...")
-                try:
-                    if message.media:
-                        await client.edit_message_caption(
-                            chat_id=chat_id,
-                            message_id=message.id,
-                            caption=final_caption_raw,
-                            parse_mode=None,
-                            reply_markup=keyboard
-                        )
-                    else:
-                        await client.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=message.id,
-                            text=final_caption_raw,
-                            parse_mode=None,
-                            reply_markup=keyboard
-                        )
-                    try:
-                        await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
-                    except Exception:
-                        pass
-                    edit_success = True
-                    logger.info(f"[AUTO-BUTTON] Successfully edited post {message.id} with colored buttons (Plain Text)!")
-                except Exception as plain_err:
-                    err_str = str(plain_err).upper()
-                    if "MESSAGE_NOT_MODIFIED" in err_str and keyboard:
-                        try:
-                            await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
-                            edit_success = True
-                        except Exception:
-                            pass
-                    elif any(k in err_str for k in ["MESSAGE_AUTHOR_REQUIRED", "CHAT_ADMIN_REQUIRED", "CHAT_WRITE_FORBIDDEN"]):
-                        logger.warning("[AUTO-BUTTON] Bot lacks edit rights of others. Reposting to apply buttons...")
-                        await safe_copy_and_delete(
-                            message, 
-                            chat_id, 
-                            custom_caption=final_caption_html, 
-                            reply_markup=keyboard
-                        )
-                        return
-                    else:
-                        logger.error(f"[AUTO-BUTTON] Failed to update post {message.id}: {plain_err}")
-            return
-
-    # If no trigger link, perform standard forward tag removal if enabled
-    if settings.get("forward_tag_removal") and is_forwarded(message):
-        await asyncio.sleep(0.3)
-        await safe_copy_and_delete(message, chat_id)
+            elif any(k in err_str for k in ["MESSAGE_AUTHOR_REQUIRED", "CHAT_ADMIN_REQUIRED", "CHAT_WRITE_FORBIDDEN"]):
+                logger.warning("[AUTO-BUTTON] Bot lacks edit rights of others. Reposting to apply buttons...")
+                await safe_copy_and_delete(
+                    message, 
+                    chat_id, 
+                    custom_caption=final_caption_html, 
+                    reply_markup=keyboard
+                )
+            else:
+                logger.error(f"[AUTO-BUTTON] Failed to update post {message.id}: {plain_err}")
 
 @app.on_message((filters.channel | filters.group) & ~filters.service)
 async def channel_post_listener(client, message: Message):
