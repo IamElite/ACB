@@ -134,6 +134,25 @@ async def delete_button_template(user_id: int):
     await btn_templatedb.delete_one({"user_id": str(user_id)})
 
 # -------------------- LINK & ID EXTRACTORS -------------------- #
+def get_forward_chat(msg: Optional[Message]):
+    """
+    Safely retrieves the forwarded chat object supporting the modern 
+    message.forward_origin (Telegram Bot API 7.0+) and legacy properties without deprecation warnings.
+    """
+    if not msg:
+        return None
+    origin = getattr(msg, "forward_origin", None)
+    if origin:
+        if hasattr(origin, "chat") and getattr(origin.chat, "sender_chat", None):
+            return origin.chat.sender_chat
+        chat_obj = getattr(origin, "sender_chat", None) or getattr(origin, "chat", None)
+        if chat_obj:
+            return getattr(chat_obj, "sender_chat", chat_obj)
+    try:
+        return getattr(msg, "forward_from_chat", None)
+    except Exception:
+        return None
+
 def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
     """Accurately extracts channel/chat ID and message ID from both public and private Telegram links."""
     link = link.strip()
@@ -299,8 +318,9 @@ async def auth_channel_cmd(client, message: Message):
     if "-ac" in args and args.index("-ac") + 1 < len(args): 
         auto_accept_time = args[args.index("-ac") + 1]
     
-    if message.reply_to_message and message.reply_to_message.forward_from_chat: 
-        chat_id = message.reply_to_message.forward_from_chat.id
+    fwd_chat = get_forward_chat(message.reply_to_message)
+    if fwd_chat: 
+        chat_id = fwd_chat.id
     elif len(args) >= 2:
         try: 
             chat_id = (await client.get_chat(args[1])).id if args[1].startswith("@") else int(args[1])
@@ -334,10 +354,12 @@ async def unauth_channel_cmd(client, message: Message):
             chat_id = (await client.get_chat(message.command[1])).id if message.command[1].startswith("@") else int(message.command[1])
         except Exception: 
             return await message.reply_text("❌ Invalid channel!")
-    elif message.reply_to_message and message.reply_to_message.forward_from_chat: 
-        chat_id = message.reply_to_message.forward_from_chat.id
-    else: 
-        return await message.reply_text("❌ Usage: `/unauth <channel_id>`")
+    else:
+        fwd_chat = get_forward_chat(message.reply_to_message)
+        if fwd_chat: 
+            chat_id = fwd_chat.id
+        else: 
+            return await message.reply_text("❌ Usage: `/unauth <channel_id>`")
         
     await remove_auth_channel(chat_id)
     await message.reply_text(f"✅ Un-Authorized: `{chat_id}`")
@@ -542,13 +564,17 @@ async def change_button_with_link(client, message: Message):
 
 # -------------------- FORWARD TAG REMOVER & AUTO APPROVE -------------------- #
 def is_forwarded(message: Message) -> bool:
-    return bool(
-        message.forward_from or 
-        message.forward_from_chat or 
-        message.forward_sender_name or 
-        message.forward_date or 
-        getattr(message, 'forward_origin', None)
-    )
+    if getattr(message, "forward_origin", None) is not None:
+        return True
+    try:
+        return bool(
+            getattr(message, "forward_date", None) or
+            getattr(message, "forward_sender_name", None) or
+            getattr(message, "forward_from", None) or
+            getattr(message, "forward_from_chat", None)
+        )
+    except Exception:
+        return False
 
 async def safe_copy_and_delete(
     msg: Message, 
