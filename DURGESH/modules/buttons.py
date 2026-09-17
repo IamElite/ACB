@@ -1,5 +1,6 @@
 import re
 import asyncio
+import time
 import logging
 from typing import Dict, Optional, Tuple
 import pyrogram
@@ -23,6 +24,21 @@ except ImportError:
     GREEN_STYLE = "success"
     BLUE_STYLE = "primary"
 
+COLOR_MAP = {
+    "r": RED_STYLE,
+    "red": RED_STYLE,
+    "danger": RED_STYLE,
+    "d": RED_STYLE,
+    "g": GREEN_STYLE,
+    "green": GREEN_STYLE,
+    "success": GREEN_STYLE,
+    "s": GREEN_STYLE,
+    "b": BLUE_STYLE,
+    "blue": BLUE_STYLE,
+    "primary": BLUE_STYLE,
+    "p": BLUE_STYLE,
+}
+
 from DURGESH import app
 from DURGESH.database import db
 
@@ -38,36 +54,23 @@ FONT_SM_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 FONT_SM_VALS = 'ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ𝟶𝟷𝟸𝟹𝟺𝟻𝟼𝟽𝟾𝟿'
 FONT_SM = dict(zip(FONT_SM_KEYS, FONT_SM_VALS))
 
-STYLE_SIM = {
-    "a": "𝖺", "b": "𝖻", "c": "𝖼", "d": "𝖽", "e": "𝖾", "f": "𝖿", "g": "𝗀", "h": "𝗁",
-    "i": "𝗂", "j": "𝗃", "k": "𝗄", "l": "𝗅", "m": "𝗆", "n": "𝗇", "o": "𝗈", "p": "𝗉",
-    "q": "𝗊", "r": "𝗋", "s": "𝗌", "t": "𝗍", "u": "𝗎", "v": "𝗏", "w": "𝗐", "x": "𝗑",
-    "y": "𝗒", "z": "𝗓", "A": "𝖠", "B": "𝖡", "C": "𝖢", "D": "𝖣", "E": "𝖤", "F": "𝖥",
-    "G": "𝖦", "H": "𝖧", "I": "𝖨", "J": "𝖩", "K": "𝖪", "L": "𝖫", "M": "𝖬", "N": "𝖭",
-    "O": "𝖮", "P": "𝖯", "Q": "𝖰", "R": "𝖱", "S": "𝖲", "T": "𝖳", "U": "𝖴", "V": "𝖵",
-    "W": "𝖶", "X": "𝖷", "Y": "𝖸", "Z": "𝖹"
-}
+STYLE_SIM_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+STYLE_SIM_VALS = '𝖠𝖡𝖢𝖣𝖤𝖥𝖦𝖧𝖨𝖩𝖪𝖫𝖬𝖭𝖮𝖯𝖰𝖱𝖲𝖳𝖴𝖵𝖶𝖷𝖸𝖹𝖺𝖻𝖼𝖽𝖾𝖿𝗀𝗁𝗂𝗃𝗄𝗅𝗆𝗇𝗈𝗉𝗊𝗋𝗌𝗍𝗎𝗏𝗐𝗑𝗒𝗓'
+STYLE_SIM = dict(zip(STYLE_SIM_KEYS, STYLE_SIM_VALS))
 
-STYLE_SAN = {
-    "a": "𝗮", "b": "𝗯", "c": "𝗰", "d": "𝗱", "e": "𝗲", "f": "𝗳", "g": "𝗴", "h": "𝗵",
-    "i": "𝗶", "j": "𝗷", "k": "𝗸", "l": "𝗹", "m": "𝗺", "n": "𝗻", "o": "𝗼", "p": "𝗽",
-    "q": "𝗾", "r": "𝗿", "s": "𝘀", "t": "𝘁", "u": "𝘂", "v": "𝘃", "w": "𝘄", "x": "𝘅",
-    "y": "𝘆", "z": "𝘇", "A": "𝗔", "B": "𝗕", "C": "𝗖", "D": "𝗗", "E": "𝗘", "F": "𝗙",
-    "G": "𝗚", "H": "𝗛", "I": "𝗜", "J": "𝗝", "K": "𝗞", "L": "𝗟", "M": "𝗠", "N": "𝗡",
-    "O": "𝗢", "P": "𝗣", "Q": "𝗤", "R": "𝗥", "S": "𝗦", "T": "𝗧", "U": "𝗨", "V": "𝗩",
-    "W": "𝗪", "X": "𝫆", "Y": "𝗬", "Z": "𝗭", "0": "𝟬", "1": "𝟭", "2": "𝟮", "3": "𝟯",
-    "4": "𝟰", "5": "𝟱", "6": "𝟲", "7": "𝟳", "8": "𝟴", "9": "𝟵"
-}
+STYLE_SAN_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+STYLE_SAN_VALS = '𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵'
+STYLE_SAN = dict(zip(STYLE_SAN_KEYS, STYLE_SAN_VALS))
 
-# REVERSE MAP: Converts any custom styled text back to normal A-Z
+# REVERSE MAP: Converts any custom styled text back to normal A-Z / 0-9
 REVERSE_MAP = {}
 for k, v in zip(FONT_S_KEYS, FONT_S_VALS):
     if v not in REVERSE_MAP: REVERSE_MAP[v] = k
 for k, v in zip(FONT_SM_KEYS, FONT_SM_VALS):
     if v not in REVERSE_MAP: REVERSE_MAP[v] = k
-for k, v in STYLE_SIM.items():
+for k, v in zip(STYLE_SIM_KEYS, STYLE_SIM_VALS):
     if v not in REVERSE_MAP: REVERSE_MAP[v] = k
-for k, v in STYLE_SAN.items():
+for k, v in zip(STYLE_SAN_KEYS, STYLE_SAN_VALS):
     if v not in REVERSE_MAP: REVERSE_MAP[v] = k
 
 def apply_font(text: str, font_style: str) -> str:
@@ -150,28 +153,42 @@ async def is_channel_authed(chat_id: int, username: Optional[str] = None) -> boo
 
 async def save_button_template(user_id: int, template: str, font_style: str = "sim"):
     uid_str = str(user_id)
+    now = time.time()
     await btn_templatedb.update_one(
         {"$or": [{"user_id": uid_str}, {"user_id": user_id}]}, 
-        {"$set": {"user_id": uid_str, "template": template, "font_style": font_style}}, 
+        {"$set": {
+            "user_id": uid_str, 
+            "template": template, 
+            "font_style": font_style,
+            "updated_at": now
+        }}, 
         upsert=True
     )
+    # Link this admin to authorized channels that don't have an admin_id set yet
+    try:
+        await authdb.update_many(
+            {"$or": [{"admin_id": {"$exists": False}}, {"admin_id": None}, {"admin_id": ""}]},
+            {"$set": {"admin_id": uid_str}}
+        )
+    except Exception:
+        pass
 
 async def get_button_template(user_id: int) -> Optional[Dict]:
     uid_str = str(user_id)
     return await btn_templatedb.find_one({"$or": [{"user_id": uid_str}, {"user_id": user_id}]})
 
 async def get_effective_template(chat_id: int, username: Optional[str] = None) -> Optional[Dict]:
-    """Finds the button template configured for the channel's admin or falls back to any active template."""
+    """Finds the button template configured for the channel's admin or falls back to the most recently updated template."""
     settings = await get_channel_settings(chat_id, username)
     if settings and settings.get("admin_id"):
         tmpl = await get_button_template(settings["admin_id"])
         if tmpl and tmpl.get("template"):
             return tmpl
             
-    # Fallback: get the most recently saved template from any admin
+    # Always fetch the most recently updated template from database
     return await btn_templatedb.find_one(
         {"template": {"$exists": True, "$ne": ""}}, 
-        sort=[("_id", -1)]
+        sort=[("updated_at", -1), ("_id", -1)]
     )
 
 async def delete_button_template(user_id: int):
@@ -182,7 +199,7 @@ async def delete_button_template(user_id: int):
 def get_forward_chat(msg: Optional[Message]):
     """
     Safely retrieves the forwarded chat object supporting modern 
-    message.forward_origin and legacy properties without deprecation warnings.
+    message.forward_origin without triggering deprecation warnings.
     """
     if not msg:
         return None
@@ -190,13 +207,17 @@ def get_forward_chat(msg: Optional[Message]):
     if origin:
         if hasattr(origin, "chat") and getattr(origin.chat, "sender_chat", None):
             return origin.chat.sender_chat
-        chat_obj = getattr(origin, "sender_chat", None) or getattr(origin, "chat", None)
+        chat_obj = getattr(origin, "sender_chat", None) or getattr(origin.chat if hasattr(origin, "chat") else None, "sender_chat", None) or getattr(origin, "chat", None)
         if chat_obj:
             return getattr(chat_obj, "sender_chat", chat_obj)
-    try:
-        return getattr(msg, "forward_from_chat", None)
-    except Exception:
-        return None
+            
+    # Only fallback to legacy property if forward_origin attribute does not exist on the message
+    if not hasattr(msg, "forward_origin"):
+        try:
+            return getattr(msg, "forward_from_chat", None)
+        except Exception:
+            return None
+    return None
 
 def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
     """Accurately extracts channel/chat ID and message ID from Telegram links."""
@@ -212,27 +233,54 @@ def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
     return None, None
 
 def create_button(text: str, url: str, style=None):
-    if style:
+    if style is not None:
         try:
             return InlineKeyboardButton(text, url=url, style=style)
-        except Exception:
-            pass
+        except (TypeError, ValueError):
+            try:
+                style_val = getattr(style, "value", str(style).lower())
+                return InlineKeyboardButton(text, url=url, style=style_val)
+            except Exception:
+                pass
     return InlineKeyboardButton(text, url=url)
 
 def parse_buttons(text: str, font_style: str = "sim") -> Optional[InlineKeyboardMarkup]:
+    """
+    Supports versatile button syntax with color options:
+    1. Outside bracket: [Text + URL] r  (or red, g, green, b, blue)
+    2. Inside bracket:  [Text + URL + r] or [Text | URL | red]
+    3. Handles both real URLs and {link} placeholders cleanly.
+    """
+    if not text:
+        return None
     keyboard = []
     for line in text.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
         btns = []
-        # Supports [Text + URL], [Text -> URL], and [Text | URL] formats
-        for match in re.finditer(r"\[([^\]]+?)\s*(?:\+|\->|\|)\s*(https?://[^\s\]]+)\]\s*([rgbRGB]?)", line):
-            label = match.group(1).strip()
-            link = match.group(2).strip()
-            color_code = match.group(3).strip().lower()
+        # Matches [Content] with optional trailing color like: [Button + link] r
+        raw_matches = re.findall(r'\[([^\]]+)\](?:\s*[:\-]?\s*([a-zA-Z]+))?', line)
+        for content, outside_color in raw_matches:
+            # Splits label, link, and optional internal color
+            parts = re.split(r'\s*(?:\+|\->|\|)\s*', content.strip())
+            if len(parts) < 2:
+                continue
+            label = parts[0].strip()
+            link = parts[1].strip()
+            
+            # Resolve color code from inside or outside the bracket
+            color_str = ""
+            if len(parts) >= 3:
+                color_str = parts[2].strip().lower()
+            elif outside_color:
+                color_str = outside_color.strip().lower()
+            
+            btn_style = COLOR_MAP.get(color_str, None)
             
             styled_label = apply_font(label, font_style) if font_style != "normal" else label
-            color_map = {"r": RED_STYLE, "g": GREEN_STYLE, "b": BLUE_STYLE}
-            btn_style = color_map.get(color_code, None)
             btns.append(create_button(styled_label, link, style=btn_style))
+            
         if btns: 
             keyboard.append(btns)
     return InlineKeyboardMarkup(keyboard) if keyboard else None
@@ -467,21 +515,20 @@ async def auto_button_handler(client, message: Message):
         if not template_text: 
             return await message.reply_text("❌ Template text provide karein! Message ko reply karke `/abset` karein.")
             
-        keyboard = parse_buttons(template_text, font_style=font_style)
-        if not keyboard: 
-            return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + URL] r`")
+        # Test parse replacing {link} with dummy URL to validate syntax and colors
+        test_text = re.sub(r"\{link\}", "https://t.me/PreviewDemo", template_text, flags=re.IGNORECASE)
+        test_keyboard = parse_buttons(test_text, font_style=font_style)
+        if not test_keyboard: 
+            return await message.reply_text("❌ Koi valid button nahi mila! Format: `[Text + {link}] r` ya `[Text + URL] b`")
             
         await save_button_template(message.from_user.id, template_text, font_style)
         
-        preview_text = template_text.replace("{link}", "https://t.me/PreviewDemo")
-        preview_keyboard = parse_buttons(preview_text, font_style=font_style)
         font_display = {"sim": "Sim (Serif)", "san": "San (Bold)", "s": "Small Caps", "sm": "Small+Num", "normal": "Default"}
-        
         return await message.reply_text(
             f"✅ **Button Template Set Ho Gaya!**\n"
             f"🎨 **Font:** `{font_display.get(font_style, font_style)}`\n"
-            f"👇 **Live Preview:**",
-            reply_markup=preview_keyboard
+            f"👇 **Live Preview (Color & Format):**",
+            reply_markup=test_keyboard
         )
 
     if cmd == "ab":
@@ -631,14 +678,17 @@ async def change_button_with_link(client, message: Message):
 
 # -------------------- FORWARD TAG REMOVER & AUTO APPROVE -------------------- #
 def is_forwarded(message: Message) -> bool:
-    if getattr(message, "forward_origin", None) is not None:
-        return True
+    """
+    Checks if a message is forwarded without triggering deprecation warnings
+    on modern Pyrogram / Pyrofork installations.
+    """
+    if hasattr(message, "forward_origin"):
+        return message.forward_origin is not None
     try:
         return bool(
             getattr(message, "forward_date", None) or
-            getattr(message, "forward_sender_name", None) or
-            getattr(message, "forward_from", None) or
-            getattr(message, "forward_from_chat", None)
+            getattr(message, "forward_from_chat", None) or
+            getattr(message, "forward_from", None)
         )
     except Exception:
         return False
