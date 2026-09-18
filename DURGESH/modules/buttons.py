@@ -110,18 +110,10 @@ def create_button(text: str, url: str, style=RED_STYLE) -> InlineKeyboardButton:
 BUTTON_REGEX = re.compile(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\)?\]?)?')
 
 def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -> Optional[InlineKeyboardMarkup]:
-    """
-    Parses button templates with support for:
-    - 1-2-1 Grid Layout: Buttons on the same line stay in the same row.
-    - Newlines separate rows.
-    - Titles containing '+' like '18+ Zone'
-    - Trailing and internal color tags
-    - Default Danger/Red color style
-    """
+    """Parses button templates with support for grid layout, newlines, and color tags."""
     if not text:
         return None
 
-    # Preserve multi-button rows on the same line; split rows by explicit newlines
     raw_lines = text.strip().splitlines()
     keyboard = []
 
@@ -367,22 +359,17 @@ TRIGGER_PLAIN_REGEX = re.compile(
 )
 
 def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tuple[Optional[str], str, str]:
-    """
-    Strictly checks for trigger links prefixed with a dash or trigger symbol (-, –, —, •, ▪, etc.).
-    Ordinary URLs without a dash are ignored so group chat discussions are completely untouched.
-    """
+    """Strictly checks for trigger links prefixed with a dash or trigger symbol."""
     if not raw_text and not html_text:
         return None, "", ""
     target_text = html_text or raw_text
 
-    # 1. Hyperlinked HTML tag with dash prefix: -<a href="...">...</a>
     if m_html := TRIGGER_HTML_REGEX.search(target_text):
         url = m_html.group(1).strip()
         cl_html = TRIGGER_HTML_REGEX.sub('', target_text).strip()
         cl_raw = TRIGGER_HTML_REGEX.sub('', raw_text).strip() if raw_text else cl_html
         return url, cl_raw, cl_html
 
-    # 2. Plain trigger link with dash prefix: -https://...
     if m_plain := TRIGGER_PLAIN_REGEX.search(target_text):
         url = m_plain.group(1).strip()
         cl_html = TRIGGER_PLAIN_REGEX.sub('', target_text).strip()
@@ -398,7 +385,6 @@ def apply_font_to_caption(caption: str, font_style: str) -> str:
     pattern = re.compile(r'(<[^>]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
     lines = []
     for line in caption.split('\n'):
-        # Keep credit lines untouched by font style changes
         lower_line = line.lower()
         if "syntaxrealm" in lower_line or "made by" in lower_line:
             lines.append(line)
@@ -416,14 +402,10 @@ def hyperlink_syntax_realm(text: str) -> str:
     if not text:
         return text
 
-    # If already hyperlinked, leave it
     if 'href="https://t.me/SyntaxRealm"' in text:
         return text
 
-    # Replaces 'SyntaxRealm.t.me', '˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼' with hyperlinked version
     credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
-    
-    # Matches variations of SyntaxRealm credit line
     credit_pattern = re.compile(
         r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?",
         re.IGNORECASE
@@ -658,22 +640,17 @@ async def dispatch_channel_post(client, message: Message):
     if not raw_text:
         return
 
-    # Check for trigger link strictly with a leading dash or trigger symbol
     entities = message.caption_entities or message.entities
     html_text = get_html_text(raw_text, entities)
     extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
 
     settings = await get_channel_settings(chat_id, message.chat.username)
 
-    # If NO trigger link is present:
     if not extracted_url:
-        # If it's a forwarded post in an authorized channel, remove forward tag if enabled
         if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
             await safe_copy_and_delete(message, chat_id)
-        # Completely ignore ordinary group chat and channel messages that lack a trigger
         return
 
-    # If trigger link is present but channel wasn't authorized, initialize default settings
     if not settings:
         settings = {
             "chat_id": str(chat_id),
@@ -698,12 +675,10 @@ async def dispatch_channel_post(client, message: Message):
     final_caption = apply_font_to_caption(cl_html, font_style) if font_style != "normal" else cl_html
     raw_caption = apply_font_to_caption(cl_raw, font_style) if font_style != "normal" else cl_raw
 
-    # Forward tag removal branch
     if settings.get("forward_tag_removal", True) and is_forwarded_post(message):
         await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
         return
 
-    # In-place edit branch with fallback
     edit_success = False
     try:
         if message.media:
@@ -732,7 +707,6 @@ async def dispatch_channel_post(client, message: Message):
             except Exception:
                 pass
         else:
-            # Fallback: Retry edit with plain text if HTML tags failed
             try:
                 if message.media:
                     await client.edit_message_caption(
@@ -754,7 +728,6 @@ async def dispatch_channel_post(client, message: Message):
             except Exception:
                 pass
 
-    # If in-place editing failed (e.g. MESSAGE_AUTHOR_REQUIRED), clone post with buttons and delete old post
     if not edit_success:
         await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
 
@@ -768,12 +741,9 @@ async def channel_post_edit_listener(client, message: Message):
 
 @app.on_chat_join_request()
 async def auto_approve_join_request(client, request: ChatJoinRequest):
-    if settings := await get_channel_settings(request.chat.id):
-        await asyncio.sleep(settings["auto_accept_seconds"])
-        try:
+    try:
+        if settings := await get_channel_settings(request.chat.id):
+            await asyncio.sleep(settings.get("auto_accept_seconds", 1))
             await client.approve_chat_join_request(chat_id=request.chat.id, user_id=request.from_user.id)
-        except Exception:
-            pass
-
-
-,,, short read hame isma kuch change karna h ap code ko sahi dekh jo ham ata yenge kudyan m le kar pro jaisa fix karke full code dena h ready ho to sai only yes 
+    except Exception as e:
+        logger.error(f"Auto-approve join request failed: {e}")
