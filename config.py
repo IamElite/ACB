@@ -12,7 +12,7 @@ MONGO_URL = getenv("MONGO_URL", None)
 OWNER_ID = int(getenv("OWNER_ID", None))
 
 PORT = getenv("PORT", "8080")
-TG_BOT_WORKERS = int(getenv("TG_BOT_WORKERS", "4"))
+TG_BOT_WORKERS = int(getenv("TG_BOT_WORKERS", "2"))
 
 
 ADMINS = [int(x) for x in getenv("ADMINS", "1679112664").split()]
