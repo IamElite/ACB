@@ -7,7 +7,7 @@ from typing import Dict, Optional, Tuple, List, Union
 import pyrogram
 from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatType
 
 logger = logging.getLogger("buttons")
 logging.basicConfig(level=logging.INFO)
@@ -17,10 +17,13 @@ try:
     RED_STYLE = ButtonStyle.DANGER
     GREEN_STYLE = ButtonStyle.SUCCESS
     BLUE_STYLE = ButtonStyle.PRIMARY
-except ImportError:
-    RED_STYLE = "danger"
-    GREEN_STYLE = "success"
-    BLUE_STYLE = "primary"
+    COLOREDBUTTONSSUPPORTED = True
+except (ImportError, AttributeError):
+    RED_STYLE = None
+    GREEN_STYLE = None
+    BLUE_STYLE = None
+    COLOREDBUTTONSSUPPORTED = False
+    logger.warning("ButtonStyle not available - colored buttons disabled")
 
 COLOR_MAP = {
     "r": REDSTYLE, "red": REDSTYLE, "danger": REDSTYLE, "d": REDSTYLE,
@@ -92,11 +95,12 @@ def sanitizebuttonurl(url: str) -> Optional[str]:
         return None
     return clean
 
-def createbutton(text: str, url: str, style=REDSTYLE) -> InlineKeyboardButton:
-    if style is not None:
+def create_button(text: str, url: str, style=None) -> InlineKeyboardButton:
+    """Kurigram/Pyrofork compatible button creation with colored style support."""
+    if style is not None and COLOREDBUTTONSSUPPORTED:
         try:
             return InlineKeyboardButton(text, url=url, style=style)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, AttributeError):
             try:
                 style_val = getattr(style, "value", str(style).lower())
                 return InlineKeyboardButton(text, url=url, style=style_val)
@@ -439,6 +443,22 @@ async def safecopyand_delete(
             break
     return None
 
+def ischannelchat(chat) -> bool:
+    """Kurigram/Pyrogram compatible channel check."""
+    if not chat:
+        return False
+    chat_type = getattr(chat, "type", None)
+    if chat_type is None:
+        return False
+    # Check both enum and string
+    if chat_type == ChatType.CHANNEL:
+        return True
+    if hasattr(chattype, "value") and chattype.value == "channel":
+        return True
+    if str(chat_type).lower() in ["channel", "chatchype.channel"]:
+        return True
+    return False
+
 @app.on_message(filters.command(["auth"]))
 async def auth_cmd(client, message: Message):
     args = message.text.split()
@@ -451,11 +471,10 @@ async def auth_cmd(client, message: Message):
     if not chat_id:
         return await message.replytext("❌ Usage: /auth  -f on/off -ac 1s")
 
-    # Verify it's actually a channel
     try:
         chatobj = await client.getchat(chat_id)
-        if chat_obj.type.name != "CHANNEL":
-            return await message.reply_text("❌ Ye sirf channels ke liye hai! Groups ke liye kaam nahi karega.")
+        if not ischannelchat(chat_obj):
+            return await message.reply_text("❌ Ye sirf channels ke liye hai! Groups/supergroups ke liye kaam nahi karega.")
     except Exception as e:
         return await message.reply_text(f"❌ Channel verify nahi ho paya: {e}")
 
@@ -582,10 +601,16 @@ async def manualabcmd(client, message: Message):
 
         formattedcaption = applyfonttocaption(originaltext, fontstyle) if fontstyle != "normal" else originaltext
 
-        if target_msg.media:
-            await client.editmessagecaption(channelid, msgid, caption=formattedcaption, parsemode=ParseMode.HTML, reply_markup=keyboard)
-        else:
-            await client.editmessagetext(channelid, msgid, text=formattedcaption, parsemode=ParseMode.HTML, reply_markup=keyboard)
+        try:
+            if target_msg.media:
+                await client.editmessagecaption(channelid, msgid, caption=formattedcaption, parsemode=ParseMode.HTML, reply_markup=keyboard)
+            else:
+                await client.editmessagetext(text=formattedcaption, chatid=channelid, messageid=msgid, parsemode=ParseMode.HTML, reply_markup=keyboard)
+        except Exception as edit_err:
+            if "MESSAGENOTMODIFIED" in str(edit_err).upper():
+                await client.editmessagereplymarkup(chatid=channelid, messageid=msgid, replymarkup=keyboard)
+            else:
+                raise
 
         await message.reply_text("✅ Buttons Successfully Attached!")
     except Exception as e:
@@ -617,14 +642,15 @@ async def changebuttonscmd(client, message: Message):
         return await message.reply_text("❌ Invalid button layout!")
 
     try:
-        await client.editmessagereplymarkup(channelid, msgid, replymarkup=keyboard)
+        await client.editmessagereplymarkup(chatid=channelid, messageid=msgid, replymarkup=keyboard)
         await message.reply_text("✅ Buttons updated successfully!")
     except Exception as e:
         await message.reply_text(f"⚠️ Update error: {e}")
 
 async def dispatchchannelpost(client, message: Message):
-    # 🔒 STRICT CHECK: Sirf channels mein hi kaam karega
-    if message.chat.type.name != "CHANNEL":
+    # 🔒 STRICT CHANNEL CHECK - Kurigram compatible
+    if not ischannelchat(message.chat):
+        logger.debug(f"Skipping non-channel chat: {message.chat.id} (type: {message.chat.type})")
         return
 
     chat_id = message.chat.id
@@ -683,18 +709,19 @@ async def dispatchchannelpost(client, message: Message):
             )
         else:
             await client.editmessagetext(
+                text=final_caption,
                 chatid=chatid,
                 message_id=message.id,
-                text=final_caption,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
         edit_success = True
     except Exception as err:
         err_str = str(err).upper()
+        logger.warning(f"First edit attempt failed: {err}")
         if "MESSAGENOTMODIFIED" in err_str:
             try:
-                await client.editmessagereplymarkup(chatid, message.id, reply_markup=keyboard)
+                await client.editmessagereplymarkup(chatid=chatid, messageid=message.id, reply_markup=keyboard)
                 edit_success = True
             except Exception:
                 pass
@@ -710,9 +737,9 @@ async def dispatchchannelpost(client, message: Message):
                     )
                 else:
                     await client.editmessagetext(
+                        text=raw_caption,
                         chatid=chatid,
                         message_id=message.id,
-                        text=raw_caption,
                         parse_mode=None,
                         reply_markup=keyboard
                     )
@@ -723,7 +750,7 @@ async def dispatchchannelpost(client, message: Message):
     if not edit_success:
         await safecopyanddelete(message, chatid, caption=finalcaption, replymarkup=keyboard)
 
-
+# 🔒 SIRF CHANNELS KE LIYE - Groups hata diye
 @app.on_message(filters.channel & ~filters.service)
 async def channelpostlistener(client, message: Message):
     await dispatchchannelpost(client, message)
@@ -740,3 +767,5 @@ async def autoapprovejoin_request(client, request: ChatJoinRequest):
             await client.approvechatjoinrequest(chatid=request.chat.id, userid=request.fromuser.id)
     except Exception as e:
         logger.error(f"Auto-approve join request failed: {e}")
+
+Agar abhi bhi channel par kaam nahi kar raha, toh Koyeb logs bhejo - main dekh lunga kya issue hai! 🚀
