@@ -373,14 +373,13 @@ def hyperlink_syntax_realm(text: str) -> str:
         return text
     if 'href="https://t.me/SyntaxRealm"' in text:
         return text
-    credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
+    text = re.sub(r'˹[\s˹]+˹', '˹', text)
+    text = re.sub(r'˼[\s˼]+˼', '˼', text)
     text = re.sub(r'˹\s*˹', '˹', text)
     text = re.sub(r'˼\s*˼', '˼', text)
-    credit_pattern = re.compile(
-        r"˹\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*˼",
-        re.IGNORECASE
-    )
-    text = credit_pattern.sub(credit_link, text)
+    credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
+    unicode_pattern = re.compile(r'˹\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*˼')
+    text = unicode_pattern.sub(credit_link, text)
     ascii_pattern = re.compile(
         r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?",
         re.IGNORECASE
