@@ -373,18 +373,11 @@ def hyperlink_syntax_realm(text: str) -> str:
         return text
     if 'href="https://t.me/SyntaxRealm"' in text:
         return text
-    text = re.sub(r'˹[\s˹]+˹', '˹', text)
-    text = re.sub(r'˼[\s˼]+˼', '˼', text)
-    text = re.sub(r'˹\s*˹', '˹', text)
-    text = re.sub(r'˼\s*˼', '˼', text)
     credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
-    unicode_pattern = re.compile(r'˹\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*˼')
-    text = unicode_pattern.sub(credit_link, text)
-    ascii_pattern = re.compile(
-        r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?",
-        re.IGNORECASE
-    )
-    return ascii_pattern.sub(credit_link, text)
+    text = text.replace('˹', '').replace('˼', '')
+    text = re.sub(r"['\"`]?\s*SyntaxRealm(?:\.t\.me)?\s*['\"`]?", credit_link, text, flags=re.IGNORECASE)
+    text = re.sub(r"['\"`]?\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*['\"`]?", credit_link, text)
+    return text
 
 async def safe_copy_and_delete(
     msg: Message,
