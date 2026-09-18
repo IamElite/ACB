@@ -483,6 +483,10 @@ async def test_auto_btn_cmd(client, message: Message):
 
 async def _handle_channel_post(client, message: Message, source: str = "unknown"):
     try:
+        # 🔒 CRITICAL: Check if message and chat exist
+        if not message or not message.chat:
+            return
+        
         chat = message.chat
         chat_id = chat.id
         
@@ -601,17 +605,6 @@ async def channel_post_edit_listener(client, message: Message):
     await _handle_channel_post(client, message, source="edited.filters.channel")
 
 try:
-    @app.on_message(filters.chat_type(ChatType.CHANNEL) & ~filters.service)
-    async def channel_post_listener_alt(client, message: Message):
-        await _handle_channel_post(client, message, source="filters.chat_type")
-    
-    @app.on_edited_message(filters.chat_type(ChatType.CHANNEL) & ~filters.service)
-    async def channel_post_edit_listener_alt(client, message: Message):
-        await _handle_channel_post(client, message, source="edited.filters.chat_type")
-except Exception as e:
-    logger.warning(f"Could not register chat_type handler: {e}")
-
-try:
     from pyrogram.raw.types import UpdateNewChannelMessage, UpdateEditChannelMessage
     
     @app.on_raw_update()
@@ -626,12 +619,13 @@ try:
                         full_id = int(f"-100{channel_id}")
                         try:
                             msg = await client.get_messages(full_id, message.id)
-                            if msg:
+                            # 🔒 CRITICAL: Check if msg and msg.chat exist
+                            if msg and msg.chat:
                                 source = "raw_update_new" if isinstance(update, UpdateNewChannelMessage) else "raw_update_edit"
                                 await _handle_channel_post(client, msg, source=source)
-                        except Exception as e:
+                        except Exception:
                             pass
-        except Exception as e:
+        except Exception:
             pass
     
     logger.info("Raw update handler registered")
