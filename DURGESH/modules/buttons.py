@@ -112,19 +112,15 @@ BUTTON_REGEX = re.compile(r'\[([^\]]+)\](?:\s[:\-–—|]?\s\[?\(?([a-zA-Z]+)\)?
 def parsebuttons(text: str, fontstyle: str = "sim", defaultcolor=REDSTYLE) -> Optional[InlineKeyboardMarkup]:
     if not text:
         return None
-
     raw_lines = text.strip().splitlines()
     keyboard = []
-
     for line in raw_lines:
         line_clean = line.strip()
         if not line_clean:
             continue
-
         row = []
         for content, outcolor in BUTTONREGEX.findall(line_clean):
             colorsuffix = (outcolor or "").strip().lower()
-
             match = URL_REGEX.search(content)
             if match:
                 label = re.sub(r'[\s+|:–—\->]+$', '', content[:match.start()]).strip()
@@ -133,17 +129,13 @@ def parsebuttons(text: str, fontstyle: str = "sim", defaultcolor=REDSTYLE) -> Op
             else:
                 parts = re.split(r'\s+(?:\+|\->|\|)\s+', content)
                 if len(parts)  2 else ""
-
             if not label or not (cleanurl := sanitizebuttonurl(rawurl)):
                 continue
-
             btncolor = COLORMAP.get(incolor or colorsuffix, default_color)
             styledtext = applyfont(label, fontstyle) if fontstyle != "normal" else label
             row.append(createbutton(styledtext, cleanurl, style=btncolor))
-
         if row:
             keyboard.append(row)
-
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 def parsetimetoseconds(timestr: str) -> int:
@@ -191,7 +183,6 @@ async def getchannelsettings(chat_id: int, username: Optional[str] = None) -> Op
     if username:
         u = username.lstrip("@").lower()
         queries.extend([{"chatid": f"@{u}"}, {"chatid": u}])
-
     if data := await authdb.find_one({"$or": queries}):
         return {
             "chatid": data.get("chatid"),
@@ -236,11 +227,9 @@ async def geteffectivetemplate(chat_id: int, username: Optional[str] = None) -> 
         if tmpl := await getbuttontemplate(settings["admin_id"]):
             if tmpl.get("template"):
                 return tmpl
-
     if globaltmpl := await btntemplatedb.findone({"id": "GLOBALACTIVETEMPLATE"}):
         if global_tmpl.get("template"):
             return global_tmpl
-
     return await btntemplatedb.findone(
         {"template": {"$exists": True, "$ne": ""}},
         sort=[("updatedat", -1), ("id", -1)]
@@ -307,13 +296,11 @@ def gethtmltext(text: str, entities: list) -> str:
         text_16 = text.encode('utf-16-le')
     except Exception:
         return text
-
     events = {}
     for i, e in enumerate(entities):
         start = e.offset * 2
         end = (e.offset + e.length) * 2
         tname = entity_name(e.type)
-
         starttag, endtag = ENTITYTAGS.get(tname, ("", ""))
         if not start_tag:
             if "PRE" in t_name:
@@ -323,11 +310,9 @@ def gethtmltext(text: str, entities: list) -> str:
                 starttag, endtag = f'', ""
             elif "TEXTMENTION" in tname and hasattr(e, "user") and e.user:
                 starttag, endtag = f'', ""
-
         if start_tag:
             events.setdefault(start, []).append(('start', i, start_tag))
             events.setdefault(end, []).append(('end', i, end_tag))
-
     res = ""
     last_idx = 0
     for idx in sorted(events.keys()):
@@ -338,7 +323,6 @@ def gethtmltext(text: str, entities: list) -> str:
         for e in sorted([x for x in evs if x[0] == 'start'], key=lambda x: x[1]):
             res += e[2]
         last_idx = idx
-
     res += text16[lastidx:].decode('utf-16-le')
     return res
 
@@ -355,25 +339,21 @@ def extracttriggerlinkandcleancaption(rawtext: str, html_text: str) -> Tuple[Opt
     if not rawtext and not htmltext:
         return None, "", ""
     targettext = htmltext or raw_text
-
     if mhtml := TRIGGERHTMLREGEX.search(targettext):
         url = m_html.group(1).strip()
         clhtml = TRIGGERHTMLREGEX.sub('', targettext).strip()
         clraw = TRIGGERHTMLREGEX.sub('', rawtext).strip() if rawtext else clhtml
         return url, clraw, clhtml
-
     if mplain := TRIGGERPLAINREGEX.search(targettext):
         url = m_plain.group(1).strip()
         clhtml = TRIGGERPLAINREGEX.sub('', targettext).strip()
         clraw = TRIGGERPLAINREGEX.sub('', rawtext).strip() if rawtext else clhtml
         return url, clraw, clhtml
-
     return None, rawtext, htmltext
 
 def applyfonttocaption(caption: str, fontstyle: str) -> str:
     if not caption or font_style == "normal":
         return hyperlinksyntaxrealm(caption)
-    
     pattern = re.compile(r'(]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
     lines = []
     for line in caption.split('\n'):
@@ -381,21 +361,17 @@ def applyfonttocaption(caption: str, fontstyle: str) -> str:
         if "syntaxrealm" in lowerline or "made by" in lowerline:
             lines.append(line)
             continue
-
         parts = pattern.split(line)
         styled = [p if (p.startswith('')) or p.startswith(('http', 't.me', 'tg://')) else applyfont(p, fontstyle) for p in parts if p]
         lines.append(''.join(styled))
-    
     formatted_caption = '\n'.join(lines)
     return hyperlinksyntaxrealm(formatted_caption)
 
 def hyperlinksyntaxrealm(text: str) -> str:
     if not text:
         return text
-
     if 'href="https://t.me/SyntaxRealm"' in text:
         return text
-
     credit_link = '˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼'
     credit_pattern = re.compile(
         r"['\"]?\s(?:˹\s)?SyntaxRealm(?:\.t\.me)?(?:\s˼)?\s['\"]?",
@@ -464,17 +440,14 @@ async def auth_cmd(client, message: Message):
             chatid = (await client.getchat(args[1])).id if args[1].startswith("@") else int(args[1])
         except Exception as e:
             return await message.reply_text(f"❌ Invalid channel! Error: {e}")
-
     if not chat_id:
         return await message.replytext("❌ Usage: /auth  -f on/off -ac 1s")
-
     try:
         chatobj = await client.getchat(chat_id)
         if not ischannelchat(chat_obj):
             return await message.reply_text("❌ Ye sirf channels ke liye hai! Groups/supergroups ke liye kaam nahi karega.")
     except Exception as e:
         return await message.reply_text(f"❌ Channel verify nahi ho paya: {e}")
-
     adminid = message.fromuser.id if message.from_user else None
     await addauthchannel(chatid, forwardtag, autoaccept, adminid=admin_id)
     await message.reply_text(
@@ -491,10 +464,8 @@ async def unauth_cmd(client, message: Message):
             return await message.reply_text("❌ Invalid channel!")
     elif fwd := getforwardchat(message.replytomessage):
         chat_id = fwd.id
-
     if not chat_id:
         return await message.replytext("❌ Usage: /unauth ")
-
     await removeauthchannel(chat_id)
     await message.replytext(f"✅ Un-Authorized: {chatid}")
 
@@ -502,11 +473,9 @@ async def unauth_cmd(client, message: Message):
 async def templatemgmthandler(client, message: Message):
     cmd = message.command[0].lower()
     userid = message.fromuser.id if message.from_user else 0
-
     if cmd == "abrm":
         await deletebuttontemplate(user_id)
         return await message.reply_text("🗑️ Template remove kar diya gaya hai!")
-
     if cmd in ["absee", "abseen"]:
         data = await getbuttontemplate(userid) or await btntemplatedb.findone({"id": "GLOBALACTIVETEMPLATE"})
         if not data:
@@ -517,28 +486,23 @@ async def templatemgmthandler(client, message: Message):
             f"📋 Aapka Button Template:\n{data['template']}\n\n🎨 Font: {data.get('font_style', 'sim')}\n👇 Button Preview:",
             replymarkup=previewkeyboard
         )
-
     if cmd == "abset":
         text = message.text or message.caption or ""
         font_style = "sim"
         if font_match := re.search(r"-f\s+(\w+)", text):
             fontstyle = fontmatch.group(1).lower()
-
         template_text = ""
         if message.replytomessage and (message.replytomessage.text or message.replytomessage.caption):
             templatetext = message.replytomessage.text or message.replyto_message.caption
         else:
             template_text = re.sub(r"^/abset\s*", "", text, flags=re.IGNORECASE)
             templatetext = re.sub(r"-f\s+\w+", "", templatetext, flags=re.IGNORECASE).strip()
-
         if not template_text:
             return await message.reply_text("❌ Template text provide karein! Format: /abset [Text + {link}]")
-
         testtext = re.sub(r"\{\s*(?:link|url|target)\s*\}", "https://t.me/PreviewDemo", templatetext, flags=re.IGNORECASE)
         testkeyboard = parsebuttons(testtext, fontstyle=fontstyle, defaultcolor=RED_STYLE)
         if not test_keyboard:
             return await message.reply_text("❌ Koi valid button nahi mila! Please check your bracket format.")
-
         await savebuttontemplate(userid, templatetext, font_style)
         return await message.reply_text(
             f"✅ Button Template Set Ho Gaya!\n🎨 Font: {font_style}\n🔴 Default Color: Danger (Red)\n👇 Live Preview:",
@@ -550,7 +514,6 @@ async def manualabcmd(client, message: Message):
     args = message.command[1:]
     if not args:
         return await message.replytext("❌ Usage: /ab ")
-
     target_link = args[0]
     channelid, msgid = extractchatandmsgid(target_link)
     if not channel_id:
@@ -561,25 +524,20 @@ async def manualabcmd(client, message: Message):
                 return await message.reply_text(f"❌ Channel nahi mila: {e}")
         else:
             return await message.reply_text("❌ Invalid post link format!")
-
     replacement_link = None
     if message.replytomessage:
         repliedtext = message.replytomessage.text or message.replyto_message.caption or ""
         if m := re.search(r"(https?://\S+)", replied_text):
             replacement_link = m.group(1)
-
     templatedata = await getbuttontemplate(message.fromuser.id) or await geteffectivetemplate(channel_id)
     if not template_data:
         return await message.reply_text("❌ Pehle /abset se template set karein!")
-
     template = template_data["template"]
     fontstyle = templatedata.get("font_style", "sim")
-
     try:
         targetmsg = await client.getmessages(channelid, msgid)
         originaltext = targetmsg.caption or target_msg.text or ""
         originalentities = targetmsg.captionentities or targetmsg.entities
-
         if not replacement_link:
             htmltext = gethtmltext(originaltext, original_entities)
             exturl, clraw, clhtml = extracttriggerlinkandcleancaption(originaltext, htmltext)
@@ -587,17 +545,13 @@ async def manualabcmd(client, message: Message):
                 replacementlink = exturl
                 originaltext = clhtml
                 original_entities = []
-
         if not replacement_link and "{link}" in template.lower():
             return await message.reply_text("❌ Replacement link nahi mila! Link reply karein ya post me -link dalein.")
-
         btnstr = re.sub(r"\{\s*(?:link|url|target)\s*\}", replacementlink or "", template, flags=re.IGNORECASE)
         keyboard = parsebuttons(btnstr, fontstyle=fontstyle, defaultcolor=REDSTYLE)
         if not keyboard:
             return await message.reply_text("❌ Buttons parse nahi ho paye.")
-
         formattedcaption = applyfonttocaption(originaltext, fontstyle) if fontstyle != "normal" else originaltext
-
         try:
             if target_msg.media:
                 await client.editmessagecaption(channelid, msgid, caption=formattedcaption, parsemode=ParseMode.HTML, reply_markup=keyboard)
@@ -608,7 +562,6 @@ async def manualabcmd(client, message: Message):
                 await client.editmessagereplymarkup(chatid=channelid, messageid=msgid, replymarkup=keyboard)
             else:
                 raise
-
         await message.reply_text("✅ Buttons Successfully Attached!")
     except Exception as e:
         if "MESSAGENOTMODIFIED" in str(e).upper():
@@ -621,7 +574,6 @@ async def changebuttonscmd(client, message: Message):
     if not message.replytomessage or not (message.replytomessage.text or message.replytomessage.caption):
         return await message.replytext("❌ Reply to a button-template message with /cb ")
     if len(message.command) `")
-
     link = message.command[1]
     channelid, msgid = extractchatandmsgid(link)
     if not channel_id:
@@ -632,12 +584,10 @@ async def changebuttonscmd(client, message: Message):
                 return await message.reply_text(f"❌ Channel error: {e}")
         else:
             return await message.reply_text("❌ Invalid link format!")
-
     rawbtn = message.replytomessage.text or message.replyto_message.caption
     keyboard = parsebuttons(rawbtn, fontstyle="normal", defaultcolor=RED_STYLE)
     if not keyboard:
         return await message.reply_text("❌ Invalid button layout!")
-
     try:
         await client.editmessagereplymarkup(chatid=channelid, messageid=msgid, replymarkup=keyboard)
         await message.reply_text("✅ Buttons updated successfully!")
@@ -648,23 +598,18 @@ async def dispatchchannelpost(client, message: Message):
     if not ischannelchat(message.chat):
         logger.debug(f"Skipping non-channel chat: {message.chat.id} (type: {message.chat.type})")
         return
-
     chat_id = message.chat.id
     raw_text = message.caption or message.text or ""
     if not raw_text:
         return
-
     entities = message.caption_entities or message.entities
     htmltext = gethtmltext(rawtext, entities)
     extractedurl, clraw, clhtml = extracttriggerlinkandcleancaption(rawtext, htmltext)
-
     settings = await getchannelsettings(chat_id, message.chat.username)
-
     if not extracted_url:
         if settings and settings.get("forwardtagremoval") and isforwardedpost(message):
             await safecopyanddelete(message, chatid)
         return
-
     if not settings:
         settings = {
             "chatid": str(chatid),
@@ -673,26 +618,20 @@ async def dispatchchannelpost(client, message: Message):
             "autoacceptseconds": 1
         }
         asyncio.createtask(addauthchannel(chatid, forwardtag=True, autoaccept_time="1s"))
-
     tmpldata = await geteffectivetemplate(chatid, message.chat.username)
     if not tmpldata or not tmpldata.get("template"):
         return
-
     fontstyle = tmpldata.get("font_style", "sim")
     btntext = tmpldata.get("template", "")
     btntext = re.sub(r"\{\s*(?:link|url|target)\s*\}", extractedurl, btn_text, flags=re.IGNORECASE)
-
     keyboard = parsebuttons(btntext, fontstyle=fontstyle, defaultcolor=REDSTYLE)
     if not keyboard:
         return
-
     finalcaption = applyfonttocaption(clhtml, fontstyle) if fontstyle != "normal" else clhtml
     rawcaption = applyfonttocaption(clraw, fontstyle) if fontstyle != "normal" else clraw
-
     if settings.get("forwardtagremoval", True) and isforwardedpost(message):
         await safecopyanddelete(message, chatid, caption=finalcaption, replymarkup=keyboard)
         return
-
     edit_success = False
     try:
         if message.media:
@@ -742,7 +681,6 @@ async def dispatchchannelpost(client, message: Message):
                 edit_success = True
             except Exception:
                 pass
-
     if not edit_success:
         await safecopyanddelete(message, chatid, caption=finalcaption, replymarkup=keyboard)
 
