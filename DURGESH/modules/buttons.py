@@ -352,32 +352,35 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
         return url, cl_raw, cl_html
     return None, raw_text, html_text
 
-def apply_font_to_caption(caption: str, font_style: str) -> str:
-    if not caption or font_style == "normal":
-        return hyperlink_syntax_realm(caption)
+SYNTAX_REALM_PATTERN = re.compile(
+    r'(˹\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*˼|˹\s*SyntaxRealm\.t\.me\s*˼|SyntaxRealm\.t\.me)',
+    re.IGNORECASE
+)
+
+def _apply_font_to_segment(text: str, font_style: str) -> str:
     pattern = re.compile(r'(<[^>]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
     lines = []
-    for line in caption.split('\n'):
+    for line in text.split('\n'):
         lower_line = line.lower()
-        if "syntaxrealm" in lower_line or "made by" in lower_line:
+        if "made by" in lower_line:
             lines.append(line)
             continue
         parts = pattern.split(line)
         styled = [p if (p.startswith('<') and p.endswith('>')) or p.startswith(('http', 't.me', 'tg://')) else apply_font(p, font_style) for p in parts if p]
         lines.append(''.join(styled))
-    formatted_caption = '\n'.join(lines)
-    return hyperlink_syntax_realm(formatted_caption)
+    return '\n'.join(lines)
 
-def hyperlink_syntax_realm(text: str) -> str:
-    if not text:
-        return text
-    if 'href="https://t.me/SyntaxRealm"' in text:
-        return text
-    credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
-    text = text.replace('˹', '').replace('˼', '')
-    text = re.sub(r"['\"`]?\s*SyntaxRealm(?:\.t\.me)?\s*['\"`]?", credit_link, text, flags=re.IGNORECASE)
-    text = re.sub(r"['\"`]?\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*['\"`]?", credit_link, text)
-    return text
+def apply_font_to_caption(caption: str, font_style: str) -> str:
+    if not caption or font_style == "normal":
+        return caption
+    parts = SYNTAX_REALM_PATTERN.split(caption)
+    result = []
+    for part in parts:
+        if SYNTAX_REALM_PATTERN.fullmatch(part):
+            result.append(part)
+        else:
+            result.append(_apply_font_to_segment(part, font_style))
+    return ''.join(result)
 
 async def safe_copy_and_delete(
     msg: Message,
