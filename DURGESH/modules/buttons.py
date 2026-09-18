@@ -261,9 +261,7 @@ def get_forward_chat(msg: Optional[Message]):
     return None
 
 def is_forwarded_post(msg: Message) -> bool:
-    if getattr(msg, "forward_origin", None) is not None:
-        return True
-    return bool(getattr(msg, "forward_date", None))
+    return getattr(msg, "forward_origin", None) is not None
 
 def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
     if priv := re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", link.strip()):
@@ -375,12 +373,17 @@ def hyperlink_syntax_realm(text: str) -> str:
         return text
     if 'href="https://t.me/SyntaxRealm"' in text:
         return text
+    
     credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
-    credit_pattern = re.compile(
-        r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?",
-        re.IGNORECASE
-    )
-    return credit_pattern.sub(credit_link, text)
+    
+    # Match unicode pattern with brackets: ˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼
+    unicode_pattern = r"˹\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*˼"
+    if re.search(unicode_pattern, text):
+        return re.sub(unicode_pattern, credit_link, text)
+    
+    # Fallback: ASCII pattern
+    ascii_pattern = r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?"
+    return re.sub(ascii_pattern, credit_link, text, flags=re.IGNORECASE)
 
 async def safe_copy_and_delete(
     msg: Message,
@@ -483,7 +486,6 @@ async def test_auto_btn_cmd(client, message: Message):
 
 async def _handle_channel_post(client, message: Message, source: str = "unknown"):
     try:
-        # 🔒 CRITICAL: Check if message and chat exist
         if not message or not message.chat:
             return
         
@@ -619,7 +621,6 @@ try:
                         full_id = int(f"-100{channel_id}")
                         try:
                             msg = await client.get_messages(full_id, message.id)
-                            # 🔒 CRITICAL: Check if msg and msg.chat exist
                             if msg and msg.chat:
                                 source = "raw_update_new" if isinstance(update, UpdateNewChannelMessage) else "raw_update_edit"
                                 await _handle_channel_post(client, msg, source=source)
