@@ -2,16 +2,18 @@ import re
 import asyncio
 import time
 import logging
-from typing import Dict, Optional, Tuple, List, Union
+import unicodedata
+from typing import Dict, Optional, Tuple, List
 
 import pyrogram
-from pyrogram import filters
+from pyrogram import filters, ContinuePropagation
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
 from pyrogram.enums import ParseMode
 
 logger = logging.getLogger("buttons")
 logging.basicConfig(level=logging.INFO)
 
+# -------------------- BUTTON STYLE ENUM IMPORT -------------------- #
 try:
     from pyrogram.enums import ButtonStyle
     RED_STYLE = ButtonStyle.DANGER
@@ -34,6 +36,7 @@ from DURGESH.database import db
 authdb = db.auth_channels
 btn_templatedb = db.button_templates
 
+# -------------------- FONT MAPS & NORMALIZER -------------------- #
 FONT_MAPS = {
     "s": (
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
@@ -61,26 +64,32 @@ for src, dst in FONT_MAPS.values():
         if d_char not in REVERSE_MAP:
             REVERSE_MAP[d_char] = s_char
 
+def normalize_to_ascii(text: str) -> str:
+    """Converts Unicode styled text back to plain ASCII."""
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize('NFKD', text)
+    return "".join(REVERSE_MAP.get(c, c) for c in nfkd)
+
 def apply_font(text: str, font_style: str) -> str:
-    """Normalizes stylized unicode characters back to ASCII, then applies desired font."""
     if not text or font_style == "normal":
         return text
-    clean_text = "".join(REVERSE_MAP.get(c, c) for c in text)
+    clean_text = normalize_to_ascii(text)
     if font_style in FONT_MAPS:
         src, dst = FONT_MAPS[font_style]
         table = dict(zip(src, dst))
         return "".join(table.get(c, c) for c in clean_text)
     return clean_text
 
-URL_REGEX = re.compile(r'(https?://\S+|tg://\S+|@[a-zA-Z0-9_]{4,})')
+# -------------------- BUTTON PARSER & CREATOR -------------------- #
+URL_REGEX = re.compile(r'(https?://\S+|tg://\S+|@[a-zA-Z0-9_]{4,}|\{\s*(?:link|url|target)\s*\})', re.IGNORECASE)
 
 def sanitize_button_url(url: str) -> Optional[str]:
-    """Cleans and standardizes button URLs to avoid [400 BUTTON_URL_INVALID]."""
     if not url:
         return None
     clean = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\u00a0\r\n]+', '', url.strip().strip("'\"<>`"))
-    if re.match(r'^\{.*\}$', clean):
-        return None
+    if re.match(r'^\{\s*(?:link|url|target)\s*\}$', clean, re.IGNORECASE):
+        return "https://t.me/SyntaxRealm"
     if clean.startswith("@"):
         return f"https://t.me/{clean.lstrip('@')}"
     if custom_tg := re.match(r'^([a-zA-Z0-9_]{4,})\.t\.me(?:/(.*))?$', clean, re.IGNORECASE):
@@ -95,7 +104,6 @@ def sanitize_button_url(url: str) -> Optional[str]:
     return clean
 
 def create_button(text: str, url: str, style=RED_STYLE) -> InlineKeyboardButton:
-    """Creates an InlineKeyboardButton ensuring colored styling support across pyrogram forks."""
     if style is not None:
         try:
             return InlineKeyboardButton(text, url=url, style=style)
@@ -107,57 +115,55 @@ def create_button(text: str, url: str, style=RED_STYLE) -> InlineKeyboardButton:
                 pass
     return InlineKeyboardButton(text, url=url)
 
-BUTTON_REGEX = re.compile(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\)?\]?)?')
-
 def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -> Optional[InlineKeyboardMarkup]:
     """
-    Parses button templates with support for:
-    - 1-2-1 Grid Layout: Buttons on the same line stay in the same row.
-    - Newlines separate rows.
-    - Titles containing '+' like '18+ Zone'
-    - Trailing and internal color tags
-    - Default Danger/Red color style
+    Parses templates with full support for:
+    - 1-2-1 grid layout: Buttons on the same line or separated by space remain in the same row.
+    - Buttons separated by newlines or '//' start a new row.
+    - Connected brackets without spaces ('][') create a new row.
+    - Preserves '18+' and '+' in button labels.
+    - Defaults all buttons to Danger/Red.
     """
     if not text:
         return None
 
-    # Preserve multi-button rows on the same line; split rows by explicit newlines
-    raw_lines = text.strip().splitlines()
-    keyboard = []
+    # Normalize literal \n
+    formatted_text = text.replace('\\n', '\n')
 
-    for line in raw_lines:
-        line_clean = line.strip()
-        if not line_clean:
-            continue
+    # Convert connected '][' (without spaces) into new rows, keeping '] [' on the same row
+    formatted_text = re.sub(r'\](?!\s)\[', ']\n[', formatted_text)      raw_lines = formatted_text.strip().splitlines()     keyboard = []      for line in raw_lines:         line_clean = line.strip()         if not line_clean:             continue          # Split by '//' for sub-rows if specified         sub_rows = line_clean.split('//')         for sub in sub_rows:             sub = sub.strip()             if not sub:                 continue              row = []             # Matches: [Button Content] with optional trailing color like: [Button + link] r             matches = re.finditer(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\)?\]?)?', sub)
+            for match in matches:
+                content = match.group(1).strip()
+                out_color = (match.group(2) or "").strip().lower()
 
-        row = []
-        for content, out_color in BUTTON_REGEX.findall(line_clean):
-            color_suffix = (out_color or "").strip().lower()
+                url_match = URL_REGEX.search(content)
+                if url_match:
+                    label = content[:url_match.start()].strip()
+                    label = re.sub(r'[\s+|:–—\->]+$', '', label).strip()
+                    raw_url = url_match.group(1).strip()
+                    in_color = content[url_match.end():].strip().lower()
+                    in_color = re.sub(r'^[\s+|:–—\->]+', '', in_color).strip()
+                else:
+                    parts = re.split(r'\s*(?:\+|\->|\|)\s*', content)
+                    if len(parts) < 2:
+                        continue
+                    label = parts[0].strip()
+                    raw_url = parts[1].strip()
+                    in_color = parts[2].strip().lower() if len(parts) > 2 else ""
 
-            match = URL_REGEX.search(content)
-            if match:
-                label = re.sub(r'[\s+|:–—\->]+$', '', content[:match.start()]).strip()
-                raw_url = match.group(1).strip()
-                in_color = re.sub(r'^[\s+|:–—\->]+', '', content[match.end():]).strip().lower()
-            else:
-                parts = re.split(r'\s+(?:\+|\->|\|)\s+', content)
-                if len(parts) < 2:
+                if not label or not (clean_url := sanitize_button_url(raw_url)):
                     continue
-                label, raw_url = parts[0].strip(), parts[1].strip()
-                in_color = parts[2].strip().lower() if len(parts) > 2 else ""
 
-            if not label or not (clean_url := sanitize_button_url(raw_url)):
-                continue
+                btn_color = COLOR_MAP.get(in_color or out_color, default_color)
+                styled_text = apply_font(label, font_style) if font_style != "normal" else label
+                row.append(create_button(styled_text, clean_url, style=btn_color))
 
-            btn_color = COLOR_MAP.get(in_color or color_suffix, default_color)
-            styled_text = apply_font(label, font_style) if font_style != "normal" else label
-            row.append(create_button(styled_text, clean_url, style=btn_color))
-
-        if row:
-            keyboard.append(row)
+            if row:
+                keyboard.append(row)
 
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
+# -------------------- DATABASE HELPERS -------------------- #
 def parse_time_to_seconds(time_str: str) -> int:
     if not time_str:
         return 1
@@ -187,19 +193,11 @@ async def remove_auth_channel(chat_id: int):
 
 async def get_channel_settings(chat_id: int, username: Optional[str] = None) -> Optional[Dict]:
     cid_str = str(chat_id)
-    raw_num = cid_str.replace("-100", "").replace("-", "")
     queries = [{"chat_id": cid_str}]
     try:
         queries.append({"chat_id": int(cid_str)})
     except Exception:
         pass
-    if raw_num.isdigit():
-        queries.extend([
-            {"chat_id": raw_num},
-            {"chat_id": int(raw_num)},
-            {"chat_id": f"-100{raw_num}"},
-            {"chat_id": int(f"-100{raw_num}")}
-        ])
     if username:
         u = username.lstrip("@").lower()
         queries.extend([{"chat_id": f"@{u}"}, {"chat_id": u}])
@@ -230,13 +228,6 @@ async def save_button_template(user_id: int, template: str, font_style: str = "s
         {"$set": {"template": template, "font_style": font_style, "updated_at": now, "admin_id": uid_str}},
         upsert=True
     )
-    try:
-        await authdb.update_many(
-            {"$or": [{"admin_id": {"$exists": False}}, {"admin_id": None}, {"admin_id": ""}]},
-            {"$set": {"admin_id": uid_str}}
-        )
-    except Exception:
-        pass
 
 async def get_button_template(user_id: int) -> Optional[Dict]:
     uid_str = str(user_id)
@@ -262,8 +253,8 @@ async def delete_button_template(user_id: int):
     uid_str = str(user_id)
     await btn_templatedb.delete_many({"$or": [{"user_id": uid_str}, {"user_id": user_id}]})
 
+# -------------------- MESSAGE HELPERS -------------------- #
 def get_forward_chat(msg: Optional[Message]):
-    """Extracts forwarded chat safely avoiding deprecation warnings for forward_from_chat."""
     if not msg:
         return None
     origin = getattr(msg, "forward_origin", None)
@@ -282,7 +273,6 @@ def get_forward_chat(msg: Optional[Message]):
     return None
 
 def is_forwarded_post(msg: Message) -> bool:
-    """Checks if a message is forwarded without triggering warnings."""
     if getattr(msg, "forward_origin", None) is not None:
         return True
     return bool(getattr(msg, "forward_date", None))
@@ -294,7 +284,6 @@ def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
     return None, None
 
 def _entity_name(entity_type) -> str:
-    """Returns entity type name reliably across Pyrogram / Pyrofork object structures."""
     if hasattr(entity_type, "name"):
         return str(entity_type.name).upper()
     val = getattr(entity_type, "value", entity_type)
@@ -367,22 +356,16 @@ TRIGGER_PLAIN_REGEX = re.compile(
 )
 
 def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tuple[Optional[str], str, str]:
-    """
-    Strictly checks for trigger links prefixed with a dash or trigger symbol (-, –, —, •, ▪, etc.).
-    Ordinary URLs without a dash are ignored so group chat discussions are completely untouched.
-    """
     if not raw_text and not html_text:
         return None, "", ""
     target_text = html_text or raw_text
 
-    # 1. Hyperlinked HTML tag with dash prefix: -<a href="...">...</a>
     if m_html := TRIGGER_HTML_REGEX.search(target_text):
         url = m_html.group(1).strip()
         cl_html = TRIGGER_HTML_REGEX.sub('', target_text).strip()
         cl_raw = TRIGGER_HTML_REGEX.sub('', raw_text).strip() if raw_text else cl_html
         return url, cl_raw, cl_html
 
-    # 2. Plain trigger link with dash prefix: -https://...
     if m_plain := TRIGGER_PLAIN_REGEX.search(target_text):
         url = m_plain.group(1).strip()
         cl_html = TRIGGER_PLAIN_REGEX.sub('', target_text).strip()
@@ -391,44 +374,65 @@ def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tup
 
     return None, raw_text, html_text
 
-def apply_font_to_caption(caption: str, font_style: str) -> str:
-    if not caption or font_style == "normal":
-        return hyperlink_syntax_realm(caption)
-    
+# -------------------- HYPERLINK & CAPTION FORMATTER -------------------- #
+SYNTAX_CREDIT_HTML = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
+SYNTAX_CREDIT_PLAIN = '˹ https://t.me/SyntaxRealm ˼'
+
+SYNTAX_PATTERN = re.compile(
+    r"""['"`‘ʼ՚]?\s*(?:˹\s*)?(?:SyntaxRealm|𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆|ꜱʏɴᴛᴀxʀᴇᴀʟᴍ|Syntax[\s_-]*Realm)(?:\.t\.me|\.𝗍\.𝗆𝖾)?(?:\s*˼)?\s*['"`’ʼ՚,]?""",
+    re.IGNORECASE
+)
+
+def hyperlink_syntax_realm(text: str, is_html: bool = True) -> str:
+    """Hyperlinks any occurrence of SyntaxRealm in credit lines to https://t.me/SyntaxRealm."""
+    if not text:
+        return text
+
+    target_replacement = SYNTAX_CREDIT_HTML if is_html else SYNTAX_CREDIT_PLAIN
+
+    if 'href="https://t.me/SyntaxRealm"' in text or 'https://t.me/SyntaxRealm' in text:
+        return text
+
+    if SYNTAX_PATTERN.search(text):
+        return SYNTAX_PATTERN.sub(target_replacement, text)
+
+    norm = normalize_to_ascii(text).lower()
+    if "syntaxrealm" in norm:
+        return re.sub(
+            r"""['"`‘ʼ՚]?\s*(?:˹\s*)?syntaxrealm(?:\.t\.me)?(?:\s*˼)?\s*['"`’ʼ՚,]?""",
+            target_replacement,
+            text,
+            flags=re.IGNORECASE
+        )
+
+    return text
+
+def apply_font_to_caption(caption: str, font_style: str, is_html: bool = True) -> str:
+    if not caption:
+        return ""
+
     pattern = re.compile(r'(<[^>]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
     lines = []
     for line in caption.split('\n'):
-        # Keep credit lines untouched by font style changes
-        lower_line = line.lower()
-        if "syntaxrealm" in lower_line or "made by" in lower_line:
+        norm_line = normalize_to_ascii(line).lower()
+        if "syntaxrealm" in norm_line or "made by" in norm_line or "credit" in norm_line:
+            lines.append(hyperlink_syntax_realm(line, is_html=is_html))
+            continue
+
+        if font_style == "normal":
             lines.append(line)
             continue
 
         parts = pattern.split(line)
-        styled = [p if (p.startswith('<') and p.endswith('>')) or p.startswith(('http', 't.me', 'tg://')) else apply_font(p, font_style) for p in parts if p]
+        styled = [
+            p if (p.startswith('<') and p.endswith('>')) or p.startswith(('http', 't.me', 'tg://'))
+            else apply_font(p, font_style)
+            for p in parts if p
+        ]
         lines.append(''.join(styled))
-    
+
     formatted_caption = '\n'.join(lines)
-    return hyperlink_syntax_realm(formatted_caption)
-
-def hyperlink_syntax_realm(text: str) -> str:
-    """Hyperlinks SyntaxRealm references to https://t.me/SyntaxRealm."""
-    if not text:
-        return text
-
-    # If already hyperlinked, leave it
-    if 'href="https://t.me/SyntaxRealm"' in text:
-        return text
-
-    # Replaces 'SyntaxRealm.t.me', '˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼' with hyperlinked version
-    credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
-    
-    # Matches variations of SyntaxRealm credit line
-    credit_pattern = re.compile(
-        r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?",
-        re.IGNORECASE
-    )
-    return credit_pattern.sub(credit_link, text)
+    return hyperlink_syntax_realm(formatted_caption, is_html=is_html)
 
 async def safe_copy_and_delete(
     msg: Message,
@@ -436,7 +440,6 @@ async def safe_copy_and_delete(
     caption: Optional[str] = None,
     reply_markup: Optional[InlineKeyboardMarkup] = None
 ) -> Optional[Message]:
-    """Clones the post to remove forward tags or replace posts when edit rights are restricted."""
     markup = reply_markup if reply_markup is not None else msg.reply_markup
     for _ in range(5):
         try:
@@ -470,6 +473,7 @@ async def safe_copy_and_delete(
             break
     return None
 
+# -------------------- COMMAND HANDLERS -------------------- #
 @app.on_message(filters.command(["auth"]))
 async def auth_cmd(client, message: Message):
     args = message.text.split()
@@ -545,7 +549,12 @@ async def template_mgmt_handler(client, message: Message):
             template_text = re.sub(r"-f\s+\w+", "", template_text, flags=re.IGNORECASE).strip()
 
         if not template_text:
-            return await message.reply_text("❌ Template text provide karein! Format: `/abset [Text + {link}]`")
+            return await message.reply_text(
+                "❌ **Template text provide karein! Format:**\n"
+                "`/abset [❖ View And Get ❖ + {link}]\n"
+                "[‧ Movies Hub ‧ + https://t.me/Link1] [‧ 18+ Zone ‧ + https://t.me/Link2]\n"
+                "[❍ All Ongoings ❍ + https://t.me/Link3]`"
+            )
 
         test_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", "https://t.me/PreviewDemo", template_text, flags=re.IGNORECASE)
         test_keyboard = parse_buttons(test_text, font_style=font_style, default_color=RED_STYLE)
@@ -554,7 +563,7 @@ async def template_mgmt_handler(client, message: Message):
 
         await save_button_template(user_id, template_text, font_style)
         return await message.reply_text(
-            f"✅ **Button Template Set Ho Gaya!**\n🎨 **Font:** `{font_style}`\n🔴 **Default Color:** `Danger (Red)`\n👇 **Live Preview:**",
+            f"✅ **Button Template Set Ho Gaya!**\n🎨 **Font:** `{font_style}`\n🔴 **Default Color:** `Danger (Red)`\n👇 **Live Preview (1-2-1 Grid):**",
             reply_markup=test_keyboard
         )
 
@@ -599,7 +608,6 @@ async def manual_ab_cmd(client, message: Message):
             if ext_url:
                 replacement_link = ext_url
                 original_text = cl_html
-                original_entities = []
 
         if not replacement_link and "{link}" in template.lower():
             return await message.reply_text("❌ Replacement link nahi mila! Link reply karein ya post me -link dalein.")
@@ -609,14 +617,14 @@ async def manual_ab_cmd(client, message: Message):
         if not keyboard:
             return await message.reply_text("❌ Buttons parse nahi ho paye.")
 
-        formatted_caption = apply_font_to_caption(original_text, font_style) if font_style != "normal" else original_text
+        formatted_caption = apply_font_to_caption(original_text, font_style, is_html=True)
 
         if target_msg.media:
             await client.edit_message_caption(channel_id, msg_id, caption=formatted_caption, parse_mode=ParseMode.HTML, reply_markup=keyboard)
         else:
             await client.edit_message_text(channel_id, msg_id, text=formatted_caption, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
-        await message.reply_text("✅ **Buttons Successfully Attached!**")
+        await message.reply_text("✅ **Buttons & Caption Successfully Applied!**")
     except Exception as e:
         if "MESSAGE_NOT_MODIFIED" in str(e).upper():
             await message.reply_text("ℹ️ **Post pehle se updated hai!**")
@@ -652,119 +660,111 @@ async def change_buttons_cmd(client, message: Message):
     except Exception as e:
         await message.reply_text(f"⚠️ Update error: {e}")
 
+# -------------------- AUTOMATIC POST DISPATCHER (NON-BLOCKING) -------------------- #
 async def dispatch_channel_post(client, message: Message):
-    chat_id = message.chat.id
-    raw_text = message.caption or message.text or ""
-    if not raw_text:
-        return
-
-    # Check for trigger link strictly with a leading dash or trigger symbol
-    entities = message.caption_entities or message.entities
-    html_text = get_html_text(raw_text, entities)
-    extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
-
-    settings = await get_channel_settings(chat_id, message.chat.username)
-
-    # If NO trigger link is present:
-    if not extracted_url:
-        # If it's a forwarded post in an authorized channel, remove forward tag if enabled
-        if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
-            await safe_copy_and_delete(message, chat_id)
-        # Completely ignore ordinary group chat and channel messages that lack a trigger
-        return
-
-    # If trigger link is present but channel wasn't authorized, initialize default settings
-    if not settings:
-        settings = {
-            "chat_id": str(chat_id),
-            "forward_tag_removal": True,
-            "auto_accept_time": "1s",
-            "auto_accept_seconds": 1
-        }
-        asyncio.create_task(add_auth_channel(chat_id, forward_tag=True, auto_accept_time="1s"))
-
-    tmpl_data = await get_effective_template(chat_id, message.chat.username)
-    if not tmpl_data or not tmpl_data.get("template"):
-        return
-
-    font_style = tmpl_data.get("font_style", "sim")
-    btn_text = tmpl_data.get("template", "")
-    btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_url, btn_text, flags=re.IGNORECASE)
-
-    keyboard = parse_buttons(btn_text, font_style=font_style, default_color=RED_STYLE)
-    if not keyboard:
-        return
-
-    final_caption = apply_font_to_caption(cl_html, font_style) if font_style != "normal" else cl_html
-    raw_caption = apply_font_to_caption(cl_raw, font_style) if font_style != "normal" else cl_raw
-
-    # Forward tag removal branch
-    if settings.get("forward_tag_removal", True) and is_forwarded_post(message):
-        await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
-        return
-
-    # In-place edit branch with fallback
-    edit_success = False
     try:
-        if message.media:
-            await client.edit_message_caption(
-                chat_id=chat_id,
-                message_id=message.id,
-                caption=final_caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-        else:
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=message.id,
-                text=final_caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-        edit_success = True
-    except Exception as err:
-        err_str = str(err).upper()
-        if "MESSAGE_NOT_MODIFIED" in err_str:
-            try:
-                await client.edit_message_reply_markup(chat_id, message.id, reply_markup=keyboard)
-                edit_success = True
-            except Exception:
-                pass
-        else:
-            # Fallback: Retry edit with plain text if HTML tags failed
-            try:
-                if message.media:
-                    await client.edit_message_caption(
-                        chat_id=chat_id,
-                        message_id=message.id,
-                        caption=raw_caption,
-                        parse_mode=None,
-                        reply_markup=keyboard
-                    )
-                else:
-                    await client.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=message.id,
-                        text=raw_caption,
-                        parse_mode=None,
-                        reply_markup=keyboard
-                    )
-                edit_success = True
-            except Exception:
-                pass
+        raw_text = message.caption or message.text or ""
+        if not raw_text:
+            return
 
-    # If in-place editing failed (e.g. MESSAGE_AUTHOR_REQUIRED), clone post with buttons and delete old post
-    if not edit_success:
-        await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
+        # STRICT FILTER: Check if post contains a trigger link prefixed by -, –, —, •, etc.
+        if not re.search(r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*(?:https?://|t\.me/|<a\s)', raw_text, re.IGNORECASE):
+            return
 
-@app.on_message((filters.channel | filters.group) & ~filters.service)
+        chat_id = message.chat.id
+        entities = message.caption_entities or message.entities
+        html_text = get_html_text(raw_text, entities)
+        extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
+
+        if not extracted_url:
+            return
+
+        tmpl_data = await get_effective_template(chat_id, message.chat.username)
+        if not tmpl_data or not tmpl_data.get("template"):
+            return
+
+        font_style = tmpl_data.get("font_style", "sim")
+        btn_text = tmpl_data.get("template", "")
+        btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_url, btn_text, flags=re.IGNORECASE)
+
+        keyboard = parse_buttons(btn_text, font_style=font_style, default_color=RED_STYLE)
+        if not keyboard:
+            return
+
+        final_caption = apply_font_to_caption(cl_html, font_style, is_html=True)
+        raw_caption = apply_font_to_caption(cl_raw, font_style, is_html=False)
+
+        settings = await get_channel_settings(chat_id, message.chat.username)
+        if settings and settings.get("forward_tag_removal", True) and is_forwarded_post(message):
+            await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
+            return
+
+        edit_success = False
+        try:
+            if message.media:
+                await client.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message.id,
+                    caption=final_caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            else:
+                await client.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message.id,
+                    text=final_caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            edit_success = True
+        except Exception as err:
+            err_str = str(err).upper()
+            if "MESSAGE_NOT_MODIFIED" in err_str:
+                try:
+                    await client.edit_message_reply_markup(chat_id, message.id, reply_markup=keyboard)
+                    edit_success = True
+                except Exception:
+                    pass
+            else:
+                # Fallback to plain text with https:// link
+                try:
+                    if message.media:
+                        await client.edit_message_caption(
+                            chat_id=chat_id,
+                            message_id=message.id,
+                            caption=raw_caption,
+                            parse_mode=None,
+                            reply_markup=keyboard
+                        )
+                    else:
+                        await client.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message.id,
+                            text=raw_caption,
+                            parse_mode=None,
+                            reply_markup=keyboard
+                        )
+                    edit_success = True
+                except Exception:
+                    pass
+
+        if not edit_success:
+            await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
+
+    except Exception as e:
+        logger.error(f"[AUTO-BUTTON] Post dispatcher error: {e}")
+
+# Dedicated group=25 ensures this module never blocks other modules (group=0 or group=10)
+@app.on_message((filters.channel | filters.group) & ~filters.service, group=25)
 async def channel_post_listener(client, message: Message):
     await dispatch_channel_post(client, message)
+    raise ContinuePropagation
 
-@app.on_edited_message((filters.channel | filters.group) & ~filters.service)
+@app.on_edited_message((filters.channel | filters.group) & ~filters.service, group=25)
 async def channel_post_edit_listener(client, message: Message):
     await dispatch_channel_post(client, message)
+    raise ContinuePropagation
 
 @app.on_chat_join_request()
 async def auto_approve_join_request(client, request: ChatJoinRequest):
