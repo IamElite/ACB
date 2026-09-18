@@ -96,7 +96,6 @@ def sanitizebuttonurl(url: str) -> Optional[str]:
     return clean
 
 def create_button(text: str, url: str, style=None) -> InlineKeyboardButton:
-    """Kurigram/Pyrofork compatible button creation with colored style support."""
     if style is not None and COLOREDBUTTONSSUPPORTED:
         try:
             return InlineKeyboardButton(text, url=url, style=style)
@@ -444,13 +443,11 @@ async def safecopyand_delete(
     return None
 
 def ischannelchat(chat) -> bool:
-    """Kurigram/Pyrogram compatible channel check."""
     if not chat:
         return False
     chat_type = getattr(chat, "type", None)
     if chat_type is None:
         return False
-    # Check both enum and string
     if chat_type == ChatType.CHANNEL:
         return True
     if hasattr(chattype, "value") and chattype.value == "channel":
@@ -623,7 +620,7 @@ async def manualabcmd(client, message: Message):
 async def changebuttonscmd(client, message: Message):
     if not message.replytomessage or not (message.replytomessage.text or message.replytomessage.caption):
         return await message.replytext("❌ Reply to a button-template message with /cb ")
-    if len(message.command) ")
+    if len(message.command) `")
 
     link = message.command[1]
     channelid, msgid = extractchatandmsgid(link)
@@ -648,7 +645,6 @@ async def changebuttonscmd(client, message: Message):
         await message.reply_text(f"⚠️ Update error: {e}")
 
 async def dispatchchannelpost(client, message: Message):
-    # 🔒 STRICT CHANNEL CHECK - Kurigram compatible
     if not ischannelchat(message.chat):
         logger.debug(f"Skipping non-channel chat: {message.chat.id} (type: {message.chat.type})")
         return
@@ -750,7 +746,6 @@ async def dispatchchannelpost(client, message: Message):
     if not edit_success:
         await safecopyanddelete(message, chatid, caption=finalcaption, replymarkup=keyboard)
 
-# 🔒 SIRF CHANNELS KE LIYE - Groups hata diye
 @app.on_message(filters.channel & ~filters.service)
 async def channelpostlistener(client, message: Message):
     await dispatchchannelpost(client, message)
@@ -767,5 +762,3 @@ async def autoapprovejoin_request(client, request: ChatJoinRequest):
             await client.approvechatjoinrequest(chatid=request.chat.id, userid=request.fromuser.id)
     except Exception as e:
         logger.error(f"Auto-approve join request failed: {e}")
-
-Agar abhi bhi channel par kaam nahi kar raha, toh Koyeb logs bhejo - main dekh lunga kya issue hai! 🚀
