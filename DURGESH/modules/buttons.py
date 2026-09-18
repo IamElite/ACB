@@ -495,7 +495,113 @@ async def auth_cmd(client, message: Message):
     admin_id = message.from_user.id if message.from_user else None
     await add_auth_channel(chat_id, forward_tag, auto_accept, admin_id=admin_id)
     await message.reply_text(
-        f"✅ **Channel Autho
+        f"✅ **Channel Autho            try:
+                style_val = getattr(style, "value", str(style).lower())
+                return InlineKeyboardButton(text, url=url, style=style_val)
+            except Exception:
+                pass
+    return InlineKeyboardButton(text, url=url)
+
+def parse_buttons(text: str, font_style: str = "sim", default_color=RED_STYLE) -> Optional[InlineKeyboardMarkup]:
+    """
+    Parses templates with full support for:
+    - 1-2-1 grid layout: Buttons on the same line or separated by space remain in the same row.
+    - Buttons separated by newlines or '//' start a new row.
+    - Connected brackets without spaces ('][') create a new row.
+    - Preserves '18+' and '+' in button labels.
+    - Defaults all buttons to Danger/Red.
+    """
+    if not text:
+        return None
+
+    # Normalize literal \n
+    formatted_text = text.replace('\\n', '\n')
+
+    # Convert connected '][' (without spaces) into new rows, keeping '] [' on the same row
+    formatted_text = re.sub(r'\](?!\s)\[', ']\n[', formatted_text)      raw_lines = formatted_text.strip().splitlines()     keyboard = []      for line in raw_lines:         line_clean = line.strip()         if not line_clean:             continue          # Split by '//' for sub-rows if specified         sub_rows = line_clean.split('//')         for sub in sub_rows:             sub = sub.strip()             if not sub:                 continue              row = []             # Matches: [Button Content] with optional trailing color like: [Button + link] r             matches = re.finditer(r'\[([^\]]+)\](?:\s*[:\-–—|]?\s*\[?\(?([a-zA-Z]+)\)?\]?)?', sub)
+            for match in matches:
+                content = match.group(1).strip()
+                out_color = (match.group(2) or "").strip().lower()
+
+                url_match = URL_REGEX.search(content)
+                if url_match:
+                    label = content[:url_match.start()].strip()
+                    label = re.sub(r'[\s+|:–—\->]+$', '', label).strip()
+                    raw_url = url_match.group(1).strip()
+                    in_color = content[url_match.end():].strip().lower()
+                    in_color = re.sub(r'^[\s+|:–—\->]+', '', in_color).strip()
+                else:
+                    parts = re.split(r'\s*(?:\+|\->|\|)\s*', content)
+                    if len(parts) < 2:
+                        continue
+                    label = parts[0].strip()
+                    raw_url = parts[1].strip()
+                    in_color = parts[2].strip().lower() if len(parts) > 2 else ""
+
+                if not label or not (clean_url := sanitize_button_url(raw_url)):
+                    continue
+
+                btn_color = COLOR_MAP.get(in_color or out_color, default_color)
+                styled_text = apply_font(label, font_style) if font_style != "normal" else label
+                row.append(create_button(styled_text, clean_url, style=btn_color))
+
+            if row:
+                keyboard.append(row)
+
+    return InlineKeyboardMarkup(keyboard) if keyboard else None
+
+# -------------------- DATABASE HELPERS -------------------- #
+def parse_time_to_seconds(time_str: str) -> int:
+    if not time_str:
+        return 1
+    if match := re.match(r'^(\d+)([smhd])$', time_str.strip().lower()):
+        return int(match.group(1)) * {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}.get(match.group(2), 1)
+    return 1
+
+async def add_auth_channel(chat_id: int, forward_tag: bool = True, auto_accept_time: str = "1s", admin_id: Optional[int] = None):
+    cid_str = str(chat_id)
+    payload = {
+        "chat_id": cid_str,
+        "forward_tag_removal": forward_tag,
+        "auto_accept_time": auto_accept_time,
+        "auto_accept_seconds": parse_time_to_seconds(auto_accept_time)
+    }
+    if admin_id:
+        payload["admin_id"] = str(admin_id)
+    await authdb.update_one(
+        {"$or": [{"chat_id": cid_str}, {"chat_id": chat_id}]},
+        {"$set": payload},
+        upsert=True
+    )
+
+async def remove_auth_channel(chat_id: int):
+    cid_str = str(chat_id)
+    await authdb.delete_many({"$or": [{"chat_id": cid_str}, {"chat_id": chat_id}]})
+
+async def get_channel_settings(chat_id: int, username: Optional[str] = None) -> Optional[Dict]:
+    cid_str = str(chat_id)
+    queries = [{"chat_id": cid_str}]
+    try:
+        queries.append({"chat_id": int(cid_str)})
+    except Exception:
+        pass
+    if username:
+        u = username.lstrip("@").lower()
+        queries.extend([{"chat_id": f"@{u}"}, {"chat_id": u}])
+
+    if data := await authdb.find_one({"$or": queries}):
+        return {
+            "chat_id": data.get("chat_id"),
+            "forward_tag_removal": data.get("forward_tag_removal", True),
+            "auto_accept_time": data.get("auto_accept_time", "1s"),
+            "auto_accept_seconds": data.get("auto_accept_seconds", 1),
+            "admin_id": data.get("admin_id")
+        }
+    return None
+
+async def is_channel_authed(chat_id: int, username: Optional[str] = None) -> bool:
+    return bool(await get_channel_settings(chat_id, username))
+
 async def save_button_template(user_id: int, template: str, font_style: str = "sim"):
     uid_str = str(user_id)
     now = time.time()
@@ -941,14 +1047,18 @@ async def change_buttons_cmd(client, message: Message):
     except Exception as e:
         await message.reply_text(f"⚠️ Update error: {e}")
 
-# -------------------- AUTOMATIC POST DISPATCHER (NON-BLOCKING) -------------------- #
+# -------------------- AUTOMATIC POST DISPATCHER (CHANNELS ONLY) -------------------- #
 async def dispatch_channel_post(client, message: Message):
     try:
+        # STRICT ISOLATION: Work ONLY on Channels. Ignore Groups and DMs completely.
+        if message.chat.type != ChatType.CHANNEL:
+            return
+
         raw_text = message.caption or message.text or ""
         if not raw_text:
             return
 
-        # STRICT FILTER: Check if post contains a trigger link prefixed by -, –, —, •, etc.
+        # STRICT TRIGGER: Check if post contains a trigger link prefixed by -, –, —, •, etc.
         if not re.search(r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*(?:https?://|t\.me/|<a\s)', raw_text, re.IGNORECASE):
             return
 
@@ -1034,15 +1144,15 @@ async def dispatch_channel_post(client, message: Message):
             await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
 
     except Exception as e:
-        logger.error(f"[AUTO-BUTTON] Post dispatcher error: {e}")
+        logger.error(f"[AUTO-BUTTON] Channel post dispatcher error: {e}")
 
-# Dedicated group=25 ensures this module never blocks other modules (group=0 or group=10)
-@app.on_message((filters.channel | filters.group) & ~filters.service, group=25)
+# CHANNELS ONLY: filter prevents groups or DMs from ever invoking this handler
+@app.on_message(filters.channel & ~filters.service, group=25)
 async def channel_post_listener(client, message: Message):
     await dispatch_channel_post(client, message)
     raise ContinuePropagation
 
-@app.on_edited_message((filters.channel | filters.group) & ~filters.service, group=25)
+@app.on_edited_message(filters.channel & ~filters.service, group=25)
 async def channel_post_edit_listener(client, message: Message):
     await dispatch_channel_post(client, message)
     raise ContinuePropagation
