@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple, List
 import pyrogram
 from pyrogram import filters, ContinuePropagation
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatType
 
 logger = logging.getLogger("buttons")
 logging.basicConfig(level=logging.INFO)
@@ -215,6 +215,287 @@ async def get_channel_settings(chat_id: int, username: Optional[str] = None) -> 
 async def is_channel_authed(chat_id: int, username: Optional[str] = None) -> bool:
     return bool(await get_channel_settings(chat_id, username))
 
+async def save_button_template(user_id: int, template: str, font_style: str = "sim"):
+    uid_str = str(user_id)
+    now = time.time()
+    await btn_templatedb.update_one(
+        {"$or": [{"user_id": uid_str}, {"user_id": user_id}]},
+        {"$set": {"user_id": uid_str, "template": template, "font_style": font_style, "updated_at": now}},
+        upsert=True
+    )
+    await btn_templatedb.update_one(
+        {"_id": "GLOBAL_ACTIVE_TEMPLATE"},
+        {"$set": {"template": template, "font_style": font_style, "updated_at": now, "admin_id": uid_str}},
+        upsert=True
+    )
+
+async def get_button_template(user_id: int) -> Optional[Dict]:
+    uid_str = str(user_id)
+    return await btn_templatedb.find_one({"$or": [{"user_id": uid_str}, {"user_id": user_id}]})
+
+async def get_effective_template(chat_id: int, username: Optional[str] = None) -> Optional[Dict]:
+    settings = await get_channel_settings(chat_id, username)
+    if settings and settings.get("admin_id"):
+        if tmpl := await get_button_template(settings["admin_id"]):
+            if tmpl.get("template"):
+                return tmpl
+
+    if global_tmpl := await btn_templatedb.find_one({"_id": "GLOBAL_ACTIVE_TEMPLATE"}):
+        if global_tmpl.get("template"):
+            return global_tmpl
+
+    return await btn_templatedb.find_one(
+        {"template": {"$exists": True, "$ne": ""}},
+        sort=[("updated_at", -1), ("_id", -1)]
+    )
+
+async def delete_button_template(user_id: int):
+    uid_str = str(user_id)
+    await btn_templatedb.delete_many({"$or": [{"user_id": uid_str}, {"user_id": user_id}]})
+
+# -------------------- MESSAGE HELPERS -------------------- #
+def get_forward_chat(msg: Optional[Message]):
+    if not msg:
+        return None
+    origin = getattr(msg, "forward_origin", None)
+    if origin:
+        chat = getattr(origin, "chat", None)
+        if chat:
+            return getattr(chat, "sender_chat", chat)
+        sender = getattr(origin, "sender_chat", None)
+        if sender:
+            return sender
+    if not hasattr(msg, "forward_origin"):
+        try:
+            return getattr(msg, "forward_from_chat", None)
+        except Exception:
+            return None
+    return None
+
+def is_forwarded_post(msg: Message) -> bool:
+    if getattr(msg, "forward_origin", None) is not None:
+        return True
+    return bool(getattr(msg, "forward_date", None))
+
+def extract_chat_and_msg_id(link: str) -> Tuple[Optional[int], Optional[int]]:
+    if priv := re.match(r"https?://t\.me/c/(-?\d+)/(\d+)", link.strip()):
+        raw = priv.group(1).lstrip("-")
+        return (int(f"-{raw}") if raw.startswith("100") else int(f"-100{raw}")), int(priv.group(2))
+    return None, None
+
+def _entity_name(entity_type) -> str:
+    if hasattr(entity_type, "name"):
+        return str(entity_type.name).upper()
+    val = getattr(entity_type, "value", entity_type)
+    if isinstance(val, str):
+        return val.upper()
+    if hasattr(val, "__name__"):
+        return val.__name__.upper()
+    return str(val).upper()
+
+ENTITY_TAGS = {
+    "BOLD": ("<b>", "</b>"),
+    "ITALIC": ("<i>", "</i>"),
+    "CODE": ("<code>", "</code>"),
+    "STRIKETHROUGH": ("<s>", "</s>"),
+    "UNDERLINE": ("<u>", "</u>"),
+    "SPOILER": ("<spoiler>", "</spoiler>"),
+    "BLOCKQUOTE": ("<blockquote>", "</blockquote>"),
+    "EXPANDABLE_BLOCKQUOTE": ("<blockquote expandable>", "</blockquote>")
+}
+
+def get_html_text(text: str, entities: list) -> str:
+    if not text or not entities:
+        return text or ""
+    try:
+        text_16 = text.encode('utf-16-le')
+    except Exception:
+        return text
+
+    events = {}
+    for i, e in enumerate(entities):
+        start = e.offset * 2
+        end = (e.offset + e.length) * 2
+        t_name = _entity_name(e.type)
+
+        start_tag, end_tag = ENTITY_TAGS.get(t_name, ("", ""))
+        if not start_tag:
+            if "PRE" in t_name:
+                lang = getattr(e, "language", "") or ""
+                start_tag, end_tag = f'<pre><code class="language-{lang}">', "</code></pre>"
+            elif "TEXT_LINK" in t_name and hasattr(e, "url"):
+                start_tag, end_tag = f'<a href="{e.url}">', "</a>"
+            elif "TEXT_MENTION" in t_name and hasattr(e, "user") and e.user:
+                start_tag, end_tag = f'<a href="tg://user?id={e.user.id}">', "</a>"
+
+        if start_tag:
+            events.setdefault(start, []).append(('start', i, start_tag))
+            events.setdefault(end, []).append(('end', i, end_tag))
+
+    res = ""
+    last_idx = 0
+    for idx in sorted(events.keys()):
+        res += text_16[last_idx:idx].decode('utf-16-le')
+        evs = events[idx]
+        for e in sorted([x for x in evs if x[0] == 'end'], key=lambda x: x[1], reverse=True):
+            res += e[2]
+        for e in sorted([x for x in evs if x[0] == 'start'], key=lambda x: x[1]):
+            res += e[2]
+        last_idx = idx
+
+    res += text_16[last_idx:].decode('utf-16-le')
+    return res
+
+TRIGGER_HTML_REGEX = re.compile(
+    r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
+    re.IGNORECASE
+)
+TRIGGER_PLAIN_REGEX = re.compile(
+    r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*(https?://[^\s<>"\']+|tg://[^\s<>"\']+|t\.me/[^\s<>"\']+)',
+    re.IGNORECASE
+)
+
+def extract_trigger_link_and_clean_caption(raw_text: str, html_text: str) -> Tuple[Optional[str], str, str]:
+    if not raw_text and not html_text:
+        return None, "", ""
+    target_text = html_text or raw_text
+
+    if m_html := TRIGGER_HTML_REGEX.search(target_text):
+        url = m_html.group(1).strip()
+        cl_html = TRIGGER_HTML_REGEX.sub('', target_text).strip()
+        cl_raw = TRIGGER_HTML_REGEX.sub('', raw_text).strip() if raw_text else cl_html
+        return url, cl_raw, cl_html
+
+    if m_plain := TRIGGER_PLAIN_REGEX.search(target_text):
+        url = m_plain.group(1).strip()
+        cl_html = TRIGGER_PLAIN_REGEX.sub('', target_text).strip()
+        cl_raw = TRIGGER_PLAIN_REGEX.sub('', raw_text).strip() if raw_text else cl_html
+        return url, cl_raw, cl_html
+
+    return None, raw_text, html_text
+
+# -------------------- HYPERLINK & CAPTION FORMATTER -------------------- #
+SYNTAX_CREDIT_HTML = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
+SYNTAX_CREDIT_PLAIN = '˹ https://t.me/SyntaxRealm ˼'
+
+SYNTAX_PATTERN = re.compile(
+    r"""['"`‘ʼ՚]?\s*(?:˹\s*)?(?:SyntaxRealm|𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆|ꜱʏɴᴛᴀxʀᴇᴀʟᴍ|Syntax[\s_-]*Realm)(?:\.t\.me|\.𝗍\.𝗆𝖾)?(?:\s*˼)?\s*['"`’ʼ՚,]?""",
+    re.IGNORECASE
+)
+
+def hyperlink_syntax_realm(text: str, is_html: bool = True) -> str:
+    """Hyperlinks any occurrence of SyntaxRealm in credit lines to https://t.me/SyntaxRealm."""
+    if not text:
+        return text
+
+    target_replacement = SYNTAX_CREDIT_HTML if is_html else SYNTAX_CREDIT_PLAIN
+
+    if 'href="https://t.me/SyntaxRealm"' in text or 'https://t.me/SyntaxRealm' in text:
+        return text
+
+    if SYNTAX_PATTERN.search(text):
+        return SYNTAX_PATTERN.sub(target_replacement, text)
+
+    norm = normalize_to_ascii(text).lower()
+    if "syntaxrealm" in norm:
+        return re.sub(
+            r"""['"`‘ʼ՚]?\s*(?:˹\s*)?syntaxrealm(?:\.t\.me)?(?:\s*˼)?\s*['"`’ʼ՚,]?""",
+            target_replacement,
+            text,
+            flags=re.IGNORECASE
+        )
+
+    return text
+
+def apply_font_to_caption(caption: str, font_style: str, is_html: bool = True) -> str:
+    if not caption:
+        return ""
+
+    pattern = re.compile(r'(<[^>]+>|https?://[^\s]+|t\.me/[^\s]+|tg://[^\s]+)')
+    lines = []
+    for line in caption.split('\n'):
+        norm_line = normalize_to_ascii(line).lower()
+        if "syntaxrealm" in norm_line or "made by" in norm_line or "credit" in norm_line:
+            lines.append(hyperlink_syntax_realm(line, is_html=is_html))
+            continue
+
+        if font_style == "normal":
+            lines.append(line)
+            continue
+
+        parts = pattern.split(line)
+        styled = [
+            p if (p.startswith('<') and p.endswith('>')) or p.startswith(('http', 't.me', 'tg://'))
+            else apply_font(p, font_style)
+            for p in parts if p
+        ]
+        lines.append(''.join(styled))
+
+    formatted_caption = '\n'.join(lines)
+    return hyperlink_syntax_realm(formatted_caption, is_html=is_html)
+
+async def safe_copy_and_delete(
+    msg: Message,
+    chat_id: int,
+    caption: Optional[str] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None
+) -> Optional[Message]:
+    markup = reply_markup if reply_markup is not None else msg.reply_markup
+    for _ in range(5):
+        try:
+            if msg.media:
+                c = caption if caption is not None else (msg.caption or "")
+                sent = await msg.copy(
+                    chat_id,
+                    caption=c,
+                    parse_mode=ParseMode.HTML if caption else None,
+                    reply_markup=markup
+                )
+            else:
+                t = caption if caption is not None else (msg.text or "")
+                sent = await app.send_message(
+                    chat_id=chat_id,
+                    text=t,
+                    parse_mode=ParseMode.HTML if caption else None,
+                    reply_markup=markup,
+                    disable_web_page_preview=False
+                )
+            await asyncio.sleep(0.4)
+            await msg.delete()
+            return sent
+        except Exception as e:
+            if "FLOOD_WAIT" in str(e).upper():
+                wait_match = re.search(r'(\d+)', str(e))
+                wait_sec = int(wait_match.group(1)) + 2 if wait_match else 5
+                await asyncio.sleep(wait_sec)
+                continue
+            logger.error(f"[AUTO-BUTTON] safe_copy_and_delete failed: {e}")
+            break
+    return None
+
+# -------------------- COMMAND HANDLERS -------------------- #
+@app.on_message(filters.command(["auth"]))
+async def auth_cmd(client, message: Message):
+    args = message.text.split()
+    forward_tag = "-f" in args and args[args.index("-f") + 1].lower() in ["on", "true", "1"] if "-f" in args and args.index("-f") + 1 < len(args) else True
+    auto_accept = args[args.index("-ac") + 1] if "-ac" in args and args.index("-ac") + 1 < len(args) else "1s"
+
+    chat_id = None
+    if fwd := get_forward_chat(message.reply_to_message):
+        chat_id = fwd.id
+    elif len(args) >= 2:
+        try:
+            chat_id = (await client.get_chat(args[1])).id if args[1].startswith("@") else int(args[1])
+        except Exception as e:
+            return await message.reply_text(f"❌ Invalid channel! Error: {e}")
+
+    if not chat_id:
+        return await message.reply_text("❌ Usage: `/auth <channel_id> -f on/off -ac 1s`")
+
+    admin_id = message.from_user.id if message.from_user else None
+    await add_auth_channel(chat_id, forward_tag, auto_accept, admin_id=admin_id)
+    await message.reply_text(
+        f"✅ **Channel Autho
 async def save_button_template(user_id: int, template: str, font_style: str = "sim"):
     uid_str = str(user_id)
     now = time.time()
