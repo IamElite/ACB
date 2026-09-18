@@ -740,5 +740,3 @@ async def autoapprovejoin_request(client, request: ChatJoinRequest):
             await client.approvechatjoinrequest(chatid=request.chat.id, userid=request.fromuser.id)
     except Exception as e:
         logger.error(f"Auto-approve join request failed: {e}")
-
-Ab groups mein auto button bilkul trigger nahi hoga. Sirf channels mein kaam karega. Bot restart karo aur test karo! 🚀
