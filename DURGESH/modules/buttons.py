@@ -6,11 +6,11 @@ from typing import Dict, Optional, Tuple, List, Union
 
 import pyrogram
 from pyrogram import filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatJoinRequest, Update
 from pyrogram.enums import ParseMode, ChatType
 
 logger = logging.getLogger("buttons")
-logging.basicConfig(level=logging.INFO)
+logger.setLevel(logging.INFO)
 
 try:
     from pyrogram.enums import ButtonStyle
@@ -425,15 +425,227 @@ def is_channel_chat(chat) -> bool:
     if not chat:
         return False
     chat_type = getattr(chat, "type", None)
-    if chat_type is None:
-        return False
-    if chat_type == ChatType.CHANNEL:
-        return True
-    if hasattr(chat_type, "value") and chat_type.value == "channel":
-        return True
-    if str(chat_type).lower() in ["channel", "chatchype.channel"]:
-        return True
+    if chat_type is not None:
+        try:
+            if chat_type == ChatType.CHANNEL:
+                return True
+        except Exception:
+            pass
+        try:
+            if hasattr(chat_type, "value") and str(chat_type.value).lower() == "channel":
+                return True
+        except Exception:
+            pass
+        type_str = str(chat_type).lower()
+        if "channel" in type_str:
+            return True
+    chat_id = getattr(chat, "id", None)
+    if chat_id is not None:
+        try:
+            cid = int(chat_id)
+            if cid < 0 and str(cid).startswith("-100"):
+                return True
+        except Exception:
+            pass
     return False
+
+@app.on_message(filters.command(["testautobtn"]))
+async def test_auto_btn_cmd(client, message: Message):
+    chat = message.chat
+    info = []
+    info.append(f"🔍 **Auto Button Debug Info**")
+    info.append(f"")
+    info.append(f"📍 **Current Chat:**")
+    info.append(f"  • ID: `{chat.id}`")
+    info.append(f"  • Type: `{chat.type}`")
+    info.append(f"  • Username: `@{chat.username}`")
+    info.append(f"  • Is Channel: `{is_channel_chat(chat)}`")
+    info.append(f"")
+    settings = await get_channel_settings(chat.id, chat.username)
+    if settings:
+        info.append(f"✅ **Channel Authorized**")
+        info.append(f"  • Forward Tag Removal: `{settings.get('forward_tag_removal')}`")
+        info.append(f"  • Auto Accept Time: `{settings.get('auto_accept_time')}`")
+        info.append(f"  • Admin ID: `{settings.get('admin_id')}`")
+    else:
+        info.append(f"❌ **Channel NOT Authorized**")
+        info.append(f"  • Use `/auth` to authorize")
+    info.append(f"")
+    tmpl = await get_effective_template(chat.id, chat.username)
+    if tmpl:
+        info.append(f"✅ **Template Found**")
+        info.append(f"  • Font: `{tmpl.get('font_style')}`")
+        info.append(f"  • Template: `{tmpl.get('template')[:100]}`")
+    else:
+        info.append(f"❌ **No Template Set**")
+        info.append(f"  • Use `/abset` to set template")
+    await message.reply_text("\n".join(info))
+
+async def _handle_channel_post(client, message: Message, source: str = "unknown"):
+    try:
+        chat = message.chat
+        chat_id = chat.id
+        
+        if not is_channel_chat(chat):
+            return
+        
+        raw_text = message.caption or message.text or ""
+        if not raw_text:
+            return
+        
+        entities = message.caption_entities or message.entities
+        html_text = get_html_text(raw_text, entities)
+        extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
+        
+        settings = await get_channel_settings(chat_id, chat.username)
+        
+        if not extracted_url:
+            if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
+                await safe_copy_and_delete(message, chat_id)
+            return
+        
+        logger.info(f"[AUTO-BTN] Trigger link found: {extracted_url}")
+        
+        if not settings:
+            settings = {
+                "chat_id": str(chat_id),
+                "forward_tag_removal": True,
+                "auto_accept_time": "1s",
+                "auto_accept_seconds": 1
+            }
+            asyncio.create_task(add_auth_channel(chat_id, forward_tag=True, auto_accept_time="1s"))
+        
+        tmpl_data = await get_effective_template(chat_id, chat.username)
+        if not tmpl_data or not tmpl_data.get("template"):
+            logger.warning(f"[AUTO-BTN] No template found for channel {chat_id}")
+            return
+        
+        font_style = tmpl_data.get("font_style", "sim")
+        btn_text = tmpl_data.get("template", "")
+        btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_url, btn_text, flags=re.IGNORECASE)
+        
+        keyboard = parse_buttons(btn_text, font_style=font_style, default_color=RED_STYLE)
+        if not keyboard:
+            logger.warning(f"[AUTO-BTN] Failed to parse buttons")
+            return
+        
+        final_caption = apply_font_to_caption(cl_html, font_style) if font_style != "normal" else cl_html
+        raw_caption = apply_font_to_caption(cl_raw, font_style) if font_style != "normal" else cl_raw
+        
+        if settings.get("forward_tag_removal", True) and is_forwarded_post(message):
+            await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
+            return
+        
+        edit_success = False
+        try:
+            if message.media:
+                await client.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message.id,
+                    caption=final_caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            else:
+                await client.edit_message_text(
+                    text=final_caption,
+                    chat_id=chat_id,
+                    message_id=message.id,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard
+                )
+            edit_success = True
+        except Exception as err:
+            err_str = str(err).upper()
+            logger.warning(f"[AUTO-BTN] Edit failed: {err}")
+            if "MESSAGE_NOT_MODIFIED" in err_str:
+                try:
+                    await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
+                    edit_success = True
+                except Exception as e2:
+                    logger.error(f"[AUTO-BTN] Reply markup update failed: {e2}")
+            else:
+                try:
+                    if message.media:
+                        await client.edit_message_caption(
+                            chat_id=chat_id,
+                            message_id=message.id,
+                            caption=raw_caption,
+                            parse_mode=None,
+                            reply_markup=keyboard
+                        )
+                    else:
+                        await client.edit_message_text(
+                            text=raw_caption,
+                            chat_id=chat_id,
+                            message_id=message.id,
+                            parse_mode=None,
+                            reply_markup=keyboard
+                        )
+                    edit_success = True
+                except Exception as e3:
+                    logger.error(f"[AUTO-BTN] Fallback edit failed: {e3}")
+        
+        if not edit_success:
+            await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
+            
+    except Exception as e:
+        logger.error(f"[AUTO-BTN] Critical error: {e}", exc_info=True)
+
+@app.on_message(filters.channel & ~filters.service)
+async def channel_post_listener(client, message: Message):
+    await _handle_channel_post(client, message, source="filters.channel")
+
+@app.on_edited_message(filters.channel & ~filters.service)
+async def channel_post_edit_listener(client, message: Message):
+    await _handle_channel_post(client, message, source="edited.filters.channel")
+
+try:
+    @app.on_message(filters.chat_type(ChatType.CHANNEL) & ~filters.service)
+    async def channel_post_listener_alt(client, message: Message):
+        await _handle_channel_post(client, message, source="filters.chat_type")
+    
+    @app.on_edited_message(filters.chat_type(ChatType.CHANNEL) & ~filters.service)
+    async def channel_post_edit_listener_alt(client, message: Message):
+        await _handle_channel_post(client, message, source="edited.filters.chat_type")
+except Exception as e:
+    logger.warning(f"Could not register chat_type handler: {e}")
+
+try:
+    from pyrogram.raw.types import UpdateNewChannelMessage, UpdateEditChannelMessage
+    
+    @app.on_raw_update()
+    async def raw_channel_update_handler(client, update, users, chats):
+        try:
+            if isinstance(update, (UpdateNewChannelMessage, UpdateEditChannelMessage)):
+                message = update.message
+                channel_id = getattr(message, "peer_id", None)
+                if channel_id:
+                    channel_id = getattr(channel_id, "channel_id", None)
+                    if channel_id:
+                        full_id = int(f"-100{channel_id}")
+                        try:
+                            msg = await client.get_messages(full_id, message.id)
+                            if msg:
+                                source = "raw_update_new" if isinstance(update, UpdateNewChannelMessage) else "raw_update_edit"
+                                await _handle_channel_post(client, msg, source=source)
+                        except Exception as e:
+                            pass
+        except Exception as e:
+            pass
+    
+    logger.info("Raw update handler registered")
+except Exception as e:
+    logger.warning(f"Could not register raw update handler: {e}")
+
+@app.on_chat_join_request()
+async def auto_approve_join_request(client, request: ChatJoinRequest):
+    try:
+        if settings := await get_channel_settings(request.chat.id):
+            await asyncio.sleep(settings.get("auto_accept_seconds", 1))
+            await client.approve_chat_join_request(chat_id=request.chat.id, user_id=request.from_user.id)
+    except Exception as e:
+        logger.error(f"Auto-approve join request failed: {e}")
 
 @app.on_message(filters.command(["auth"]))
 async def auth_cmd(client, message: Message):
@@ -602,110 +814,3 @@ async def change_buttons_cmd(client, message: Message):
         await message.reply_text("✅ Buttons updated successfully!")
     except Exception as e:
         await message.reply_text(f"⚠️ Update error: {e}")
-
-async def dispatch_channel_post(client, message: Message):
-    if not is_channel_chat(message.chat):
-        logger.debug(f"Skipping non-channel chat: {message.chat.id} (type: {message.chat.type})")
-        return
-    chat_id = message.chat.id
-    raw_text = message.caption or message.text or ""
-    if not raw_text:
-        return
-    entities = message.caption_entities or message.entities
-    html_text = get_html_text(raw_text, entities)
-    extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
-    settings = await get_channel_settings(chat_id, message.chat.username)
-    if not extracted_url:
-        if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
-            await safe_copy_and_delete(message, chat_id)
-        return
-    if not settings:
-        settings = {
-            "chat_id": str(chat_id),
-            "forward_tag_removal": True,
-            "auto_accept_time": "1s",
-            "auto_accept_seconds": 1
-        }
-        asyncio.create_task(add_auth_channel(chat_id, forward_tag=True, auto_accept_time="1s"))
-    tmpl_data = await get_effective_template(chat_id, message.chat.username)
-    if not tmpl_data or not tmpl_data.get("template"):
-        return
-    font_style = tmpl_data.get("font_style", "sim")
-    btn_text = tmpl_data.get("template", "")
-    btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_url, btn_text, flags=re.IGNORECASE)
-    keyboard = parse_buttons(btn_text, font_style=font_style, default_color=RED_STYLE)
-    if not keyboard:
-        return
-    final_caption = apply_font_to_caption(cl_html, font_style) if font_style != "normal" else cl_html
-    raw_caption = apply_font_to_caption(cl_raw, font_style) if font_style != "normal" else cl_raw
-    if settings.get("forward_tag_removal", True) and is_forwarded_post(message):
-        await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
-        return
-    edit_success = False
-    try:
-        if message.media:
-            await client.edit_message_caption(
-                chat_id=chat_id,
-                message_id=message.id,
-                caption=final_caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-        else:
-            await client.edit_message_text(
-                text=final_caption,
-                chat_id=chat_id,
-                message_id=message.id,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard
-            )
-        edit_success = True
-    except Exception as err:
-        err_str = str(err).upper()
-        logger.warning(f"First edit attempt failed: {err}")
-        if "MESSAGE_NOT_MODIFIED" in err_str:
-            try:
-                await client.edit_message_reply_markup(chat_id=chat_id, message_id=message.id, reply_markup=keyboard)
-                edit_success = True
-            except Exception:
-                pass
-        else:
-            try:
-                if message.media:
-                    await client.edit_message_caption(
-                        chat_id=chat_id,
-                        message_id=message.id,
-                        caption=raw_caption,
-                        parse_mode=None,
-                        reply_markup=keyboard
-                    )
-                else:
-                    await client.edit_message_text(
-                        text=raw_caption,
-                        chat_id=chat_id,
-                        message_id=message.id,
-                        parse_mode=None,
-                        reply_markup=keyboard
-                    )
-                edit_success = True
-            except Exception:
-                pass
-    if not edit_success:
-        await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
-
-@app.on_message(filters.channel & ~filters.service)
-async def channel_post_listener(client, message: Message):
-    await dispatch_channel_post(client, message)
-
-@app.on_edited_message(filters.channel & ~filters.service)
-async def channel_post_edit_listener(client, message: Message):
-    await dispatch_channel_post(client, message)
-
-@app.on_chat_join_request()
-async def auto_approve_join_request(client, request: ChatJoinRequest):
-    try:
-        if settings := await get_channel_settings(request.chat.id):
-            await asyncio.sleep(settings.get("auto_accept_seconds", 1))
-            await client.approve_chat_join_request(chat_id=request.chat.id, user_id=request.from_user.id)
-    except Exception as e:
-        logger.error(f"Auto-approve join request failed: {e}")
