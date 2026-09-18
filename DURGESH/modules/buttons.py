@@ -373,17 +373,19 @@ def hyperlink_syntax_realm(text: str) -> str:
         return text
     if 'href="https://t.me/SyntaxRealm"' in text:
         return text
-    
     credit_link = '<a href="https://t.me/SyntaxRealm">˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼</a>'
-    
-    # Match unicode pattern with brackets: ˹ 𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆.𝗍.𝗆𝖾 ˼
-    unicode_pattern = r"˹\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*˼"
-    if re.search(unicode_pattern, text):
-        return re.sub(unicode_pattern, credit_link, text)
-    
-    # Fallback: ASCII pattern
-    ascii_pattern = r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?"
-    return re.sub(ascii_pattern, credit_link, text, flags=re.IGNORECASE)
+    text = re.sub(r'˹\s*˹', '˹', text)
+    text = re.sub(r'˼\s*˼', '˼', text)
+    credit_pattern = re.compile(
+        r"˹\s*𝖲𝗒𝗇𝗍𝖺𝖷𝖱𝖾𝖺𝗅𝗆\.𝗍\.𝗆𝖾\s*˼",
+        re.IGNORECASE
+    )
+    text = credit_pattern.sub(credit_link, text)
+    ascii_pattern = re.compile(
+        r"['\"`]?\s*(?:˹\s*)?SyntaxRealm(?:\.t\.me)?(?:\s*˼)?\s*['\"`]?",
+        re.IGNORECASE
+    )
+    return ascii_pattern.sub(credit_link, text)
 
 async def safe_copy_and_delete(
     msg: Message,
@@ -488,30 +490,22 @@ async def _handle_channel_post(client, message: Message, source: str = "unknown"
     try:
         if not message or not message.chat:
             return
-        
         chat = message.chat
         chat_id = chat.id
-        
         if not is_channel_chat(chat):
             return
-        
         raw_text = message.caption or message.text or ""
         if not raw_text:
             return
-        
         entities = message.caption_entities or message.entities
         html_text = get_html_text(raw_text, entities)
         extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
-        
         settings = await get_channel_settings(chat_id, chat.username)
-        
         if not extracted_url:
             if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
                 await safe_copy_and_delete(message, chat_id)
             return
-        
         logger.info(f"[AUTO-BTN] Trigger link found: {extracted_url}")
-        
         if not settings:
             settings = {
                 "chat_id": str(chat_id),
@@ -520,28 +514,22 @@ async def _handle_channel_post(client, message: Message, source: str = "unknown"
                 "auto_accept_seconds": 1
             }
             asyncio.create_task(add_auth_channel(chat_id, forward_tag=True, auto_accept_time="1s"))
-        
         tmpl_data = await get_effective_template(chat_id, chat.username)
         if not tmpl_data or not tmpl_data.get("template"):
             logger.warning(f"[AUTO-BTN] No template found for channel {chat_id}")
             return
-        
         font_style = tmpl_data.get("font_style", "sim")
         btn_text = tmpl_data.get("template", "")
         btn_text = re.sub(r"\{\s*(?:link|url|target)\s*\}", extracted_url, btn_text, flags=re.IGNORECASE)
-        
         keyboard = parse_buttons(btn_text, font_style=font_style, default_color=RED_STYLE)
         if not keyboard:
             logger.warning(f"[AUTO-BTN] Failed to parse buttons")
             return
-        
         final_caption = apply_font_to_caption(cl_html, font_style) if font_style != "normal" else cl_html
         raw_caption = apply_font_to_caption(cl_raw, font_style) if font_style != "normal" else cl_raw
-        
         if settings.get("forward_tag_removal", True) and is_forwarded_post(message):
             await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
             return
-        
         edit_success = False
         try:
             if message.media:
@@ -591,10 +579,8 @@ async def _handle_channel_post(client, message: Message, source: str = "unknown"
                     edit_success = True
                 except Exception as e3:
                     logger.error(f"[AUTO-BTN] Fallback edit failed: {e3}")
-        
         if not edit_success:
             await safe_copy_and_delete(message, chat_id, caption=final_caption, reply_markup=keyboard)
-            
     except Exception as e:
         logger.error(f"[AUTO-BTN] Critical error: {e}", exc_info=True)
 
@@ -608,7 +594,6 @@ async def channel_post_edit_listener(client, message: Message):
 
 try:
     from pyrogram.raw.types import UpdateNewChannelMessage, UpdateEditChannelMessage
-    
     @app.on_raw_update()
     async def raw_channel_update_handler(client, update, users, chats):
         try:
@@ -628,7 +613,6 @@ try:
                             pass
         except Exception:
             pass
-    
     logger.info("Raw update handler registered")
 except Exception as e:
     logger.warning(f"Could not register raw update handler: {e}")
