@@ -151,12 +151,15 @@ async def copy_media_preserving_cover(
             spoiler=bool(copied.has_media_spoiler)
         )
 
-        updated = await client.edit_message_media(
-            chat_id=target_chat_id,
-            message_id=copied.id,
-            media=media
+        peer = await client.resolve_peer(target_chat_id)
+        await client.invoke(
+            raw.functions.messages.EditMessage(
+                peer=peer,
+                id=copied.id,
+                media=media
+            )
         )
-        return updated or copied
+        return await client.get_messages(target_chat_id, copied.id)
     except FloodWait:
         raise
     except Exception as e:
