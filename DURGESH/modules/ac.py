@@ -116,20 +116,46 @@ async def copy_media_preserving_cover(
     target_chat_id: int,
     msg: Message,
     caption: str
-) -> Message:
+) -> Optional[Message]:
     """
-    Copies a media message to target_chat_id while strictly preserving
-    any custom video cover, thumbnail, and media attributes.
+    Copy media while preserving the original Telegram media object.
+
+    IMPORTANT:
+    - Server-side Message.copy() is the first choice. This keeps the original
+      video cover/thumbnail/media attributes intact and avoids unnecessary
+      download + re-upload.
+    - If Telegram/Pyrogram cannot copy the message, a re-upload fallback is used.
     """
     thumb_path = None
+
+    # 1. BEST PATH: server-side Telegram copy.
+    # This is especially important for videos with a custom cover.
     try:
-        # 1. Handle Video with custom cover or thumbnail
+        return await msg.copy(
+            target_chat_id,
+            caption=caption,
+            parse_mode=ParseMode.HTML
+        )
+    except FloodWait:
+        raise
+    except Exception as copy_error:
+        print(f"⚠️ Server-side copy failed, using media fallback: {copy_error}")
+
+    try:
+        # 2. Video fallback
         if msg.video:
             cover_source = None
-            if hasattr(msg.video, "video_cover") and msg.video.video_cover:
-                cover_source = msg.video.video_cover
-            elif getattr(msg.video, "thumbs", None):
-                cover_source = msg.video.thumbs[-1].file_id
+
+            # Pyrofork/Kurigram may expose a dedicated video_cover.
+            video_cover = getattr(msg.video, "video_cover", None)
+            if video_cover:
+                cover_source = video_cover
+
+            # Older/other builds expose thumbnail(s) instead.
+            if not cover_source:
+                thumbs = getattr(msg.video, "thumbs", None)
+                if thumbs:
+                    cover_source = thumbs[-1].file_id
 
             if cover_source:
                 try:
@@ -148,30 +174,36 @@ async def copy_media_preserving_cover(
                 "height": msg.video.height or 0,
                 "supports_streaming": True,
             }
+
             if getattr(msg, "has_media_spoiler", False):
                 kwargs["has_spoiler"] = True
 
             if thumb_path:
                 kwargs["thumb"] = thumb_path
-                # In Kurigram / Pyrofork, 'cover' can be supplied alongside 'thumb'
+
+                # Pyrofork/Kurigram supports `cover`; normal Pyrogram may not.
                 try:
-                    return await client.send_video(**kwargs, cover=thumb_path)
-                except TypeError:
+                    return await client.send_video(
+                        **kwargs,
+                        cover=thumb_path
+                    )
+                except (TypeError, ValueError):
                     return await client.send_video(**kwargs)
             else:
-                return await msg.copy(target_chat_id, caption=caption, parse_mode=ParseMode.HTML)
+                return await client.send_video(**kwargs)
 
-        # 2. Handle Document with custom thumbnail
-        elif msg.document:
+        # 3. Document fallback
+        if msg.document:
             cover_source = None
-            if getattr(msg.document, "thumbs", None):
-                cover_source = msg.document.thumbs[-1].file_id
+            thumbs = getattr(msg.document, "thumbs", None)
+            if thumbs:
+                cover_source = thumbs[-1].file_id
 
             if cover_source:
                 try:
                     thumb_path = await client.download_media(cover_source)
                 except Exception as e:
-                    print(f"⚠️ Could not download doc thumb: {e}")
+                    print(f"⚠️ Could not download document thumbnail: {e}")
                     thumb_path = None
 
             kwargs = {
@@ -180,25 +212,32 @@ async def copy_media_preserving_cover(
                 "caption": caption,
                 "parse_mode": ParseMode.HTML,
             }
+
             if thumb_path:
                 kwargs["thumb"] = thumb_path
-                try:
-                    return await client.send_document(**kwargs)
-                except Exception:
-                    return await msg.copy(target_chat_id, caption=caption, parse_mode=ParseMode.HTML)
-            else:
-                return await msg.copy(target_chat_id, caption=caption, parse_mode=ParseMode.HTML)
 
-        # 3. Handle Audio with album art / cover
-        elif msg.audio:
+            try:
+                return await client.send_document(**kwargs)
+            except Exception:
+                # Last resort: server-side copy again.
+                return await msg.copy(
+                    target_chat_id,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML
+                )
+
+        # 4. Audio fallback
+        if msg.audio:
             cover_source = None
-            if getattr(msg.audio, "thumbs", None):
-                cover_source = msg.audio.thumbs[-1].file_id
+            thumbs = getattr(msg.audio, "thumbs", None)
+            if thumbs:
+                cover_source = thumbs[-1].file_id
 
             if cover_source:
                 try:
                     thumb_path = await client.download_media(cover_source)
-                except Exception:
+                except Exception as e:
+                    print(f"⚠️ Could not download audio cover: {e}")
                     thumb_path = None
 
             kwargs = {
@@ -210,25 +249,31 @@ async def copy_media_preserving_cover(
                 "performer": msg.audio.performer,
                 "title": msg.audio.title,
             }
+
             if thumb_path:
                 kwargs["thumb"] = thumb_path
-                try:
-                    return await client.send_audio(**kwargs)
-                except Exception:
-                    return await msg.copy(target_chat_id, caption=caption, parse_mode=ParseMode.HTML)
-            else:
-                return await msg.copy(target_chat_id, caption=caption, parse_mode=ParseMode.HTML)
 
-        # 4. Fallback for photo/other media
-        else:
-            return await msg.copy(target_chat_id, caption=caption, parse_mode=ParseMode.HTML)
+            try:
+                return await client.send_audio(**kwargs)
+            except Exception:
+                return await msg.copy(
+                    target_chat_id,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML
+                )
+
+        # 5. Other media fallback
+        return await msg.copy(
+            target_chat_id,
+            caption=caption,
+            parse_mode=ParseMode.HTML
+        )
 
     finally:
-        # Cleanup temporary thumbnail from disk
         if thumb_path and os.path.exists(thumb_path):
             try:
                 os.remove(thumb_path)
-            except Exception:
+            except OSError:
                 pass
 
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
@@ -836,10 +881,13 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             except FloodWait as fw:
                 await asyncio.sleep(fw.value)
                 try:
-                    await copy_media_preserving_cover(client, int_chat_id, msg, cap)
-                    await msg.delete()
-                except Exception:
-                    pass
+                    copied = await copy_media_preserving_cover(
+                        client, int_chat_id, msg, cap
+                    )
+                    if copied:
+                        await msg.delete()
+                except Exception as retry_error:
+                    print(f"❌ Copy retry error: {retry_error}")
             except Exception as e:
                 print(f"❌ Copy error: {e}")
 
@@ -1027,7 +1075,9 @@ async def auto_cap_cmd(client, message: Message):
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value)
                         try:
-                            await copy_media_preserving_cover(client, dest_int_id, msg, cap)
+                            await copy_media_preserving_cover(
+                                client, dest_int_id, msg, cap
+                            )
                         except Exception as e:
                             print(f"❌ Copy retry error (ac): {e}")
                     except Exception as e:
