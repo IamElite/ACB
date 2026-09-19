@@ -789,7 +789,7 @@ async def find_existing_episode_title_message(client, chat_id: int, video_messag
 
 
 async def replace_existing_episode_title(client, chat_id: int, video_message: Message, title: str):
-    """Replace the existing title message so Telegram does not show an edited marker."""
+    """Update the existing episode title message in place."""
     title_message = await find_existing_episode_title_message(client, chat_id, video_message)
     if not title_message:
         return False
@@ -800,23 +800,29 @@ async def replace_existing_episode_title(client, chat_id: int, video_message: Me
         episode_line = re.compile(
             r'(?im)^(\s*(?:OVA|OAV|SP|SPECIAL)?\s*Episode\s+\d+\s*[–—:-].*)$'
         )
+
         if episode_line.search(old_text):
             new_plain = episode_line.sub(replacement_title, old_text, count=1)
         elif re.match(r'^\s*━━+\s*Episode\s+\d+\s*━━+\s*$', old_text, re.IGNORECASE):
             new_plain = replacement_title
         else:
             new_plain = replacement_title
+
         new_text = f"<b>{html.escape(new_plain)}</b>"
 
-        await client.delete_messages(chat_id, title_message.id)
-        await client.send_message(
+        if (title_message.text or "").strip() == new_plain:
+            return True
+
+        await client.edit_message_text(
             chat_id=chat_id,
+            message_id=title_message.id,
             text=new_text,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
         )
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Episode title update error: {e}")
         return False
 
 
