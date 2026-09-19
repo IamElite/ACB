@@ -740,8 +740,8 @@ async def load_episode_titles(chat_id: str) -> dict[str, str]:
     return result
 
 
-async def find_title_message_for_video(client, chat_id: int, video_message: Message, max_back: int = 5):
-    """Find the nearest text message above a video, allowing separator messages between them."""
+async def find_existing_episode_title_message(client, chat_id: int, video_message: Message, max_back: int = 12):
+    """Find an existing episode title/header message above a video. Never creates a message."""
     if not video_message or not video_message.id:
         return None
 
@@ -755,37 +755,54 @@ async def find_title_message_for_video(client, chat_id: int, video_message: Mess
     except Exception:
         return None
 
-    for msg in sorted((m for m in previous if m), key=lambda m: m.id, reverse=True):
-        if msg.id >= video_message.id:
-            continue
+    previous = sorted((m for m in previous if m), key=lambda m: m.id, reverse=True)
+    fname = media_filename(video_message) or ""
+    ep_match = re.search(r'\bS(\d+)\s*(?:E|EP)(\d+)\b', fname, re.IGNORECASE)
+    episode_number = int(ep_match.group(2)) if ep_match else None
+
+    header_candidates = []
+    text_candidates = []
+
+    for msg in previous:
         text = (msg.text or "").strip()
         if not text:
             continue
-        if re.match(r"^━━+\s*Episode\s+\d+", text, re.IGNORECASE):
+
+        header_match = re.match(r'^\s*━━+\s*Episode\s+(\d+)\s*━━+\s*$', text, re.IGNORECASE)
+        if header_match:
+            if episode_number is None or int(header_match.group(1)) == episode_number:
+                header_candidates.append(msg)
             continue
-        return msg
+
+        if re.match(r'^\s*(?:OVA|OAV|SP|SPECIAL)?\s*Episode\s+\d+\s*[–—:-]', text, re.IGNORECASE):
+            text_candidates.append(msg)
+
+    if header_candidates:
+        return header_candidates[0]
+    if text_candidates:
+        return text_candidates[0]
     return None
 
 
-async def replace_or_create_episode_title(client, chat_id: int, video_message: Message, title: str):
-    """Update the title message immediately above the video, or create one if absent."""
-    title_message = await find_title_message_for_video(client, chat_id, video_message)
-    if title_message:
-        try:
-            await client.edit_message_text(
-                chat_id=chat_id,
-                message_id=title_message.id,
-                text=title,
-                parse_mode=None
-            )
-            return title_message
-        except Exception:
-            pass
+async def replace_existing_episode_title(client, chat_id: int, video_message: Message, title: str):
+    """Edit the existing episode title/header message only. Never sends a replacement message."""
+    title_message = await find_existing_episode_title_message(client, chat_id, video_message)
+    if not title_message:
+        return False
 
     try:
-        return await client.send_message(chat_id, title, parse_mode=None)
+        new_text = title.strip()
+        if (title_message.text or "").strip() == new_text:
+            return True
+        await client.edit_message_text(
+            chat_id=chat_id,
+            message_id=title_message.id,
+            text=new_text,
+            parse_mode=None
+        )
+        return True
     except Exception:
-        return None
+        return False
 
 
 async def apply_title_to_captionless_output(client, chat_id: int, message_id: int, title: str):
@@ -1367,6 +1384,7 @@ async def set_episode_titles_cmd(client, message: Message):
 
         msg_ids = list(range(range_start, range_end + 1))
         chunk_size = 200
+        media_by_key = defaultdict(list)
 
         for pos in range(0, len(msg_ids), chunk_size):
             chunk = msg_ids[pos:pos + chunk_size]
@@ -1383,76 +1401,52 @@ async def set_episode_titles_cmd(client, message: Message):
                 skipped += len(chunk)
                 continue
 
-            messages = [m for m in fetched if m]
-            messages.sort(key=lambda m: m.id)
-
-            for msg in messages:
+            for msg in fetched:
+                if not msg:
+                    continue
                 fname = media_filename(msg)
                 if not fname or not (msg.document or msg.video):
                     continue
 
-                key = None
-                for candidate in title_keys_for_filename(fname):
-                    if candidate in title_map:
-                        key = candidate
-                        break
-                if not key:
-                    continue
+                key = next((candidate for candidate in title_keys_for_filename(fname) if candidate in title_map), None)
+                if key:
+                    media_by_key[key].append(msg)
 
-                title = title_map[key]
-                try:
-                    title_msg = await find_title_message_for_video(
-                        client,
-                        channel_id,
-                        msg,
-                        max_back=8
-                    )
-                    if title_msg:
-                        old = (title_msg.text or "").strip()
-                        if old != title:
-                            await client.edit_message_text(
-                                chat_id=channel_id,
-                                message_id=title_msg.id,
-                                text=title,
-                                parse_mode=None
-                            )
-                    else:
-                        await client.send_message(
-                            channel_id,
-                            title,
-                            parse_mode=None
-                        )
+        for key, media_messages in sorted(media_by_key.items()):
+            media_messages.sort(key=lambda m: m.id)
+            first_media = media_messages[0]
+            title = title_map[key]
 
+            try:
+                changed = await replace_existing_episode_title(
+                    client,
+                    channel_id,
+                    first_media,
+                    display_title_for_key(key, title)
+                )
+                if changed:
                     updated += 1
                     remaining.discard(key)
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value)
-                    try:
-                        title_msg = await find_title_message_for_video(
-                            client,
-                            channel_id,
-                            msg,
-                            max_back=8
-                        )
-                        if title_msg:
-                            await client.edit_message_text(
-                                chat_id=channel_id,
-                                message_id=title_msg.id,
-                                text=title,
-                                parse_mode=None
-                            )
-                        else:
-                            await client.send_message(
-                                channel_id,
-                                title,
-                                parse_mode=None
-                            )
+                else:
+                    skipped += 1
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value)
+                try:
+                    changed = await replace_existing_episode_title(
+                        client,
+                        channel_id,
+                        first_media,
+                        display_title_for_key(key, title)
+                    )
+                    if changed:
                         updated += 1
                         remaining.discard(key)
-                    except Exception:
+                    else:
                         skipped += 1
                 except Exception:
                     skipped += 1
+            except Exception:
+                skipped += 1
 
         await message.reply_text(
             "✅ <b>Episode titles processed.</b>\n\n"
