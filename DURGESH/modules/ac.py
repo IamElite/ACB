@@ -15,6 +15,7 @@ from DURGESH.database import db
 
 captiondb = db.captions
 authchanneldb = db.capauth_channels
+episodetitledb = db.episode_titles
 
                           
 DEFAULT_CAPTION = """<blockquote><b>
@@ -254,6 +255,63 @@ async def get_all_auth_channels() -> list[str]:
     return [doc["chat_id"] async for doc in cursor]
 
 
+async def load_episode_titles(chat_id: str) -> dict:
+    data = await episodetitledb.find_one({"chat_id": str(chat_id)})
+    return data.get("titles", {}) if data else {}
+
+async def save_episode_titles(chat_id: str, titles: dict):
+    await episodetitledb.update_one(
+        {"chat_id": str(chat_id)},
+        {"$set": {"chat_id": str(chat_id), "titles": {str(k): str(v) for k, v in titles.items()}}},
+        upsert=True
+    )
+
+def _episode_title_number(value: str) -> Optional[int]:
+    try:
+        match = re.search(r"(?:episode|ep|e|eps)\s*[-._:#]?\s*(\d+)", value, re.IGNORECASE)
+        if not match:
+            match = re.match(r"\s*[-._\[\(]?\s*(\d{1,3})\s*[-.:)]", value)
+        if not match:
+            match = re.match(r"\s*(\d{1,3})\s+", value)
+        return int(match.group(1)) if match else None
+    except Exception:
+        return None
+
+def _parse_episode_title_text(text: str) -> dict[int, str]:
+    result = {}
+    if not text:
+        return result
+
+    for raw_line in re.split(r"[\r\n]+", text):
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+
+        number = _episode_title_number(line)
+        if number is None:
+            continue
+
+        title = re.sub(
+            r"^\s*(?:episode|ep|eps|e)\s*[-._:#]?\s*\d{1,3}\s*(?:[-.:)]+\s*|\s+)",
+            "",
+            line,
+            flags=re.IGNORECASE
+        )
+        if title == line:
+            title = re.sub(r"^\s*\d{1,3}\s*[-.:)]\s*", "", line)
+        if title == line:
+            title = re.sub(r"^\s*\d{1,3}\s+", "", line)
+
+        title = title.strip(" -:|–—")
+        if title:
+            result[number] = title
+
+    return result
+
+def _title_for_episode(episode_titles: dict, ep_num: int, fallback: str) -> str:
+    title = episode_titles.get(str(ep_num)) or episode_titles.get(ep_num)
+    return str(title).strip() if title else fallback
+
 async def load_caption(chat_id: str):
     data = await captiondb.find_one({"chat_id": str(chat_id)})
     return data["caption"] if data else None
@@ -469,6 +527,117 @@ async def set_caption_cmd(client, message: Message):
             parse_mode=ParseMode.HTML
         )
 
+@app.on_message(filters.command(["setepisodetitle", "setepisode", "setep", "sept"]))
+async def set_episode_title_cmd(client, message: Message):
+    try:
+        lines = (message.text or "").splitlines()
+        if not lines:
+            return await message.reply_text(
+                "❌ <b>Usage:</b> <code>/set &lt;episode list&gt; &lt;channel_id&gt;</code>\n\n"
+                "<b>Example:</b>\n"
+                "<code>/set\n01 - The Beginning\n02 - New Journey\n-1001234567890</code>",
+                parse_mode=ParseMode.HTML
+            )
+
+        command_line = lines[0]
+        command_parts = command_line.split()
+        channel_arg = command_parts[-1] if len(command_parts) > 1 else None
+
+        channel_from_list = False
+        if not channel_arg and len(lines) > 1:
+            tail = lines[-1].strip().split()
+            if tail:
+                candidate = tail[-1]
+                if re.match(r"^(?:-?100\d+|@?[A-Za-z0-9_]+|https?://t\.me/)", candidate):
+                    try:
+                        normalize_channel_peer(candidate)
+                        channel_arg = candidate
+                        channel_from_list = True
+                    except Exception:
+                        pass
+
+        if not channel_arg and message.reply_to_message:
+            reply_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+            reply_lines = reply_text.splitlines()
+            if len(reply_lines) > 1:
+                tail = reply_lines[-1].strip().split()
+                if tail:
+                    channel_arg = tail[-1]
+
+        if not channel_arg:
+            return await message.reply_text(
+                "❌ <b>Channel ID is required at the end.</b>\n\n"
+                "Use <code>/sept</code> followed by the episode list and put the channel ID at the end.",
+                parse_mode=ParseMode.HTML
+            )
+
+        try:
+            peer = normalize_channel_peer(channel_arg)
+            chat = await client.get_chat(peer)
+            channel_id = str(chat.id)
+        except Exception as e:
+            return await message.reply_text(
+                f"❌ <b>Invalid channel:</b> {html.escape(str(e))}",
+                parse_mode=ParseMode.HTML
+            )
+
+        first_line_parts = command_line.split(None, 1)
+        inline_text = ""
+        if len(first_line_parts) == 2:
+            inline_text = re.sub(r"\s+" + re.escape(channel_arg) + r"\s*$", "", first_line_parts[1], count=1).strip()
+        list_lines = lines[1:]
+        if channel_from_list and list_lines:
+            last_line = list_lines[-1]
+            if last_line.strip() == channel_arg:
+                list_lines = list_lines[:-1]
+            else:
+                list_lines[-1] = re.sub(r"\s+" + re.escape(channel_arg) + r"\s*$", "", last_line, count=1).strip()
+        supplied_text = "\n".join([inline_text, *list_lines]).strip()
+        if not supplied_text and message.reply_to_message:
+            supplied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+
+        if not supplied_text:
+            return await message.reply_text(
+                "❌ <b>Episode title list not found.</b>\n\n"
+                "Example: <code>01 - Pilot</code> or <code>Episode 01: Pilot</code>",
+                parse_mode=ParseMode.HTML
+            )
+
+        parsed = _parse_episode_title_text(supplied_text)
+        if not parsed:
+            return await message.reply_text(
+                "❌ <b>No episode titles detected.</b>\n\n"
+                "Supported format:\n"
+                "<code>01 - Title</code>\n"
+                "<code>Episode 02: Title</code>\n"
+                "<code>EP03 - Title</code>",
+                parse_mode=ParseMode.HTML
+            )
+
+        current = await load_episode_titles(channel_id)
+        current.update({str(k): v for k, v in parsed.items()})
+        await save_episode_titles(channel_id, current)
+
+        preview = "\n".join(
+            f"<b>{ep:02d}.</b> {html.escape(title)}"
+            for ep, title in sorted(parsed.items())[:30]
+        )
+        extra = "" if len(parsed) <= 30 else f"\n… and {len(parsed) - 30} more"
+
+        await message.reply_text(
+            "✅ <b>Episode Titles Updated!</b>\n\n"
+            f"📺 <b>Channel:</b> <code>{channel_id}</code>\n"
+            f"📌 <b>Updated:</b> <code>{len(parsed)}</code>\n\n"
+            f"{preview}{extra}",
+            parse_mode=ParseMode.HTML
+        )
+
+    except Exception as e:
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}",
+            parse_mode=ParseMode.HTML
+        )
+
 @app.on_message(filters.command(["getcaption", "gc"]))
 async def get_caption_cmd(client, message: Message):
     try:
@@ -507,7 +676,9 @@ async def get_caption_cmd(client, message: Message):
             .replace("{duration}", "1:23:45")
             .replace("{quality}", "480p")
             .replace("{season}", "01")
-            .replace("{episode}", "01 (123)")
+            .replace("{episode}", "The Beginning")
+            .replace("{episode_no}", "01 (123)")
+            .replace("{episode_title}", "The Beginning")
         )
 
         response = (
@@ -641,8 +812,76 @@ def _int_episode(fname: str) -> int:
         pass
     return 9999
 
+def _message_filename(msg: Message) -> str:
+    if msg.document:
+        return msg.document.file_name or "Document"
+    if msg.video:
+        return msg.video.file_name or "Video"
+    if msg.audio:
+        return msg.audio.file_name or "Audio"
+    return ""
+
+def _collect_message_episode_titles(messages: list[Message]) -> dict[int, str]:
+    titles = {}
+    ordered = sorted((m for m in messages if m), key=lambda m: m.id)
+    media = [m for m in ordered if m.document or m.video or m.audio]
+    media_by_id = {m.id: m for m in media}
+
+    for item in ordered:
+        if item.document or item.video or item.audio or item.photo:
+            continue
+        text = item.text or item.caption or ""
+        if not text:
+            continue
+
+        parsed = _parse_episode_title_text(text)
+        if parsed:
+            titles.update(parsed)
+            continue
+
+        reply_id = getattr(item, "reply_to_message_id", None)
+        if reply_id in media_by_id:
+            ep_num = _int_episode(_message_filename(media_by_id[reply_id]))
+            clean = re.sub(r"\\s+", " ", text).strip()
+            if ep_num != 9999 and clean:
+                titles[ep_num] = clean
+                continue
+
+        prev_media = next((m for m in reversed(media) if m.id < item.id), None)
+        next_media = next((m for m in media if m.id > item.id), None)
+        if prev_media and next_media and next_media.id - prev_media.id > 1:
+            continue
+        candidate = prev_media or next_media
+        if candidate:
+            ep_num = _int_episode(_message_filename(candidate))
+            clean = re.sub(r"\\s+", " ", text).strip()
+            if ep_num != 9999 and clean and len(clean) <= 300:
+                titles[ep_num] = clean
+
+    return titles
+
+def _caption_values(filename: str, filesize, duration, episode_titles: dict) -> dict:
+    episode_no = extract_episode(filename)
+    ep_num = _int_episode(filename)
+    return {
+        "filename": html.escape(filename.rsplit(".", 1)[0]),
+        "filesize": html.escape(get_readable_file_size(filesize)),
+        "duration": html.escape(format_duration(duration)),
+        "quality": html.escape(extract_quality(filename)),
+        "season": html.escape(extract_season(filename)),
+        "episode": html.escape(_title_for_episode(episode_titles, ep_num, episode_no)),
+        "episode_no": html.escape(episode_no),
+        "episode_title": html.escape(_title_for_episode(episode_titles, ep_num, "")),
+    }
+
+def _render_caption(template: str, values: dict) -> str:
+    result = template
+    for key, value in values.items():
+        result = result.replace("{" + key + "}", value)
+    return result
+
 @app.on_message(
-    (filters.document | filters.video) &
+    (filters.document | filters.video | filters.text) &
     filters.channel,
     group=10
 )
@@ -688,6 +927,11 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
     if not caption_template:
         return
+
+    source_titles = _collect_message_episode_titles(messages)
+    stored_titles = await load_episode_titles(chat_id)
+    episode_titles = dict(stored_titles)
+    episode_titles.update({str(k): v for k, v in source_titles.items()})
 
     episodes = defaultdict(list)
     for msg in messages:
@@ -751,14 +995,9 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             if not filename:
                 continue
 
-            cap = (
-                caption_template
-                .replace("{filename}", html.escape(filename.rsplit('.', 1)[0]))
-                .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
-                .replace("{duration}", html.escape(format_duration(duration)))
-                .replace("{quality}", html.escape(extract_quality(filename)))
-                .replace("{season}", html.escape(extract_season(filename)))
-                .replace("{episode}", html.escape(extract_episode(filename)))
+            cap = _render_caption(
+                caption_template,
+                _caption_values(filename, filesize, duration, episode_titles)
             )
 
             try:
@@ -898,6 +1137,11 @@ async def auto_cap_cmd(client, message: Message):
                 )
                 continue
 
+            source_titles = _collect_message_episode_titles(msgs)
+            stored_titles = await load_episode_titles(real_dest_id)
+            episode_titles = dict(stored_titles)
+            episode_titles.update({str(k): v for k, v in source_titles.items()})
+
             episodes = defaultdict(list)
 
             for msg in msgs:
@@ -949,14 +1193,9 @@ async def auto_cap_cmd(client, message: Message):
                     if not filename:
                         continue
 
-                    cap = (
-                        caption_template
-                        .replace("{filename}", html.escape(filename.rsplit(".", 1)[0]))
-                        .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
-                        .replace("{duration}", html.escape(format_duration(duration)))
-                        .replace("{quality}", html.escape(extract_quality(filename)))
-                        .replace("{season}", html.escape(extract_season(filename)))
-                        .replace("{episode}", html.escape(extract_episode(filename)))
+                    cap = _render_caption(
+                        caption_template,
+                        _caption_values(filename, filesize, duration, episode_titles)
                     )
 
                     try:
