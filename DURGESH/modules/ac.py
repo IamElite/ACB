@@ -119,54 +119,52 @@ async def copy_media_preserving_cover(
     msg: Message,
     caption: str
 ) -> Message:
-    """Copy media server-side and preserve a Telegram video cover when possible."""
-    try:
-        sent = await msg.copy(
-            target_chat_id,
-            caption=caption,
-            parse_mode=ParseMode.HTML
-        )
-
-        if not msg.video or not getattr(msg.video, "video_cover", None):
-            return sent
+    """Copy cached media and preserve Telegram video cover through the monkey-patched send methods."""
+    if msg.video and getattr(msg.video, "video_cover", None):
+        cover_file_id = msg.video.video_cover.file_id
 
         try:
-            media = FileId.decode(msg.video.file_id)
-            cover = FileId.decode(msg.video.video_cover.file_id)
-
-            input_media = raw.types.InputMediaDocument(
-                id=raw.types.InputDocument(
-                    id=media.media_id,
-                    access_hash=media.access_hash,
-                    file_reference=media.file_reference,
-                ),
-                thumb=None,
-                video_cover=raw.types.InputPhoto(
-                    id=cover.media_id,
-                    access_hash=cover.access_hash,
-                    file_reference=cover.file_reference,
-                ),
-                video_cover_is_next=False,
-                force_file=False,
-                spoiler=bool(getattr(msg, "has_media_spoiler", False)),
-                ttl_seconds=None,
-                query="",
-                attributes=[]
-            )
-
-            await client.edit_message_media(
+            sent = await client.send_cached_media(
                 chat_id=target_chat_id,
-                message_id=sent.id,
-                media=input_media
+                file_id=msg.video.file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                has_spoiler=bool(getattr(msg, "has_media_spoiler", False)),
+                cover=cover_file_id,
             )
-
-            refreshed = await client.get_messages(target_chat_id, sent.id)
-            return refreshed or sent
+            if sent:
+                return sent
+        except TypeError:
+            pass
         except Exception as e:
-            print(f"Video cover preservation failed: {e}")
-            return sent
-    except Exception:
-        raise
+            print(f"Cached video cover send failed: {e}")
+
+        try:
+            sent = await client.send_video(
+                chat_id=target_chat_id,
+                video=msg.video.file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                duration=msg.video.duration or 0,
+                width=msg.video.width or 0,
+                height=msg.video.height or 0,
+                supports_streaming=True,
+                has_spoiler=bool(getattr(msg, "has_media_spoiler", False)),
+                cover=cover_file_id,
+                file_name=msg.video.file_name or "video.mp4",
+            )
+            if sent:
+                return sent
+        except TypeError:
+            pass
+        except Exception as e:
+            print(f"Video cover send fallback failed: {e}")
+
+    return await msg.copy(
+        target_chat_id,
+        caption=caption,
+        parse_mode=ParseMode.HTML
+    )
 
 
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
@@ -791,14 +789,17 @@ async def replace_existing_episode_title(client, chat_id: int, video_message: Me
         return False
 
     try:
-        new_text = title.strip()
-        if (title_message.text or "").strip() == new_text:
-            return True
+        match = re.match(r'^(.*?–\s*)(.+)$', title.strip())
+        if match:
+            new_text = f"{html.escape(match.group(1))}<b>{html.escape(match.group(2))}</b>"
+        else:
+            new_text = f"<b>{html.escape(title.strip())}</b>"
+
         await client.edit_message_text(
             chat_id=chat_id,
             message_id=title_message.id,
             text=new_text,
-            parse_mode=None
+            parse_mode=ParseMode.HTML
         )
         return True
     except Exception:
@@ -1274,60 +1275,60 @@ async def auto_cap_cmd(client, message: Message):
 async def set_episode_titles_cmd(client, message: Message):
     try:
         command_text = message.text or ""
-        lines = command_text.splitlines()
-        first_line = lines[0].split() if lines else []
+        first_line = command_text.splitlines()[0] if command_text.splitlines() else ""
+        args = first_line.split()
 
-        channel_arg = None
+        link_args = []
+        for token in args[1:]:
+            match = re.search(r'(?:https?://)?t\.me/c/(\d+)/(\d+)', token)
+            if match:
+                link_args.append((match.group(1), int(match.group(2))))
+
         range_start = None
         range_end = None
+        channel_id = None
 
-        for token in first_line[1:]:
-            if token.startswith("-100") and token[4:].isdigit():
-                channel_arg = token
+        if len(link_args) >= 2:
+            if link_args[0][0] != link_args[1][0]:
+                return await message.reply_text(
+                    "❌ <b>Start and end links must be from the same channel.</b>",
+                    parse_mode=ParseMode.HTML
+                )
+            channel_id = int(f"-100{link_args[0][0]}")
+            range_start = min(link_args[0][1], link_args[1][1])
+            range_end = max(link_args[0][1], link_args[1][1])
+
+        if len(link_args) == 1:
+            channel_id = int(f"-100{link_args[0][0]}")
+            range_start = link_args[0][1]
+            range_end = link_args[0][1]
+
+        numeric_args = [int(x) for x in args[1:] if re.fullmatch(r'\d+', x)]
+        if len(numeric_args) >= 2 and range_start is None:
+            range_start = min(numeric_args[0], numeric_args[1])
+            range_end = max(numeric_args[0], numeric_args[1])
+
+        for token in args[1:]:
+            if token.startswith("-100") and token[4:].isdigit() and channel_id is None:
+                channel_id = int(token)
                 break
-            if token.startswith("@") or "t.me/" in token:
-                channel_arg = token
-                break
 
-        numeric_args = []
-        for token in first_line[1:]:
-            if re.fullmatch(r"\d+", token):
-                numeric_args.append(int(token))
-
-        if len(numeric_args) >= 2:
-            range_start, range_end = numeric_args[0], numeric_args[1]
-            if range_start > range_end:
-                range_start, range_end = range_end, range_start
-
-        title_text = "\n".join(lines[1:]).strip()
-
+        title_text = ""
         if message.reply_to_message:
-            replied_text = (
+            title_text = (
                 message.reply_to_message.text
                 or message.reply_to_message.caption
                 or ""
             ).strip()
-            if replied_text:
-                title_text = replied_text
 
-            if not channel_arg:
-                forwarded_chat = getattr(message.reply_to_message, "forward_from_chat", None)
-                sender_chat = getattr(message.reply_to_message, "sender_chat", None)
-                if forwarded_chat:
-                    channel_arg = str(forwarded_chat.id)
-                elif sender_chat:
-                    channel_arg = str(sender_chat.id)
-
-        if not channel_arg:
-            for token in reversed(first_line[1:]):
-                if token.startswith("-100") and token[4:].isdigit():
-                    channel_arg = token
-                    break
+        if not title_text:
+            body_lines = command_text.splitlines()[1:]
+            title_text = "\n".join(body_lines).strip()
 
         if not title_text:
             return await message.reply_text(
                 "❌ <b>No episode title list found.</b>\n\n"
-                "Reply to the raw title list and use <code>/sept &lt;channel_id&gt;</code>.\n\n"
+                "Reply to the raw title list and use two channel message links.\n\n"
                 "<b>Format:</b>\n"
                 "<code>S01E09 - Did You Do It?!\n"
                 "S01E10 - Next Title\n"
@@ -1336,10 +1337,10 @@ async def set_episode_titles_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
 
-        if not channel_arg:
+        if channel_id is None:
             return await message.reply_text(
-                "❌ <b>Channel ID is required.</b>\n\n"
-                "Use <code>/sept -1001234567890</code> or reply to the title list.",
+                "❌ <b>Channel range links are required.</b>\n\n"
+                "Use:<code>/sept &lt;start_link&gt; &lt;end_link&gt;</code>",
                 parse_mode=ParseMode.HTML
             )
 
@@ -1351,37 +1352,24 @@ async def set_episode_titles_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
 
-        peer = normalize_channel_peer(channel_arg)
-        chat = await client.get_chat(peer)
-        channel_id = chat.id
-
         await save_episode_titles(str(channel_id), title_map)
 
         if range_start is None or range_end is None:
-            await message.reply_text(
-                "✅ <b>Episode title map saved.</b>\n\n"
-                f"📺 <b>Channel:</b> <code>{channel_id}</code>\n"
-                f"📝 <b>Titles:</b> <code>{len(title_map)}</code>\n\n"
-                "The bot cannot scan old channel history with a bot account. "
-                "Telegram blocks <code>messages.GetHistory</code> for bots. "
-                "The saved map will be used automatically by <code>/ac</code> and future channel posts.\n\n"
-                "For existing messages, provide a message range:\n"
-                "<code>/sept 150 220 -1001234567890</code>",
+            return await message.reply_text(
+                "❌ <b>Invalid message range.</b>",
                 parse_mode=ParseMode.HTML
             )
-            return
 
         total = range_end - range_start + 1
         if total > 5000:
             return await message.reply_text(
-                "❌ <b>Range is too large.</b> Maximum supported range is 5000 messages per /sept run.",
+                "❌ <b>Range is too large.</b> Maximum supported range is 5000 messages.",
                 parse_mode=ParseMode.HTML
             )
 
         updated = 0
         skipped = 0
         remaining = set(title_map.keys())
-
         msg_ids = list(range(range_start, range_end + 1))
         chunk_size = 200
         media_by_key = defaultdict(list)
@@ -1408,7 +1396,10 @@ async def set_episode_titles_cmd(client, message: Message):
                 if not fname or not (msg.document or msg.video):
                     continue
 
-                key = next((candidate for candidate in title_keys_for_filename(fname) if candidate in title_map), None)
+                key = next(
+                    (candidate for candidate in title_keys_for_filename(fname) if candidate in title_map),
+                    None
+                )
                 if key:
                     media_by_key[key].append(msg)
 
@@ -1451,8 +1442,8 @@ async def set_episode_titles_cmd(client, message: Message):
         await message.reply_text(
             "✅ <b>Episode titles processed.</b>\n\n"
             f"📺 <b>Channel:</b> <code>{channel_id}</code>\n"
-            f"📝 <b>Titles received:</b> <code>{len(title_map)}</code>\n"
-            f"✏️ <b>Messages updated:</b> <code>{updated}</code>\n"
+            f"📝 <b>Titles:</b> <code>{len(title_map)}</code>\n"
+            f"✏️ <b>Updated:</b> <code>{updated}</code>\n"
             f"⚠️ <b>Skipped:</b> <code>{skipped}</code>\n"
             f"🔎 <b>Not matched:</b> <code>{len(remaining)}</code>",
             parse_mode=ParseMode.HTML
@@ -1463,4 +1454,3 @@ async def set_episode_titles_cmd(client, message: Message):
             f"❌ <b>Error:</b> {html.escape(str(e))}",
             parse_mode=ParseMode.HTML
         )
-
