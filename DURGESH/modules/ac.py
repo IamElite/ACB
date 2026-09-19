@@ -1257,17 +1257,32 @@ async def auto_cap_cmd(client, message: Message):
 async def set_episode_titles_cmd(client, message: Message):
     try:
         command_text = message.text or ""
-        body_lines = command_text.splitlines()
-        command_first = body_lines[0].split()
-        title_text = "\n".join(body_lines[1:]).strip()
+        lines = command_text.splitlines()
+        first_line = lines[0].split() if lines else []
 
         channel_arg = None
-        if len(command_first) >= 2 and (
-            command_first[1].startswith("-100")
-            or command_first[1].startswith("@")
-            or "t.me/" in command_first[1]
-        ):
-            channel_arg = command_first[1]
+        range_start = None
+        range_end = None
+
+        for token in first_line[1:]:
+            if token.startswith("-100") and token[4:].isdigit():
+                channel_arg = token
+                break
+            if token.startswith("@") or "t.me/" in token:
+                channel_arg = token
+                break
+
+        numeric_args = []
+        for token in first_line[1:]:
+            if re.fullmatch(r"\d+", token):
+                numeric_args.append(int(token))
+
+        if len(numeric_args) >= 2:
+            range_start, range_end = numeric_args[0], numeric_args[1]
+            if range_start > range_end:
+                range_start, range_end = range_end, range_start
+
+        title_text = "\n".join(lines[1:]).strip()
 
         if message.reply_to_message:
             replied_text = (
@@ -1278,27 +1293,36 @@ async def set_episode_titles_cmd(client, message: Message):
             if replied_text:
                 title_text = replied_text
 
-        if not title_text and len(message.command) > 2:
-            title_text = command_text.split(None, 2)[2].strip()
+            if not channel_arg:
+                forwarded_chat = getattr(message.reply_to_message, "forward_from_chat", None)
+                sender_chat = getattr(message.reply_to_message, "sender_chat", None)
+                if forwarded_chat:
+                    channel_arg = str(forwarded_chat.id)
+                elif sender_chat:
+                    channel_arg = str(sender_chat.id)
 
         if not channel_arg:
-            tokens = command_text.split()
-            for token in reversed(tokens):
+            for token in reversed(first_line[1:]):
                 if token.startswith("-100") and token[4:].isdigit():
                     channel_arg = token
                     break
 
-        if not channel_arg and message.reply_to_message:
-            if message.reply_to_message.forward_from_chat:
-                channel_arg = str(message.reply_to_message.forward_from_chat.id)
-            elif message.reply_to_message.sender_chat:
-                channel_arg = str(message.reply_to_message.sender_chat.id)
-
-        if not channel_arg or not title_text:
+        if not title_text:
             return await message.reply_text(
-                "❌ <b>Usage:</b> Reply to the raw title list with <code>/sept &lt;channel_id&gt;</code>\n\n"
+                "❌ <b>No episode title list found.</b>\n\n"
+                "Reply to the raw title list and use <code>/sept &lt;channel_id&gt;</code>.\n\n"
                 "<b>Format:</b>\n"
-                "<code>S01E09 - Did You Do It?!\nS01E10 - Next Title\nOVA S01E11 - Extra Episode\nSP S01E12 - Special</code>",
+                "<code>S01E09 - Did You Do It?!\n"
+                "S01E10 - Next Title\n"
+                "OVA S01E11 - Extra Episode\n"
+                "SP S01E12 - Special</code>",
+                parse_mode=ParseMode.HTML
+            )
+
+        if not channel_arg:
+            return await message.reply_text(
+                "❌ <b>Channel ID is required.</b>\n\n"
+                "Use <code>/sept -1001234567890</code> or reply to the title list.",
                 parse_mode=ParseMode.HTML
             )
 
@@ -1316,79 +1340,127 @@ async def set_episode_titles_cmd(client, message: Message):
 
         await save_episode_titles(str(channel_id), title_map)
 
-        remaining = set(title_map.keys())
+        if range_start is None or range_end is None:
+            await message.reply_text(
+                "✅ <b>Episode title map saved.</b>\n\n"
+                f"📺 <b>Channel:</b> <code>{channel_id}</code>\n"
+                f"📝 <b>Titles:</b> <code>{len(title_map)}</code>\n\n"
+                "The bot cannot scan old channel history with a bot account. "
+                "Telegram blocks <code>messages.GetHistory</code> for bots. "
+                "The saved map will be used automatically by <code>/ac</code> and future channel posts.\n\n"
+                "For existing messages, provide a message range:\n"
+                "<code>/sept 150 220 -1001234567890</code>",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        total = range_end - range_start + 1
+        if total > 5000:
+            return await message.reply_text(
+                "❌ <b>Range is too large.</b> Maximum supported range is 5000 messages per /sept run.",
+                parse_mode=ParseMode.HTML
+            )
+
         updated = 0
         skipped = 0
-        seen_media = set()
-        history = []
+        remaining = set(title_map.keys())
 
-        async for msg in client.get_chat_history(channel_id):
-            if not msg:
-                continue
-            history.append(msg)
-            if len(remaining) == 0:
-                break
+        msg_ids = list(range(range_start, range_end + 1))
+        chunk_size = 200
 
-        history.sort(key=lambda m: m.id)
-
-        for msg in history:
-            fname = media_filename(msg)
-            if not fname or not (msg.document or msg.video):
-                continue
-
-            key = None
-            for candidate in title_keys_for_filename(fname):
-                if candidate in title_map:
-                    key = candidate
-                    break
-            if not key or msg.id in seen_media:
-                continue
-
-            title = title_map[key]
+        for pos in range(0, len(msg_ids), chunk_size):
+            chunk = msg_ids[pos:pos + chunk_size]
             try:
-                title_msg = await find_title_message_for_video(client, channel_id, msg, max_back=5)
-                if title_msg:
-                    old = (title_msg.text or "").strip()
-                    if old != title:
-                        await client.edit_message_text(
-                            chat_id=channel_id,
-                            message_id=title_msg.id,
-                            text=title,
-                            parse_mode=None
-                        )
-                else:
-                    await client.send_message(channel_id, title, parse_mode=None)
-                updated += 1
-                seen_media.add(msg.id)
-                remaining.discard(key)
+                fetched = await client.get_messages(channel_id, chunk)
             except FloodWait as fw:
                 await asyncio.sleep(fw.value)
                 try:
-                    title_msg = await find_title_message_for_video(client, channel_id, msg, max_back=5)
+                    fetched = await client.get_messages(channel_id, chunk)
+                except Exception:
+                    skipped += len(chunk)
+                    continue
+            except Exception:
+                skipped += len(chunk)
+                continue
+
+            messages = [m for m in fetched if m]
+            messages.sort(key=lambda m: m.id)
+
+            for msg in messages:
+                fname = media_filename(msg)
+                if not fname or not (msg.document or msg.video):
+                    continue
+
+                key = None
+                for candidate in title_keys_for_filename(fname):
+                    if candidate in title_map:
+                        key = candidate
+                        break
+                if not key:
+                    continue
+
+                title = title_map[key]
+                try:
+                    title_msg = await find_title_message_for_video(
+                        client,
+                        channel_id,
+                        msg,
+                        max_back=8
+                    )
                     if title_msg:
-                        await client.edit_message_text(
-                            chat_id=channel_id,
-                            message_id=title_msg.id,
-                            text=title,
+                        old = (title_msg.text or "").strip()
+                        if old != title:
+                            await client.edit_message_text(
+                                chat_id=channel_id,
+                                message_id=title_msg.id,
+                                text=title,
+                                parse_mode=None
+                            )
+                    else:
+                        await client.send_message(
+                            channel_id,
+                            title,
                             parse_mode=None
                         )
-                    else:
-                        await client.send_message(channel_id, title, parse_mode=None)
+
                     updated += 1
-                    seen_media.add(msg.id)
                     remaining.discard(key)
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value)
+                    try:
+                        title_msg = await find_title_message_for_video(
+                            client,
+                            channel_id,
+                            msg,
+                            max_back=8
+                        )
+                        if title_msg:
+                            await client.edit_message_text(
+                                chat_id=channel_id,
+                                message_id=title_msg.id,
+                                text=title,
+                                parse_mode=None
+                            )
+                        else:
+                            await client.send_message(
+                                channel_id,
+                                title,
+                                parse_mode=None
+                            )
+                        updated += 1
+                        remaining.discard(key)
+                    except Exception:
+                        skipped += 1
                 except Exception:
                     skipped += 1
-            except Exception:
-                skipped += 1
 
         await message.reply_text(
-            "✅ <b>Episode titles updated.</b>\n\n"
+            "✅ <b>Episode titles processed.</b>\n\n"
             f"📺 <b>Channel:</b> <code>{channel_id}</code>\n"
             f"📝 <b>Titles received:</b> <code>{len(title_map)}</code>\n"
             f"✏️ <b>Messages updated:</b> <code>{updated}</code>\n"
             f"⚠️ <b>Skipped:</b> <code>{skipped}</code>\n"
-            f"🔎 <b>Not found:</b> <code>{len(remaining)}</code>",
+            f"🔎 <b>Not matched:</b> <code>{len(remaining)}</code>",
             parse_mode=ParseMode.HTML
         )
 
@@ -1397,3 +1469,4 @@ async def set_episode_titles_cmd(client, message: Message):
             f"❌ <b>Error:</b> {html.escape(str(e))}",
             parse_mode=ParseMode.HTML
         )
+
