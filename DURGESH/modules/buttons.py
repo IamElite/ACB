@@ -327,12 +327,15 @@ def get_html_text(text: str, entities: list) -> str:
     res += text_16[last_idx:].decode('utf-16-le')
     return res
 
+# Auto-button trigger: ONLY "$" immediately before a link.
+# Old triggers (-, •, 👉, 🔗, ~, etc.) are intentionally disabled.
 TRIGGER_HTML_REGEX = re.compile(
-    r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
+    r'(?:^|\n|\s)\$\s*<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\'][^>]*>.*?</a>',
     re.IGNORECASE
 )
+
 TRIGGER_PLAIN_REGEX = re.compile(
-    r'(?:^|\n|\s)[-–—•▪►👉🔗~]+\s*(https?://[^\s<>"\']+|tg://[^\s<>"\']+|t\.me/[^\s<>"\']+)',
+    r'(?:^|\n|\s)\$\s*(https?://[^\s<>"\']+|tg://[^\s<>"\']+|t\.me/[^\s<>"\']+)',
     re.IGNORECASE
 )
 
@@ -495,20 +498,19 @@ async def _handle_channel_post(client, message: Message, source: str = "unknown"
         entities = message.caption_entities or message.entities
         html_text = get_html_text(raw_text, entities)
         extracted_url, cl_raw, cl_html = extract_trigger_link_and_clean_caption(raw_text, html_text)
+        # Auto-button is strictly for authorized channels only.
+        # Never auto-authorize a channel/chat from a post.
         settings = await get_channel_settings(chat_id, chat.username)
+        if not settings:
+            return
+
         if not extracted_url:
-            if settings and settings.get("forward_tag_removal") and is_forwarded_post(message):
+            if settings.get("forward_tag_removal") and is_forwarded_post(message):
                 await safe_copy_and_delete(message, chat_id)
             return
-        logger.info(f"[AUTO-BTN] Trigger link found: {extracted_url}")
-        if not settings:
-            settings = {
-                "chat_id": str(chat_id),
-                "forward_tag_removal": True,
-                "auto_accept_time": "1s",
-                "auto_accept_seconds": 1
-            }
-            asyncio.create_task(add_auth_channel(chat_id, forward_tag=True, auto_accept_time="1s"))
+
+        logger.info(f"[AUTO-BTN] Trigger link found in channel {chat_id}: {extracted_url}")
+
         tmpl_data = await get_effective_template(chat_id, chat.username)
         if not tmpl_data or not tmpl_data.get("template"):
             logger.warning(f"[AUTO-BTN] No template found for channel {chat_id}")
@@ -588,30 +590,8 @@ async def channel_post_edit_listener(client, message: Message):
     await _handle_channel_post(client, message, source="edited.filters.channel")
 
 try:
-    from pyrogram.raw.types import UpdateNewChannelMessage, UpdateEditChannelMessage
-    @app.on_raw_update()
-    async def raw_channel_update_handler(client, update, users, chats):
-        try:
-            if isinstance(update, (UpdateNewChannelMessage, UpdateEditChannelMessage)):
-                message = update.message
-                channel_id = getattr(message, "peer_id", None)
-                if channel_id:
-                    channel_id = getattr(channel_id, "channel_id", None)
-                    if channel_id:
-                        full_id = int(f"-100{channel_id}")
-                        try:
-                            msg = await client.get_messages(full_id, message.id)
-                            if msg and msg.chat:
-                                source = "raw_update_new" if isinstance(update, UpdateNewChannelMessage) else "raw_update_edit"
-                                await _handle_channel_post(client, msg, source=source)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-    logger.info("Raw update handler registered")
-except Exception as e:
-    logger.warning(f"Could not register raw update handler: {e}")
-
+# Raw MTProto update handler intentionally removed.
+# Pyrogram's filters.channel listeners below are sufficient and avoid duplicate processing.
 @app.on_chat_join_request()
 async def auto_approve_join_request(client, request: ChatJoinRequest):
     try:
