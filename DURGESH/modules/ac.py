@@ -739,7 +739,7 @@ async def load_episode_titles(chat_id: str) -> dict[str, str]:
 
 
 async def find_existing_episode_title_message(client, chat_id: int, video_message: Message, max_back: int = 12):
-    """Find an existing episode title/header message above a video. Never creates a message."""
+    """Find an existing episode title/header message above a video."""
     if not video_message or not video_message.id:
         return None
 
@@ -759,7 +759,7 @@ async def find_existing_episode_title_message(client, chat_id: int, video_messag
     episode_number = int(ep_match.group(2)) if ep_match else None
 
     header_candidates = []
-    text_candidates = []
+    title_candidates = []
 
     for msg in previous:
         text = (msg.text or "").strip()
@@ -772,34 +772,48 @@ async def find_existing_episode_title_message(client, chat_id: int, video_messag
                 header_candidates.append(msg)
             continue
 
-        if re.match(r'^\s*(?:OVA|OAV|SP|SPECIAL)?\s*Episode\s+\d+\s*[–—:-]', text, re.IGNORECASE):
-            text_candidates.append(msg)
+        episode_match = re.search(
+            r'\b(?:OVA|OAV|SP|SPECIAL)?\s*Episode\s+(\d+)\s*[–—:-]',
+            text,
+            re.IGNORECASE
+        )
+        if episode_match:
+            if episode_number is None or int(episode_match.group(1)) == episode_number:
+                title_candidates.append(msg)
 
+    if title_candidates:
+        return title_candidates[0]
     if header_candidates:
         return header_candidates[0]
-    if text_candidates:
-        return text_candidates[0]
     return None
 
 
 async def replace_existing_episode_title(client, chat_id: int, video_message: Message, title: str):
-    """Edit the existing episode title/header message only. Never sends a replacement message."""
+    """Replace the existing title message so Telegram does not show an edited marker."""
     title_message = await find_existing_episode_title_message(client, chat_id, video_message)
     if not title_message:
         return False
 
     try:
-        match = re.match(r'^(.*?–\s*)(.+)$', title.strip())
-        if match:
-            new_text = f"{html.escape(match.group(1))}<b>{html.escape(match.group(2))}</b>"
+        old_text = (title_message.text or title_message.caption or title.strip()).strip()
+        replacement_title = title.strip()
+        episode_line = re.compile(
+            r'(?im)^(\s*(?:OVA|OAV|SP|SPECIAL)?\s*Episode\s+\d+\s*[–—:-].*)$'
+        )
+        if episode_line.search(old_text):
+            new_plain = episode_line.sub(replacement_title, old_text, count=1)
+        elif re.match(r'^\s*━━+\s*Episode\s+\d+\s*━━+\s*$', old_text, re.IGNORECASE):
+            new_plain = replacement_title
         else:
-            new_text = f"<b>{html.escape(title.strip())}</b>"
+            new_plain = replacement_title
+        new_text = f"<b>{html.escape(new_plain)}</b>"
 
-        await client.edit_message_text(
+        await client.delete_messages(chat_id, title_message.id)
+        await client.send_message(
             chat_id=chat_id,
-            message_id=title_message.id,
             text=new_text,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True
         )
         return True
     except Exception:
