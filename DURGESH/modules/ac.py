@@ -1,14 +1,14 @@
 import html
 import re
-import os
 import asyncio
 from collections import defaultdict
 from typing import Union, Tuple, Optional
 
-from pyrogram import filters
+from pyrogram import filters, raw
 from pyrogram.types import Message, Chat
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
+from pyrogram.file_id import FileId
 
 from DURGESH import app
 from DURGESH.database import db
@@ -16,7 +16,7 @@ from DURGESH.database import db
 captiondb = db.captions
 authchanneldb = db.capauth_channels
 
-# Default caption template
+                          
 DEFAULT_CAPTION = """<blockquote><b>
 ╭────────────────────⦿
 ├ 📺<b>єᴘɪꜱσᴅє</b> ➛ <i>{episode}</i> <b>(ꜱєᴧꜱση</b> <i>{season}</i><b>)</b>
@@ -26,7 +26,7 @@ DEFAULT_CAPTION = """<blockquote><b>
 ╰────────────────────⦿
 </blockquote></b>"""
 
-# Default sticker file_id for episode separator
+                                               
 DEFAULT_STICKER = "CAACAgUAAyEFAASGx2_SAAIz62jrdgpaY3r_OHj_ffvmcjhhNnuBAAI7FQACdQGhVWIKZdj6_6puHgQ"
 
 def extract_episode(fname: str) -> str:
@@ -117,164 +117,51 @@ async def copy_media_preserving_cover(
     msg: Message,
     caption: str
 ) -> Optional[Message]:
-    """
-    Copy media while preserving the original Telegram media object.
-
-    IMPORTANT:
-    - Server-side Message.copy() is the first choice. This keeps the original
-      video cover/thumbnail/media attributes intact and avoids unnecessary
-      download + re-upload.
-    - If Telegram/Pyrogram cannot copy the message, a re-upload fallback is used.
-    """
-    thumb_path = None
-
-    # 1. BEST PATH: server-side Telegram copy.
-    # This is especially important for videos with a custom cover.
     try:
-        return await msg.copy(
+        copied = await msg.copy(
             target_chat_id,
             caption=caption,
             parse_mode=ParseMode.HTML
         )
     except FloodWait:
         raise
-    except Exception as copy_error:
-        print(f"⚠️ Server-side copy failed, using media fallback: {copy_error}")
+    except Exception:
+        raise
+
+    if not copied or not msg.video or not msg.video.video_cover:
+        return copied
 
     try:
-        # 2. Video fallback
-        if msg.video:
-            cover_source = None
+        video_file = FileId.decode(copied.video.file_id)
+        cover_file = FileId.decode(msg.video.video_cover.file_id)
 
-            # Pyrofork/Kurigram may expose a dedicated video_cover.
-            video_cover = getattr(msg.video, "video_cover", None)
-            if video_cover:
-                cover_source = video_cover
-
-            # Older/other builds expose thumbnail(s) instead.
-            if not cover_source:
-                thumbs = getattr(msg.video, "thumbs", None)
-                if thumbs:
-                    cover_source = thumbs[-1].file_id
-
-            if cover_source:
-                try:
-                    thumb_path = await client.download_media(cover_source)
-                except Exception as e:
-                    print(f"⚠️ Could not download video cover/thumb: {e}")
-                    thumb_path = None
-
-            kwargs = {
-                "chat_id": target_chat_id,
-                "video": msg.video.file_id,
-                "caption": caption,
-                "parse_mode": ParseMode.HTML,
-                "duration": msg.video.duration or 0,
-                "width": msg.video.width or 0,
-                "height": msg.video.height or 0,
-                "supports_streaming": True,
-            }
-
-            if getattr(msg, "has_media_spoiler", False):
-                kwargs["has_spoiler"] = True
-
-            if thumb_path:
-                kwargs["thumb"] = thumb_path
-
-                # Pyrofork/Kurigram supports `cover`; normal Pyrogram may not.
-                try:
-                    return await client.send_video(
-                        **kwargs,
-                        cover=thumb_path
-                    )
-                except (TypeError, ValueError):
-                    return await client.send_video(**kwargs)
-            else:
-                return await client.send_video(**kwargs)
-
-        # 3. Document fallback
-        if msg.document:
-            cover_source = None
-            thumbs = getattr(msg.document, "thumbs", None)
-            if thumbs:
-                cover_source = thumbs[-1].file_id
-
-            if cover_source:
-                try:
-                    thumb_path = await client.download_media(cover_source)
-                except Exception as e:
-                    print(f"⚠️ Could not download document thumbnail: {e}")
-                    thumb_path = None
-
-            kwargs = {
-                "chat_id": target_chat_id,
-                "document": msg.document.file_id,
-                "caption": caption,
-                "parse_mode": ParseMode.HTML,
-            }
-
-            if thumb_path:
-                kwargs["thumb"] = thumb_path
-
-            try:
-                return await client.send_document(**kwargs)
-            except Exception:
-                # Last resort: server-side copy again.
-                return await msg.copy(
-                    target_chat_id,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML
-                )
-
-        # 4. Audio fallback
-        if msg.audio:
-            cover_source = None
-            thumbs = getattr(msg.audio, "thumbs", None)
-            if thumbs:
-                cover_source = thumbs[-1].file_id
-
-            if cover_source:
-                try:
-                    thumb_path = await client.download_media(cover_source)
-                except Exception as e:
-                    print(f"⚠️ Could not download audio cover: {e}")
-                    thumb_path = None
-
-            kwargs = {
-                "chat_id": target_chat_id,
-                "audio": msg.audio.file_id,
-                "caption": caption,
-                "parse_mode": ParseMode.HTML,
-                "duration": msg.audio.duration or 0,
-                "performer": msg.audio.performer,
-                "title": msg.audio.title,
-            }
-
-            if thumb_path:
-                kwargs["thumb"] = thumb_path
-
-            try:
-                return await client.send_audio(**kwargs)
-            except Exception:
-                return await msg.copy(
-                    target_chat_id,
-                    caption=caption,
-                    parse_mode=ParseMode.HTML
-                )
-
-        # 5. Other media fallback
-        return await msg.copy(
-            target_chat_id,
-            caption=caption,
-            parse_mode=ParseMode.HTML
+        media = raw.types.InputMediaDocument(
+            id=raw.types.InputDocument(
+                id=video_file.media_id,
+                access_hash=video_file.access_hash,
+                file_reference=video_file.file_reference
+            ),
+            video_cover=raw.types.InputPhoto(
+                id=cover_file.media_id,
+                access_hash=cover_file.access_hash,
+                file_reference=cover_file.file_reference
+            ),
+            video_timestamp=msg.video.video_start_timestamp,
+            ttl_seconds=msg.video.ttl_seconds,
+            spoiler=bool(copied.has_media_spoiler)
         )
 
-    finally:
-        if thumb_path and os.path.exists(thumb_path):
-            try:
-                os.remove(thumb_path)
-            except OSError:
-                pass
+        updated = await client.edit_message_media(
+            chat_id=target_chat_id,
+            message_id=copied.id,
+            media=media
+        )
+        return updated or copied
+    except FloodWait:
+        raise
+    except Exception as e:
+        print(f"⚠️ Video cover preservation failed: {e}")
+        return copied
 
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
     """
@@ -287,21 +174,21 @@ def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
 
     clean = str(val).strip()
 
-    # Link format: t.me/c/2906536289 or https://t.me/c/2906536289/123
+                                                                     
     m_link = re.search(r'(?:https?://)?t\.me/c/(\d+)', clean)
     if m_link:
         return int(f"-100{m_link.group(1)}")
 
-    # Public username link: t.me/username
+                                         
     m_user = re.search(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)', clean)
     if m_user:
         return f"@{m_user.group(1)}"
 
-    # Public username string
+                            
     if clean.startswith("@"):
         return clean
 
-    # Clean leading dashes and ensure -100 prefix as an integer
+                                                               
     clean_digits = clean.lstrip('-')
     if clean_digits.isdigit():
         if clean_digits.startswith("100"):
@@ -316,7 +203,7 @@ async def resolve_target_channel(client, message: Message, arg_index: int = 1) -
     Safely resolves the channel ID and Chat object from commands or replied messages.
     Bypasses contacts.ResolvePhone by utilizing message.reply_to_message objects directly.
     """
-    # Check if replied to a forwarded message from a channel
+                                                            
     if message.reply_to_message:
         r = message.reply_to_message
         if r.forward_from_chat:
@@ -324,7 +211,7 @@ async def resolve_target_channel(client, message: Message, arg_index: int = 1) -
         if r.sender_chat:
             return str(r.sender_chat.id), r.sender_chat
 
-    # Extract target argument from message command or replied text
+                                                                  
     raw_target = None
     if len(message.command) > arg_index:
         raw_target = message.command[arg_index]
@@ -338,7 +225,7 @@ async def resolve_target_channel(client, message: Message, arg_index: int = 1) -
 
     peer = normalize_channel_peer(raw_target)
     
-    # Resolve chat using the normalized peer
+                                            
     chat = await client.get_chat(peer)
     return str(chat.id), chat
 
