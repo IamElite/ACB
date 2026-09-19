@@ -589,9 +589,9 @@ async def channel_post_listener(client, message: Message):
 async def channel_post_edit_listener(client, message: Message):
     await _handle_channel_post(client, message, source="edited.filters.channel")
 
-try:
 # Raw MTProto update handler intentionally removed.
 # Pyrogram's filters.channel listeners below are sufficient and avoid duplicate processing.
+
 @app.on_chat_join_request()
 async def auto_approve_join_request(client, request: ChatJoinRequest):
     try:
