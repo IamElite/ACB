@@ -119,12 +119,24 @@ async def copy_media_preserving_cover(
     msg: Message,
     caption: str
 ) -> Message:
-    """Copy media directly so Telegram keeps the original video cover."""
-    return await msg.copy(
-        target_chat_id,
-        caption=caption,
-        parse_mode=ParseMode.HTML
-    )
+    """Copy media while explicitly forwarding the source video cover."""
+    cover_file_id = None
+    if msg.video and getattr(msg.video, "video_cover", None):
+        cover_file_id = getattr(msg.video.video_cover, "file_id", None)
+
+    try:
+        return await msg.copy(
+            chat_id=target_chat_id,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            video_cover=cover_file_id
+        )
+    except TypeError:
+        return await msg.copy(
+            chat_id=target_chat_id,
+            caption=caption,
+            parse_mode=ParseMode.HTML
+        )
 
 
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
@@ -769,9 +781,6 @@ async def replace_existing_episode_title(client, chat_id: int, video_message: Me
             new_plain = replacement_title
 
         new_text = f"<b>{html.escape(new_plain)}</b>"
-
-        if (title_message.text or "").strip() == new_plain:
-            return True
 
         await client.edit_message_text(
             chat_id=chat_id,
