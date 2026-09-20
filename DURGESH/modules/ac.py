@@ -119,47 +119,7 @@ async def copy_media_preserving_cover(
     msg: Message,
     caption: str
 ) -> Message:
-    """Copy cached media and preserve Telegram video cover through the monkey-patched send methods."""
-    if msg.video and getattr(msg.video, "video_cover", None):
-        cover_file_id = msg.video.video_cover.file_id
-
-        try:
-            sent = await client.send_cached_media(
-                chat_id=target_chat_id,
-                file_id=msg.video.file_id,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                has_spoiler=bool(getattr(msg, "has_media_spoiler", False)),
-                cover=cover_file_id,
-            )
-            if sent:
-                return sent
-        except TypeError:
-            pass
-        except Exception as e:
-            print(f"Cached video cover send failed: {e}")
-
-        try:
-            sent = await client.send_video(
-                chat_id=target_chat_id,
-                video=msg.video.file_id,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                duration=msg.video.duration or 0,
-                width=msg.video.width or 0,
-                height=msg.video.height or 0,
-                supports_streaming=True,
-                has_spoiler=bool(getattr(msg, "has_media_spoiler", False)),
-                cover=cover_file_id,
-                file_name=msg.video.file_name or "video.mp4",
-            )
-            if sent:
-                return sent
-        except TypeError:
-            pass
-        except Exception as e:
-            print(f"Video cover send fallback failed: {e}")
-
+    """Copy media directly so Telegram keeps the original video cover."""
     return await msg.copy(
         target_chat_id,
         caption=caption,
@@ -706,7 +666,7 @@ def display_title_for_key(key: str, title: str) -> str:
 
 
 def format_episode_title_message(title: str, fname: Optional[str] = None) -> str:
-    return title.strip()
+    return f"<b>{html.escape(title.strip())}</b>"
 
 
 async def save_episode_titles(chat_id: str, title_map: dict[str, str]):
@@ -987,8 +947,8 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 title_text = display_title_for_key(display_key, episode_title) if display_key else episode_title
                 await client.send_message(
                     int_chat_id,
-                    title_text,
-                    parse_mode=None
+                    format_episode_title_message(title_text),
+                    parse_mode=ParseMode.HTML
                 )
                 await asyncio.sleep(1)
             except FloodWait as fw:
@@ -1225,8 +1185,8 @@ async def auto_cap_cmd(client, message: Message):
                             header_text = display_title_for_key(display_key, episode_title)
                     await client.send_message(
                         dest_int_id,
-                        header_text,
-                        parse_mode=None
+                        format_episode_title_message(header_text),
+                        parse_mode=ParseMode.HTML
                     )
                     await asyncio.sleep(1)
                 except FloodWait as fw:
