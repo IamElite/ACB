@@ -121,30 +121,60 @@ async def copy_media_preserving_cover(
 ) -> Message:
     """Copy media while preserving the source video cover.
 
-    Per PyroTGFork/Kurigram docs: omit `video_cover` entirely to keep the
-    existing cover; only pass it when we have an explicit new cover file_id.
-    Passing `video_cover=None` clears the cover on Telegram's side.
+    Kurigram's Message.copy() and the underlying send_cached_media() helper
+    DO NOT forward video_cover, so any existing cover gets stripped on copy.
+    For video messages we call send_video() directly with the source file_id
+    AND explicitly forward the video_cover photo file_id when present.
+    For other media types we fall back to a normal copy.
     """
-    kwargs = {
-        "chat_id": target_chat_id,
-        "caption": caption,
-        "parse_mode": ParseMode.HTML,
-    }
-
-    # Only attach video_cover when the source has a cover we can forward
     if msg.video:
-        cover_obj = getattr(msg.video, "video_cover", None)
+        v = msg.video
+        cover_obj = getattr(v, "video_cover", None)
         cover_file_id = getattr(cover_obj, "file_id", None) if cover_obj is not None else None
+
+        # Pick the best available thumbnail: prefer big photo size, then file_id
+        thumb = None
+        if cover_file_id:
+            thumb = cover_file_id  # cover itself works as a high-quality thumb
+        elif v.thumbs:
+            try:
+                thumb = v.thumbs[-1].file_id
+            except Exception:
+                thumb = None
+
+        kwargs = dict(
+            chat_id=target_chat_id,
+            video=v.file_id,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            duration=getattr(v, "duration", 0) or 0,
+            width=getattr(v, "width", 0) or 0,
+            height=getattr(v, "height", 0) or 0,
+            file_name=getattr(v, "file_name", None),
+            supports_streaming=getattr(v, "supports_streaming", True),
+            has_spoiler=getattr(msg, "has_media_spoiler", False) or False,
+        )
+        start_ts = getattr(v, "video_start_timestamp", None)
+        if start_ts:
+            kwargs["video_start_timestamp"] = start_ts
         if cover_file_id:
             kwargs["video_cover"] = cover_file_id
+        if thumb:
+            kwargs["thumb"] = thumb
 
-    try:
-        return await msg.copy(**kwargs)
-    except TypeError:
-        # Older/forked client version that doesn't accept video_cover kwarg:
-        # drop the kwarg and fall back — omitting it preserves the existing cover.
-        kwargs.pop("video_cover", None)
-        return await msg.copy(**kwargs)
+        try:
+            return await client.send_video(**kwargs)
+        except TypeError:
+            # Older client without video_cover support: drop it and retry
+            kwargs.pop("video_cover", None)
+            return await client.send_video(**kwargs)
+
+    # Non-video media: fall back to a normal copy (cover semantics don't apply).
+    return await msg.copy(
+        chat_id=target_chat_id,
+        caption=caption,
+        parse_mode=ParseMode.HTML,
+    )
 
 
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
@@ -1040,6 +1070,29 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 await asyncio.sleep(fw.value)
             except Exception as e:
                 print(f"Sticker error: {e}")
+
+    # Clean up source text/title-list messages from the channel after they've
+    # been parsed, matching how the original video source messages are deleted
+    # right after being re-posted with caption. Only text messages (not photos,
+    # stickers, or other media that the user may not want auto-removed) are
+    # cleaned so the channel feed stays tidy.
+    for msg in messages:
+        if not (msg.text and not msg.media):
+            # Media items are already deleted individually after copy() above.
+            # Skip non-text items (photos / stickers / service msgs etc.) to
+            # avoid deleting anything the user didn't intend as a title/prompt.
+            continue
+        try:
+            await msg.delete()
+            await asyncio.sleep(0.3)
+        except FloodWait as fw:
+            await asyncio.sleep(fw.value)
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 @app.on_message(filters.private & filters.command(["autocap", "ac"]))
