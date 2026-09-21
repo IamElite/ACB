@@ -299,6 +299,11 @@ async def load_episode_header_setting(chat_id: str) -> bool:
     return data.get("episode_header", True) if data else True
 
 
+async def remove_episode_titles(chat_id: str):
+    """Delete all stored episode titles for a channel (cleanup / unauth)."""
+    await episodetitledb.delete_many({"chat_id": str(chat_id)})
+
+
 async def remove_caption(chat_id: str):
     await captiondb.delete_one({"chat_id": str(chat_id)})
 
@@ -364,6 +369,7 @@ async def unauth_channel_cmd(client, message: Message):
 
         await remove_auth_channel(channel_id)
         await remove_caption(channel_id)
+        await remove_episode_titles(channel_id)
 
         await message.reply_text(
             f"✅ <b>Channel Unauthorized!</b>\n\n🆔 <code>{channel_id}</code>",
@@ -722,6 +728,10 @@ def format_episode_title_message(title: str, fname: Optional[str] = None) -> str
 async def save_episode_titles(chat_id: str, title_map: dict[str, str]):
     if not title_map:
         return
+    # Guard: never persist titles for a channel that isn't authorized, to
+    # avoid the DB slowly filling with orphaned entries.
+    if not await is_channel_authed(chat_id):
+        return
     operations = []
     for key, title in title_map.items():
         operations.append({
@@ -849,6 +859,45 @@ bulk_bucket: dict[str, list[Message]] = defaultdict(list)
 bulk_tasks: dict[str, asyncio.Task] = {}
 BULK_WAIT = 3
 LOCK = asyncio.Lock()
+_CLEANUP_RAN = False
+
+
+async def cleanup_orphan_episode_titles():
+    """Remove episode titles for chats that are no longer authorized."""
+    try:
+        authed = set(await get_all_auth_channels())
+        cursor = episodetitledb.find({}, {"chat_id": 1})
+        orphan_ids = set()
+        async for doc in cursor:
+            cid = str(doc.get("chat_id"))
+            if cid and cid not in authed:
+                orphan_ids.add(cid)
+        for cid in orphan_ids:
+            await episodetitledb.delete_many({"chat_id": cid})
+        if orphan_ids:
+            print(f"[ac] Cleaned orphan episode titles for {len(orphan_ids)} unauth'd chat(s)")
+    except Exception as e:
+        print(f"[ac] Orphan title cleanup error: {e}")
+
+
+@app.on_message(filters.private & filters.command(["cleantitles", "ctitles"]))
+async def clean_titles_cmd(client, message: Message):
+    """Admin command to manually wipe orphaned episode-title DB entries."""
+    try:
+        before = await episodetitledb.count_documents({})
+        await cleanup_orphan_episode_titles()
+        after = await episodetitledb.count_documents({})
+        await message.reply_text(
+            f"🧹 <b>Episode titles cleanup done.</b>\n"
+            f"Before: <code>{before}</code> entries\n"
+            f"After: <code>{after}</code> entries",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        await message.reply_text(
+            f"❌ <b>Error:</b> {html.escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 def _quality_val(fname: str) -> int:
@@ -875,6 +924,22 @@ def _int_episode(fname: str) -> int:
     except Exception:
         pass
     return 9999
+
+def _schedule_startup_cleanup():
+    """One-time orphan cleanup shortly after the bot event loop starts."""
+    global _CLEANUP_RAN
+    if _CLEANUP_RAN:
+        return
+    _CLEANUP_RAN = True
+    try:
+        loop = asyncio.get_event_loop()
+        loop.call_later(15, lambda: asyncio.ensure_future(cleanup_orphan_episode_titles()))
+    except Exception as e:
+        print(f"[ac] Could not schedule startup cleanup: {e}")
+
+
+_schedule_startup_cleanup()
+
 
 @app.on_message(
     filters.channel & ~filters.service,
