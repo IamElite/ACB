@@ -119,24 +119,32 @@ async def copy_media_preserving_cover(
     msg: Message,
     caption: str
 ) -> Message:
-    """Copy media while explicitly forwarding the source video cover."""
-    cover_file_id = None
-    if msg.video and getattr(msg.video, "video_cover", None):
-        cover_file_id = getattr(msg.video.video_cover, "file_id", None)
+    """Copy media while preserving the source video cover.
+
+    Per PyroTGFork/Kurigram docs: omit `video_cover` entirely to keep the
+    existing cover; only pass it when we have an explicit new cover file_id.
+    Passing `video_cover=None` clears the cover on Telegram's side.
+    """
+    kwargs = {
+        "chat_id": target_chat_id,
+        "caption": caption,
+        "parse_mode": ParseMode.HTML,
+    }
+
+    # Only attach video_cover when the source has a cover we can forward
+    if msg.video:
+        cover_obj = getattr(msg.video, "video_cover", None)
+        cover_file_id = getattr(cover_obj, "file_id", None) if cover_obj is not None else None
+        if cover_file_id:
+            kwargs["video_cover"] = cover_file_id
 
     try:
-        return await msg.copy(
-            chat_id=target_chat_id,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-            video_cover=cover_file_id
-        )
+        return await msg.copy(**kwargs)
     except TypeError:
-        return await msg.copy(
-            chat_id=target_chat_id,
-            caption=caption,
-            parse_mode=ParseMode.HTML
-        )
+        # Older/forked client version that doesn't accept video_cover kwarg:
+        # drop the kwarg and fall back — omitting it preserves the existing cover.
+        kwargs.pop("video_cover", None)
+        return await msg.copy(**kwargs)
 
 
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
@@ -966,10 +974,12 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 print(f"Title message error: {e}")
         elif episode_header_enabled and ep_num != 9999:
             try:
+                # Fallback numeric header — still render full line in bold (HTML)
+                header_line = f"━━━ Episode {ep_num:02d} ━━━"
                 await client.send_message(
                     int_chat_id,
-                    f"━━━ Episode {ep_num:02d} ━━━",
-                    parse_mode=None
+                    format_episode_title_message(header_line),
+                    parse_mode=ParseMode.HTML
                 )
                 await asyncio.sleep(1)
             except FloodWait as fw:
@@ -1192,6 +1202,9 @@ async def auto_cap_cmd(client, message: Message):
                                 break
                         if display_key:
                             header_text = display_title_for_key(display_key, episode_title)
+                        else:
+                            # Raw/freestyle title above the media — still use it, fully bold
+                            header_text = episode_title.strip()
                     await client.send_message(
                         dest_int_id,
                         format_episode_title_message(header_text),
