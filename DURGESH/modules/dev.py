@@ -193,7 +193,6 @@ async def execute_code(client, message: Message, cmd):
         await message.reply_document(
             document=filename,
             caption=f"<b>⥤ ᴇᴠᴀʟ :</b>\n<code>{cmd[:980]}</code>\n\n<b>⥤ ʀᴇsᴜʟᴛ :</b>\nAttached Document",
-            quote=False,
             reply_markup=keyboard,
         )
         await message.delete()

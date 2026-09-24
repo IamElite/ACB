@@ -7,7 +7,7 @@ from typing import Union, Tuple, Optional
 
 from pyrogram import filters, raw
 from pyrogram.file_id import FileId
-from pyrogram.types import Message, Chat
+from pyrogram.types import Message, Chat, LinkPreviewOptions
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
 
@@ -220,8 +220,18 @@ async def resolve_target_channel(client, message: Message, arg_index: int = 1) -
     # Check if replied to a forwarded message from a channel
     if message.reply_to_message:
         r = message.reply_to_message
-        if r.forward_from_chat:
-            return str(r.forward_from_chat.id), r.forward_from_chat
+        # Prefer new API (Kurigram 2.2+): message.forward_origin.chat.sender_chat
+        # Fall back to legacy forward_from_chat for older versions.
+        fwd_chat = None
+        fo = getattr(r, "forward_origin", None)
+        if fo is not None:
+            chat = getattr(fo, "chat", None)
+            if chat is not None:
+                fwd_chat = getattr(chat, "sender_chat", None) or chat
+        if fwd_chat is None:
+            fwd_chat = getattr(r, "forward_from_chat", None)
+        if fwd_chat:
+            return str(fwd_chat.id), fwd_chat
         if r.sender_chat:
             return str(r.sender_chat.id), r.sender_chat
 
@@ -835,7 +845,7 @@ async def replace_existing_episode_title(client, chat_id: int, video_message: Me
             message_id=title_message.id,
             text=new_text,
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
         return True
     except Exception as e:

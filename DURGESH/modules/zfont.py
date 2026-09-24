@@ -146,10 +146,16 @@ async def style_buttons(c, m, cb=False):
         [InlineKeyboardButton("ɴᴇxᴛ ➻", callback_data="nxt")],
     ]
     if not cb:
+        _args = (m.text or "").split(None, 1)
+        if len(_args) < 2 or not _args[1].strip():
+            return await m.reply_text(
+                "❌ <b>Usage:</b> <code>/font your text here</code>"
+            )
+        # Kurigram 2.2+ removed the `quote` kwarg; bound reply_text() already
+        # sets reply_parameters so the message is sent as a reply by default.
         await m.reply_text(
-            text=m.text.split(None, 1)[1],
+            text=_args[1],
             reply_markup=InlineKeyboardMarkup(buttons),
-            quote=True,
         )
     else:
         await m.answer()

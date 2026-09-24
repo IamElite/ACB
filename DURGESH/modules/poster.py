@@ -384,7 +384,7 @@ async def poster_cmd(client, message):
         hc_text = "🔆 HD Enhance: ON" if hc_status else "🔅 HD Enhance: OFF"
         keyboard.append([InlineKeyboardButton(hc_text, callback_data=f"phc_{cache_id}")])
         
-        return await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=False)
+        return await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     
     w = await message.reply_text(f"<i>🔍 Searching:</i>\n<code>{q}</code>", parse_mode=ParseMode.HTML)
     r = await _search(q)
@@ -457,7 +457,7 @@ async def poster_cmd(client, message):
     hc_text = "🔆 HD Enhance: ON" if hc_status else "🔅 HD Enhance: OFF"
     keyboard.append([InlineKeyboardButton(hc_text, callback_data=f"phc_{cache_id}")])
     
-    await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=False)
+    await w.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 @app.on_callback_query(filters.regex(r"^pdl_"))

@@ -409,7 +409,6 @@ async def safe_copy_and_delete(
                     text=t,
                     parse_mode=ParseMode.HTML if caption else None,
                     reply_markup=markup,
-                    disable_web_page_preview=False
                 )
             await asyncio.sleep(0.4)
             await msg.delete()

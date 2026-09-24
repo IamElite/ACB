@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import asyncio
 from curl_cffi import requests
 from pyrogram import filters
+from pyrogram.types import LinkPreviewOptions
 from DURGESH import app
 
 # curl_cffi handles TLS/Headers. We just need to impersonate.
@@ -176,11 +177,11 @@ async def jav_search_cmd(client, message):
     if not jav_code:
          jav_code = message.command[1]
 
-    status_msg = await message.reply_text(f"🔎 Searching for `{jav_code}`...", quote=True)
+    status_msg = await message.reply_text(f"🔎 Searching for `{jav_code}`...")
 
     try:
         loop = asyncio.get_running_loop()
-        
+
         njav_data = await loop.run_in_executor(None, get_njav_data, jav_code)
         thumb_url = await loop.run_in_executor(None, get_4ktwo_thumb, jav_code)
 
@@ -190,7 +191,7 @@ async def jav_search_cmd(client, message):
             f"✨ **STUDIO** - {njav_data['studio']}\n"
             f"⌛️ **DURATION** - {njav_data['duration']}\n\n"
         )
-        
+
         if njav_data['playlist']:
             caption += f"**STREAM LINK -**\n{njav_data['playlist']}"
         else:
@@ -200,11 +201,13 @@ async def jav_search_cmd(client, message):
             await message.reply_photo(
                 photo=thumb_url,
                 caption=caption,
-                quote=True
             )
             await status_msg.delete()
         else:
-            await status_msg.edit_text(caption, disable_web_page_preview=True)
+            await status_msg.edit_text(
+                caption,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
 
     except Exception as e:
         await status_msg.edit_text(f"⚠️ **Error:** {str(e)}")
