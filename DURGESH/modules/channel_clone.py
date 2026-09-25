@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from pyrogram import filters, raw, types, enums, errors
 from pyrogram.types import (
+    Message,
     InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaAnimation,
     InputMediaAudio, InputMediaDocument, LinkPreviewOptions,
 )
