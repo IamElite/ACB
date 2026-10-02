@@ -1193,17 +1193,17 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 async def auto_cap_cmd(client, message: Message):
     """
     Auto-caption command supporting:
-    1. Explicit Mode: /ac <start_link> <end_link> <target_chat> [dest_topic_id] [-no-ca]
-    2. Reply Mode:    /ac <start_link> <end_link> [dest_topic_id] [-no-ca]
+    1. Explicit Mode: /ac <start_link> <end_link> <target_chat> [dest_topic_id] [-noac]
+    2. Reply Mode:    /ac <start_link> <end_link> [dest_topic_id] [-noac]
     Flags:
-      -no-ca : Only auto-arrange files without altering original captions.
+      -noac : Only auto-arrange files without altering original captions.
     """
     raw_args = list(message.command[1:])
 
     no_caption_mode = False
     clean_args = []
     for arg in raw_args:
-        if arg.lower() in ("-no-ca", "-noca", "--no-caption"):
+        if arg.lower() == "-noac":
             no_caption_mode = True
         else:
             clean_args.append(arg)
@@ -1248,12 +1248,12 @@ async def auto_cap_cmd(client, message: Message):
         usage_text = (
             "<b>Usage Instructions:</b>\n\n"
             "1. <b>To a Normal Channel:</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [-no-ca]</code>\n\n"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [-noac]</code>\n\n"
             "2. <b>To a Forum Topic:</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; &lt;topic_id&gt; [-no-ca]</code>\n\n"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; &lt;topic_id&gt; [-noac]</code>\n\n"
             "3. <b>Via Reply:</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id] [-no-ca]</code>\n\n"
-            "<i>Note: Source links from forum topics (3-part links) are parsed automatically. Use -no-ca for auto-arrange only.</i>"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id] [-noac]</code>\n\n"
+            "<i>Note: Source links from forum topics (3-part links) are parsed automatically. Use -noac for auto-arrange only.</i>"
         )
         return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
 
@@ -1303,7 +1303,7 @@ async def auto_cap_cmd(client, message: Message):
     except Exception as e:
         return await message.reply_text(f"❌ Cannot access source chat: {e}", parse_mode=ParseMode.HTML)
 
-    mode_label = "Auto-Arrange Only (-no-ca)" if no_caption_mode else "Auto-Caption"
+    mode_label = "Auto-Arrange Only (-noac)" if no_caption_mode else "Auto-Caption"
     status_msg = await message.reply_text(f"⏳ <i>Processing task ({mode_label})...</i>", parse_mode=ParseMode.HTML)
 
     msg_ids = list(range(start_id, end_id + 1))
