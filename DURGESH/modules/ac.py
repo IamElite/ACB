@@ -66,6 +66,7 @@ def extract_season(fname: str) -> str:
     return "N/A"
 
 def extract_quality(text: str) -> str:
+    """Extract video quality from filename with formatted tags."""
     if not text:
         return "N/A"
 
@@ -102,8 +103,7 @@ def extract_quality(text: str) -> str:
         "576p":  "576p [SD]",
     }
 
-    key = detected.lower().split()[0]
-    return quality_map.get(key, detected)
+    return quality_map.get(detected.lower(), detected)
 
 
 def get_readable_file_size(size_in_bytes: Optional[int]) -> str:
@@ -133,60 +133,41 @@ def format_duration(duration: Optional[int]) -> str:
 
 async def copy_media_preserving_cover(
     client,
-    target_chat_id: int,
+    target_chat_id: Union[int, str],
     msg: Message,
     caption: str,
-    message_thread_id: Optional[int] = None,
-) -> Message:
+    message_thread_id: Optional[int] = None
+):
+    """Copy media preserving thumbnails, video metadata, and topic thread ID."""
     if msg.video:
-        v = msg.video
-        cover_obj = getattr(v, "video_cover", None)
-        cover_file_id = getattr(cover_obj, "file_id", None) if cover_obj is not None else None
-
-        thumb = None
-        if cover_file_id:
-            thumb = cover_file_id
-        elif getattr(v, "thumbs", None):
-            try:
-                thumb = v.thumbs[-1].file_id
-            except Exception:
-                thumb = None
-
-        kwargs = dict(
-            chat_id=target_chat_id,
-            video=v.file_id,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-            duration=getattr(v, "duration", 0) or 0,
-            width=getattr(v, "width", 0) or 0,
-            height=getattr(v, "height", 0) or 0,
-            file_name=getattr(v, "file_name", None),
-            supports_streaming=getattr(v, "supports_streaming", True),
-            has_spoiler=getattr(msg, "has_media_spoiler", False) or False,
-        )
-        start_ts = getattr(v, "video_start_timestamp", None)
-        if start_ts:
-            kwargs["video_start_timestamp"] = start_ts
-        if cover_file_id:
-            kwargs["video_cover"] = cover_file_id
-        if thumb:
-            kwargs["thumb"] = thumb
+        kwargs = {
+            "chat_id": target_chat_id,
+            "video": msg.video.file_id,
+            "caption": caption,
+            "parse_mode": ParseMode.HTML,
+            "duration": msg.video.duration,
+            "width": msg.video.width,
+            "height": msg.video.height,
+            "file_name": msg.video.file_name,
+            "supports_streaming": msg.video.supports_streaming or True,
+            "has_spoiler": msg.has_media_spoiler or False,
+        }
         if message_thread_id is not None:
             kwargs["message_thread_id"] = message_thread_id
 
-        try:
-            return await client.send_video(**kwargs)
-        except TypeError:
-            kwargs.pop("video_cover", None)
-            return await client.send_video(**kwargs)
+        if getattr(msg.video, "thumbs", None):
+            kwargs["thumb"] = msg.video.thumbs[0].file_id
 
-    copy_kwargs = dict(
-        chat_id=target_chat_id,
-        caption=caption,
-        parse_mode=ParseMode.HTML,
-    )
+        return await client.send_video(**kwargs)
+
+    copy_kwargs = {
+        "chat_id": target_chat_id,
+        "caption": caption,
+        "parse_mode": ParseMode.HTML,
+    }
     if message_thread_id is not None:
         copy_kwargs["message_thread_id"] = message_thread_id
+
     return await msg.copy(**copy_kwargs)
 
 
@@ -774,28 +755,17 @@ def format_episode_title_message(*args) -> str:
     return f"<b>{html.escape(f'Episode {ep_int:02d}')}</b>"
 
 
-async def save_episode_titles(chat_id, title_map: dict):
+async def save_episode_titles(chat_id: Union[int, str], title_map: dict):
+    """Persist episode titles without requiring prior channel whitelist."""
     if not title_map:
         return
     clean_map = {str(k): str(v) for k, v in title_map.items() if v}
     if not clean_map:
         return
-    cid = str(chat_id)
-    existing = await episodetitledb.find_one({"chat_id": cid})
-    titles = {}
-    if existing and isinstance(existing.get("titles"), dict):
-        titles.update(existing["titles"])
-    else:
-        async for doc in episodetitledb.find({"chat_id": cid}):
-            k = doc.get("key")
-            v = doc.get("title")
-            if k and v:
-                titles[str(k)] = str(v)
-    titles.update(clean_map)
     await episodetitledb.update_one(
-        {"chat_id": cid},
-        {"$set": {"titles": titles}},
-        upsert=True,
+        {"chat_id": str(chat_id)},
+        {"$set": {"titles": clean_map}},
+        upsert=True
     )
 
 
@@ -1221,191 +1191,187 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
 @app.on_message(filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
-    try:
-        cmd_args = message.command[1:]
-        arg_count = len(cmd_args)
-        reply = message.reply_to_message
+    """
+    Auto-caption command supporting:
+    1. Explicit Mode: /ac <start_link> <end_link> <target_chat> [dest_topic_id] [-no-ca]
+    2. Reply Mode:    /ac <start_link> <end_link> [dest_topic_id] [-no-ca]
+    Flags:
+      -no-ca : Only auto-arrange files without altering original captions.
+    """
+    raw_args = list(message.command[1:])
 
-        start_arg = None
-        end_arg = None
-        dest_arg = None
-        dest_topic_id = None
-
-        if reply and arg_count in (2, 3):
-            start_arg = cmd_args[0]
-            end_arg = cmd_args[1]
-            if getattr(reply, "forward_from_chat", None):
-                dest_arg = reply.forward_from_chat.id
-            else:
-                dest_arg = reply.chat.id
-            if arg_count == 3:
-                try:
-                    dest_topic_id = int(cmd_args[2])
-                except (ValueError, TypeError):
-                    return await message.reply_text("❌ <b>Topic ID must be an integer.</b>", parse_mode=ParseMode.HTML)
-            elif getattr(reply, "message_thread_id", None):
-                dest_topic_id = reply.message_thread_id
-        elif arg_count in (3, 4):
-            start_arg = cmd_args[0]
-            end_arg = cmd_args[1]
-            dest_arg = cmd_args[2]
-            if arg_count == 4:
-                try:
-                    dest_topic_id = int(cmd_args[3])
-                except (ValueError, TypeError):
-                    return await message.reply_text("❌ <b>Topic ID must be an integer.</b>", parse_mode=ParseMode.HTML)
+    no_caption_mode = False
+    clean_args = []
+    for arg in raw_args:
+        if arg.lower() in ("-no-ca", "-noca", "--no-caption"):
+            no_caption_mode = True
         else:
-            usage_text = (
-                "<b>Usage:</b>\n\n"
-                "1. <b>To a Normal Channel:</b>\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt;</code>\n\n"
-                "2. <b>To a Forum Topic:</b>\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; &lt;dest_topic_id&gt;lt;topic_id&lt;dest_topic_id&gt;gt;</code>\n\n"
-                "3. <b>Via Reply:</b>\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id]</code>\n\n"
-                "<i>Note: Source links from forum topics are detected automatically!</i>"
-            )
-            return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
+            clean_args.append(arg)
 
-        def parse_link(arg: str):
-            m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', arg)
-            if not m:
-                return None, None
-            chat_internal = m.group(1)
-            msg_id = int(m.group(3))
-            return chat_internal, msg_id
+    arg_count = len(clean_args)
+    reply = message.reply_to_message
 
-        src1_internal, start_id = parse_link(start_arg)
-        src2_internal, end_id = parse_link(end_arg)
+    start_arg = None
+    end_arg = None
+    dest_arg = None
+    dest_topic_id = None
 
-        if not (src1_internal and src2_internal and start_id and end_id):
-            return await message.reply_text(
-                "❌ <b>Please provide valid <code>t.me/c/...</code> links for start and end.</b>",
-                parse_mode=ParseMode.HTML
-            )
+    if reply and arg_count in (2, 3):
+        start_arg = clean_args[0]
+        end_arg = clean_args[1]
 
-        if src1_internal != src2_internal:
-            return await message.reply_text(
-                "❌ <b>Start and end links must be from the same source channel.</b>",
-                parse_mode=ParseMode.HTML
-            )
+        if reply.forward_from_chat:
+            dest_arg = reply.forward_from_chat.id
+        else:
+            dest_arg = reply.chat.id
 
-        from_channel = int(f"-100{src1_internal}")
-
-        dest_peer = normalize_channel_peer(dest_arg)
-        try:
-            dest_chat = await client.get_chat(dest_peer)
-            real_dest_id = str(dest_chat.id)
-            dest_int_id = dest_chat.id
-        except Exception as e:
-            return await message.reply_text(
-                f"❌ <b>Cannot access destination channel:</b> {html.escape(str(e))}",
-                parse_mode=ParseMode.HTML
-            )
-
-        try:
-            member = await client.get_chat_member(dest_int_id, "me")
-            if not (member and getattr(member, "privileges", None) and member.privileges.can_post_messages):
-                return await message.reply_text(
-                    "❌ <b>Bot lacks posting permissions in destination chat!</b>",
-                    parse_mode=ParseMode.HTML
-                )
-        except Exception as e:
-            return await message.reply_text(
-                f"❌ <b>Unable to verify bot permissions:</b> {html.escape(str(e))}",
-                parse_mode=ParseMode.HTML
-            )
-
-        if start_id > end_id:
-            start_id, end_id = end_id, start_id
-
-        caption_template = await load_caption(real_dest_id) or DEFAULT_CAPTION
-        sticker_id = await load_sticker(real_dest_id) or DEFAULT_STICKER
-        episode_header_enabled = await load_episode_header_setting(real_dest_id)
-
-        try:
-            await client.get_chat(from_channel)
-        except Exception as e:
-            return await message.reply_text(
-                f"❌ <b>Cannot access source channel:</b> {html.escape(str(e))}",
-                parse_mode=ParseMode.HTML
-            )
-
-        topic_suffix = f" (topic {dest_topic_id})" if dest_topic_id is not None else ""
-        status_msg = await message.reply_text(
-            "⏳ <i>Processing auto-caption task…</i>\n\n"
-            f"📦 <b>From:</b> <code>{from_channel}</code>\n"
-            f"📤 <b>To:</b> <code>{real_dest_id}</code>{topic_suffix}\n"
-            f"📩 <b>Range:</b> <code>{start_id}</code> ➝ <code>{end_id}</code>",
-            parse_mode=ParseMode.HTML
-        )
-
-        msg_ids = list(range(start_id, end_id + 1))
-        CHUNK = 200
-        all_messages = []
-
-        for i in range(0, len(msg_ids), CHUNK):
-            chunk_ids = msg_ids[i:i + CHUNK]
+        if arg_count == 3:
             try:
-                msgs = await client.get_messages(from_channel, chunk_ids)
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value)
-                msgs = await client.get_messages(from_channel, chunk_ids)
-            except Exception as e:
-                try:
-                    await status_msg.edit_text(
-                        f"⚠️ <b>Error fetching chunk:</b> <code>{html.escape(str(e))}</code>",
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception:
-                    pass
-                continue
-            all_messages.extend(m for m in msgs if m)
+                dest_topic_id = int(clean_args[2])
+            except ValueError:
+                return await message.reply_text("❌ <b>Topic ID must be an integer.</b>", parse_mode=ParseMode.HTML)
+        elif getattr(reply, "message_thread_id", None):
+            dest_topic_id = reply.message_thread_id
 
-        all_messages = sorted({m.id: m for m in all_messages}.values(), key=lambda m: m.id)
+    elif arg_count in (3, 4):
+        start_arg = clean_args[0]
+        end_arg = clean_args[1]
+        dest_arg = clean_args[2]
 
-        title_map = await load_episode_titles(real_dest_id)
-        for source_msg in all_messages:
-            text = (source_msg.text or "").strip()
-            if text:
-                title_map.update(parse_episode_title_lines(text))
+        if arg_count == 4:
+            try:
+                dest_topic_id = int(clean_args[3])
+            except ValueError:
+                return await message.reply_text("❌ <b>Topic ID must be an integer.</b>", parse_mode=ParseMode.HTML)
+
+    else:
+        usage_text = (
+            "<b>Usage Instructions:</b>\n\n"
+            "1. <b>To a Normal Channel:</b>\n"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [-no-ca]</code>\n\n"
+            "2. <b>To a Forum Topic:</b>\n"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; &lt;topic_id&gt; [-no-ca]</code>\n\n"
+            "3. <b>Via Reply:</b>\n"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id] [-no-ca]</code>\n\n"
+            "<i>Note: Source links from forum topics (3-part links) are parsed automatically. Use -no-ca for auto-arrange only.</i>"
+        )
+        return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
+
+    def parse_link(arg: str):
+        m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', arg)
+        if not m:
+            return None, None
+        chat_internal = m.group(1)
+        msg_id = int(m.group(3))
+        return chat_internal, msg_id
+
+    src1_internal, start_id = parse_link(start_arg)
+    src2_internal, end_id = parse_link(end_arg)
+
+    if not src1_internal or not src2_internal:
+        return await message.reply_text("❌ Please provide valid <code>t.me/c/...</code> links.", parse_mode=ParseMode.HTML)
+
+    if src1_internal != src2_internal:
+        return await message.reply_text("❌ Start and end links must be from the same source chat.", parse_mode=ParseMode.HTML)
+
+    from_channel = int(f"-100{src1_internal}")
+
+    dest_peer = normalize_channel_peer(dest_arg)
+    try:
+        dest_chat = await client.get_chat(dest_peer)
+        real_dest_id = str(dest_chat.id)
+        dest_int_id = dest_chat.id
+    except Exception as e:
+        return await message.reply_text(f"❌ Cannot access destination chat: {e}", parse_mode=ParseMode.HTML)
+
+    try:
+        member = await client.get_chat_member(dest_int_id, "me")
+        if not (member.privileges and member.privileges.can_post_messages):
+            return await message.reply_text("❌ <b>Bot lacks posting permissions in destination chat!</b>", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        return await message.reply_text(f"❌ Unable to verify bot permissions: {e}", parse_mode=ParseMode.HTML)
+
+    if start_id > end_id:
+        start_id, end_id = end_id, start_id
+
+    caption_template = await load_caption(real_dest_id) or DEFAULT_CAPTION
+    sticker_id = await load_sticker(real_dest_id) or DEFAULT_STICKER
+    episode_header_enabled = await load_episode_header_setting(real_dest_id)
+
+    try:
+        await client.get_chat(from_channel)
+    except Exception as e:
+        return await message.reply_text(f"❌ Cannot access source chat: {e}", parse_mode=ParseMode.HTML)
+
+    mode_label = "Auto-Arrange Only (-no-ca)" if no_caption_mode else "Auto-Caption"
+    status_msg = await message.reply_text(f"⏳ <i>Processing task ({mode_label})...</i>", parse_mode=ParseMode.HTML)
+
+    msg_ids = list(range(start_id, end_id + 1))
+    CHUNK = 200
+    all_messages = []
+
+    for i in range(0, len(msg_ids), CHUNK):
+        chunk_ids = msg_ids[i:i + CHUNK]
+        try:
+            msgs = await client.get_messages(from_channel, chunk_ids)
+            all_messages.extend([m for m in msgs if m and not getattr(m, "empty", False)])
+        except FloodWait as fw:
+            await asyncio.sleep(fw.value)
+            msgs = await client.get_messages(from_channel, chunk_ids)
+            all_messages.extend([m for m in msgs if m and not getattr(m, "empty", False)])
+        except Exception:
+            continue
+
+    if not all_messages:
+        return await status_msg.edit_text("❌ No messages found in the given range.", parse_mode=ParseMode.HTML)
+
+    all_messages = sorted({m.id: m for m in all_messages}.values(), key=lambda m: m.id)
+
+    title_map = {}
+    for msg in all_messages:
+        if msg.text:
+            parsed = parse_episode_title_lines(msg.text)
+            if parsed:
+                title_map.update(parsed)
+
+    if title_map:
         await save_episode_titles(real_dest_id, title_map)
 
-        episodes = defaultdict(list)
-        for msg in all_messages:
-            fname = media_filename(msg)
-            if not fname or not (msg.document or msg.video or msg.photo):
-                continue
-            episodes[_int_episode(fname)].append(msg)
+    episodes = defaultdict(list)
+    for msg in all_messages:
+        fname = media_filename(msg)
+        if not fname or not (msg.document or msg.video or msg.photo):
+            continue
+        episodes[_int_episode(fname)].append(msg)
 
-        total_eps = len(episodes)
-        processed = 0
+    if not episodes:
+        return await status_msg.edit_text("❌ No supported media found to process.", parse_mode=ParseMode.HTML)
 
-        for ep_num in sorted(episodes.keys()):
-            msgs_in_episode = episodes[ep_num]
-            sorted_msgs = sorted(msgs_in_episode, key=lambda m: _quality_val(media_filename(m) or ""))
-            processed += 1
+    for ep_num in sorted(episodes.keys()):
+        sorted_msgs = episodes[ep_num]
+        sorted_msgs = sorted(sorted_msgs, key=lambda m: _quality_val(media_filename(m) or ""))
 
-            if episode_header_enabled and ep_num != 9999:
-                try:
-                    header_text = format_episode_title_message(title_map, ep_num)
-                    send_kwargs = dict(
-                        chat_id=dest_int_id,
-                        text=header_text,
-                        parse_mode=ParseMode.HTML,
-                    )
-                    if dest_topic_id is not None:
-                        send_kwargs["message_thread_id"] = dest_topic_id
-                    await client.send_message(**send_kwargs)
-                    await asyncio.sleep(0.6)
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value)
-                except Exception as e:
-                    print(f"Title/header error (ac): {e}")
+        if episode_header_enabled:
+            header_text = format_episode_title_message(title_map, ep_num)
+            try:
+                send_kwargs = dict(
+                    chat_id=dest_int_id,
+                    text=header_text,
+                    parse_mode=ParseMode.HTML,
+                )
+                if dest_topic_id is not None:
+                    send_kwargs["message_thread_id"] = dest_topic_id
+                await client.send_message(**send_kwargs)
+            except Exception:
+                pass
 
-            for msg in sorted_msgs:
+        for msg in sorted_msgs:
+            if no_caption_mode:
+                cap = msg.caption or ""
+            elif msg.photo:
+                cap = msg.caption or ""
+            elif msg.document or msg.video:
                 filename = filesize = duration = None
-
                 if msg.document:
                     filename = msg.document.file_name
                     filesize = msg.document.file_size
@@ -1413,25 +1379,33 @@ async def auto_cap_cmd(client, message: Message):
                     filename = msg.video.file_name or "Video"
                     filesize = msg.video.file_size
                     duration = msg.video.duration
-                elif msg.photo:
-                    filename = (msg.caption or "").strip() or "Image"
-                    filesize = getattr(msg.photo, "file_size", None)
-                    duration = None
 
                 if not filename:
-                    continue
+                    cap = msg.caption or ""
+                else:
+                    clean_filename = filename.rsplit(".", 1)[0] if "." in filename else filename
+                    cap = (
+                        caption_template
+                        .replace("{filename}", html.escape(str(clean_filename)))
+                        .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
+                        .replace("{duration}", html.escape(str(format_duration(duration))))
+                        .replace("{quality}", html.escape(str(extract_quality(filename) or "")))
+                        .replace("{season}", html.escape(str(extract_season(filename) or "")))
+                        .replace("{episode}", html.escape(str(extract_episode(filename) or "")))
+                    )
+            else:
+                cap = msg.caption or ""
 
-                clean_filename = filename.rsplit(".", 1)[0] if "." in filename else filename
-                cap = (
-                    caption_template
-                    .replace("{filename}", html.escape(str(clean_filename)))
-                    .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
-                    .replace("{duration}", html.escape(str(format_duration(duration))))
-                    .replace("{quality}", html.escape(str(extract_quality(filename) or "")))
-                    .replace("{season}", html.escape(str(extract_season(filename) or "")))
-                    .replace("{episode}", html.escape(str(extract_episode(filename) or "")))
+            try:
+                await copy_media_preserving_cover(
+                    client=client,
+                    target_chat_id=dest_int_id,
+                    msg=msg,
+                    caption=cap,
+                    message_thread_id=dest_topic_id,
                 )
-
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value)
                 try:
                     await copy_media_preserving_cover(
                         client=client,
@@ -1440,58 +1414,23 @@ async def auto_cap_cmd(client, message: Message):
                         caption=cap,
                         message_thread_id=dest_topic_id,
                     )
-                    await asyncio.sleep(0.5)
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value)
-                    try:
-                        await copy_media_preserving_cover(
-                            client=client,
-                            target_chat_id=dest_int_id,
-                            msg=msg,
-                            caption=cap,
-                            message_thread_id=dest_topic_id,
-                        )
-                    except Exception as e:
-                        print(f"Copy retry error (ac): {e}")
-                except Exception as e:
-                    print(f"Copy error (ac): {e}")
-
-            if sticker_id and ep_num != 9999:
-                try:
-                    stick_kwargs = dict(chat_id=dest_int_id, sticker=sticker_id)
-                    if dest_topic_id is not None:
-                        stick_kwargs["message_thread_id"] = dest_topic_id
-                    await client.send_sticker(**stick_kwargs)
-                    await asyncio.sleep(0.6)
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value)
-                except Exception as e:
-                    print(f"Sticker error (ac): {e}")
-
-            if processed % 5 == 0 or processed == total_eps:
-                try:
-                    await status_msg.edit_text(
-                        "⏳ <i>Processing…</i> "
-                        f"<b>{processed}/{total_eps}</b> episodes done.",
-                        parse_mode=ParseMode.HTML
-                    )
                 except Exception:
                     pass
+            except Exception:
+                pass
 
-        await status_msg.edit_text(
-            "✅ <b>Auto-caption task completed successfully!</b>\n\n"
-            f"📤 <b>To:</b> <code>{real_dest_id}</code>{topic_suffix}",
-            parse_mode=ParseMode.HTML
-        )
+            await asyncio.sleep(0.5)
 
-    except Exception as e:
-        try:
-            await message.reply_text(
-                f"❌ <b>Error:</b> {html.escape(str(e))}",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            print(f"ac command fatal error: {e}")
+        if sticker_id:
+            try:
+                stick_kwargs = dict(chat_id=dest_int_id, sticker=sticker_id)
+                if dest_topic_id is not None:
+                    stick_kwargs["message_thread_id"] = dest_topic_id
+                await client.send_sticker(**stick_kwargs)
+            except Exception:
+                pass
+
+    await status_msg.edit_text("✅ <b>Task completed successfully!</b>", parse_mode=ParseMode.HTML)
 
 
 @app.on_message(filters.private & filters.command(["sept"]))
