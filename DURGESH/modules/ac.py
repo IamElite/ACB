@@ -782,26 +782,19 @@ async def save_episode_titles(chat_id, title_map: dict):
         return
     cid = str(chat_id)
     existing = await episodetitledb.find_one({"chat_id": cid})
-    if existing and "titles" in existing and isinstance(existing["titles"], dict):
-        merged = dict(existing["titles"])
-        merged.update(clean_map)
-        await episodetitledb.update_one(
-            {"chat_id": cid},
-            {"$set": {"titles": merged}},
-            upsert=True,
-        )
-        return
-    if existing and "key" in existing:
-        for key, title in clean_map.items():
-            await episodetitledb.update_one(
-                {"chat_id": cid, "key": key},
-                {"$set": {"title": title}},
-                upsert=True,
-            )
-        return
+    titles = {}
+    if existing and isinstance(existing.get("titles"), dict):
+        titles.update(existing["titles"])
+    else:
+        async for doc in episodetitledb.find({"chat_id": cid}):
+            k = doc.get("key")
+            v = doc.get("title")
+            if k and v:
+                titles[str(k)] = str(v)
+    titles.update(clean_map)
     await episodetitledb.update_one(
         {"chat_id": cid},
-        {"$set": {"titles": clean_map}},
+        {"$set": {"titles": titles}},
         upsert=True,
     )
 
@@ -1236,51 +1229,51 @@ async def auto_cap_cmd(client, message: Message):
         start_arg = None
         end_arg = None
         dest_arg = None
-        topic_id = None
+        dest_topic_id = None
 
         if reply and arg_count in (2, 3):
             start_arg = cmd_args[0]
             end_arg = cmd_args[1]
-            fwd_chat = None
-            fo = getattr(reply, "forward_origin", None)
-            if fo is not None:
-                chat = getattr(fo, "chat", None)
-                if chat is not None:
-                    fwd_chat = getattr(chat, "sender_chat", None) or chat
-            if fwd_chat is None:
-                fwd_chat = getattr(reply, "forward_from_chat", None)
-            dest_arg = fwd_chat.id if fwd_chat else reply.chat.id
+            if getattr(reply, "forward_from_chat", None):
+                dest_arg = reply.forward_from_chat.id
+            else:
+                dest_arg = reply.chat.id
             if arg_count == 3:
                 try:
-                    topic_id = int(cmd_args[2])
+                    dest_topic_id = int(cmd_args[2])
                 except (ValueError, TypeError):
                     return await message.reply_text("❌ <b>Topic ID must be an integer.</b>", parse_mode=ParseMode.HTML)
             elif getattr(reply, "message_thread_id", None):
-                topic_id = reply.message_thread_id
+                dest_topic_id = reply.message_thread_id
         elif arg_count in (3, 4):
             start_arg = cmd_args[0]
             end_arg = cmd_args[1]
             dest_arg = cmd_args[2]
             if arg_count == 4:
                 try:
-                    topic_id = int(cmd_args[3])
+                    dest_topic_id = int(cmd_args[3])
                 except (ValueError, TypeError):
                     return await message.reply_text("❌ <b>Topic ID must be an integer.</b>", parse_mode=ParseMode.HTML)
         else:
             usage_text = (
-                "<b>Usage:</b>\n"
-                "1. <b>Explicit Target:</b>\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [topic_id]</code>\n\n"
-                "2. <b>Reply Mode:</b> (reply to a forwarded message from target, or send command inside target)\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id]</code>"
+                "<b>Usage:</b>\n\n"
+                "1. <b>To a Normal Channel:</b>\n"
+                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt;</code>\n\n"
+                "2. <b>To a Forum Topic:</b>\n"
+                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; &lt;dest_topic_id&gt;lt;topic_id&lt;dest_topic_id&gt;gt;</code>\n\n"
+                "3. <b>Via Reply:</b>\n"
+                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id]</code>\n\n"
+                "<i>Note: Source links from forum topics are detected automatically!</i>"
             )
             return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
 
         def parse_link(arg: str):
-            m = re.search(r'(?:https?://)?t\.me/c/(\d+)/(\d+)', arg)
+            m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', arg)
             if not m:
                 return None, None
-            return m.group(1), int(m.group(2))
+            chat_internal = m.group(1)
+            msg_id = int(m.group(3))
+            return chat_internal, msg_id
 
         src1_internal, start_id = parse_link(start_arg)
         src2_internal, end_id = parse_link(end_arg)
@@ -1338,7 +1331,7 @@ async def auto_cap_cmd(client, message: Message):
                 parse_mode=ParseMode.HTML
             )
 
-        topic_suffix = f" (topic {topic_id})" if topic_id is not None else ""
+        topic_suffix = f" (topic {dest_topic_id})" if dest_topic_id is not None else ""
         status_msg = await message.reply_text(
             "⏳ <i>Processing auto-caption task…</i>\n\n"
             f"📦 <b>From:</b> <code>{from_channel}</code>\n"
@@ -1401,8 +1394,8 @@ async def auto_cap_cmd(client, message: Message):
                         text=header_text,
                         parse_mode=ParseMode.HTML,
                     )
-                    if topic_id is not None:
-                        send_kwargs["message_thread_id"] = topic_id
+                    if dest_topic_id is not None:
+                        send_kwargs["message_thread_id"] = dest_topic_id
                     await client.send_message(**send_kwargs)
                     await asyncio.sleep(0.6)
                 except FloodWait as fw:
@@ -1445,7 +1438,7 @@ async def auto_cap_cmd(client, message: Message):
                         target_chat_id=dest_int_id,
                         msg=msg,
                         caption=cap,
-                        message_thread_id=topic_id,
+                        message_thread_id=dest_topic_id,
                     )
                     await asyncio.sleep(0.5)
                 except FloodWait as fw:
@@ -1456,7 +1449,7 @@ async def auto_cap_cmd(client, message: Message):
                             target_chat_id=dest_int_id,
                             msg=msg,
                             caption=cap,
-                            message_thread_id=topic_id,
+                            message_thread_id=dest_topic_id,
                         )
                     except Exception as e:
                         print(f"Copy retry error (ac): {e}")
@@ -1466,8 +1459,8 @@ async def auto_cap_cmd(client, message: Message):
             if sticker_id and ep_num != 9999:
                 try:
                     stick_kwargs = dict(chat_id=dest_int_id, sticker=sticker_id)
-                    if topic_id is not None:
-                        stick_kwargs["message_thread_id"] = topic_id
+                    if dest_topic_id is not None:
+                        stick_kwargs["message_thread_id"] = dest_topic_id
                     await client.send_sticker(**stick_kwargs)
                     await asyncio.sleep(0.6)
                 except FloodWait as fw:
