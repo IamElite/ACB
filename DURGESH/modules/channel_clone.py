@@ -218,7 +218,9 @@ async def _set_chat_state(chat_id: int, perm_state: str):
 async def _warm_cache():
     _CACHE.clear()
     _CACHE_KEYS.clear()
-    cur = _mapdb.find({"main_id": _MAIN}).sort("_id", -1).limit(CACHE_MAX) if _MAIN else []
+    if not _MAIN:
+        return
+    cur = _mapdb.find({"main_id": _MAIN}).sort("_id", -1).limit(CACHE_MAX)
     async for d in cur:
         try:
             key = (int(d["main_id"]), int(d["msg_id"]))
