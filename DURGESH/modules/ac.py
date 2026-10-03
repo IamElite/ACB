@@ -131,6 +131,91 @@ def format_duration(duration: Optional[int]) -> str:
     except Exception:
         return "N/A"
 
+async def copy_media_preserving_cover(
+    client,
+    target_chat_id: Union[int, str],
+    msg: Message,
+    caption: str,
+    message_thread_id: Optional[int] = None,
+):
+    """Copy media (re-upload) preserving thumb/cover and custom caption.
+
+    Used by in-channel _flush_bulk because Telegram does NOT allow editing
+    captions on forwarded messages. Handles FloodWait with fw.value+1 backoff
+    and falls back to msg.copy() when send_video() raises unsupported kwargs
+    or any API error. Returns the sent Message on success, None on fatal error.
+    """
+    if msg.video:
+        kwargs = {
+            "chat_id": target_chat_id,
+            "video": msg.video.file_id,
+            "caption": caption,
+            "parse_mode": ParseMode.HTML,
+            "duration": msg.video.duration,
+            "width": msg.video.width,
+            "height": msg.video.height,
+            "supports_streaming": msg.video.supports_streaming or True,
+            "has_spoiler": getattr(msg.video, "has_spoiler", False) or getattr(msg, "has_media_spoiler", False),
+        }
+        file_name = getattr(msg.video, "file_name", None)
+        if file_name:
+            kwargs["file_name"] = file_name
+        if message_thread_id is not None:
+            kwargs["message_thread_id"] = message_thread_id
+
+        cover_obj = getattr(msg.video, "video_cover", None)
+        if cover_obj and hasattr(cover_obj, "file_id"):
+            kwargs["video_cover"] = cover_obj.file_id
+        elif getattr(msg.video, "thumbs", None):
+            thumb_obj = msg.video.thumbs[0]
+            if hasattr(thumb_obj, "file_id"):
+                kwargs["thumb"] = thumb_obj.file_id
+
+        video_start = getattr(msg.video, "video_start_timestamp", None)
+        if video_start is not None:
+            kwargs["video_start_timestamp"] = video_start
+
+        while True:
+            try:
+                return await client.send_video(**kwargs)
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value + 1)
+                continue
+            except TypeError:
+                kwargs.pop("video_cover", None)
+                kwargs.pop("video_start_timestamp", None)
+                try:
+                    return await client.send_video(**kwargs)
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                    continue
+                except Exception as e:
+                    print(f"[ac] send_video fallback to copy: {e}")
+                    break
+            except Exception as e:
+                print(f"[ac] send_video error: {e}")
+                break
+
+    # Non-video media: photo/document/audio/animation via msg.copy
+    copy_kwargs = {
+        "chat_id": target_chat_id,
+        "caption": caption,
+        "parse_mode": ParseMode.HTML,
+    }
+    if message_thread_id is not None:
+        copy_kwargs["message_thread_id"] = message_thread_id
+
+    while True:
+        try:
+            return await msg.copy(**copy_kwargs)
+        except FloodWait as fw:
+            await asyncio.sleep(fw.value + 1)
+            continue
+        except Exception as e:
+            print(f"[ac] msg.copy fatal error mid={msg.id}: {e}")
+            return None
+
+
 async def send_or_forward_media(
     client,
     source_chat_id: int,
@@ -1190,9 +1275,11 @@ def _nearest_title_for_media(messages: list[Message], media_message: Message) ->
 async def _flush_bulk(client, chat_id: str, delay: int):
     """
     Process queued channel messages:
-    - Group by episode and quality
-    - Send headers, auto-captioned media, and separator stickers
-    - Instantly delete original messages to eliminate duplicate posts
+    - Group by episode (using media_filename + _int_episode)
+    - Auto-caption videos/documents via copy_media_preserving_cover (re-upload, no forward tag)
+    - Photos keep their original caption
+    - Instantly delete original messages right after successful copy
+    - Preserve 3-second inter-media delay for Telegram rate limits
     """
     int_chat_id = int(chat_id)
 
@@ -1225,25 +1312,25 @@ async def _flush_bulk(client, chat_id: str, delay: int):
     if new_titles:
         await save_episode_titles(chat_id, title_map)
 
-    # 2. Group media (videos/documents only) and track their IDs for instant deletion
+    # 2. Group media using existing helpers: media_filename(msg) + _int_episode(fname)
     episodes = defaultdict(list)
     media_msg_ids = set()
 
     for msg in messages:
-        fname, ep_num = get_media_name_and_ep(msg)
-        if not fname or not (msg.video or msg.document):
+        fname = media_filename(msg)
+        if not fname or not (msg.video or msg.document or msg.photo):
             continue
-        episodes[ep_num].append((fname, msg))
+        episodes[_int_episode(fname)].append(msg)
         media_msg_ids.add(msg.id)
 
-    # 3. Dispatch formatted media + real-time delete
     sorted_ep_keys = sorted(episodes.keys())
 
+    # 3. Dispatch headers + media + instant delete
     for ep_num in sorted_ep_keys:
-        items_in_ep = episodes[ep_num]
-        sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
+        msgs_in_ep = episodes[ep_num]
+        sorted_msgs = sorted(msgs_in_ep, key=_episode_media_sort_key)
 
-        if episode_header_enabled:
+        if episode_header_enabled and ep_num != 9999:
             header_text = format_episode_title_message(title_map, ep_num)
             try:
                 await client.send_message(
@@ -1264,51 +1351,61 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             except Exception as e:
                 print(f"[bulk] Failed to send header for ep {ep_num}: {e}")
 
-        for fname, msg in sorted_items:
-            filesize = getattr(msg.document or msg.video, "file_size", None)
-            duration = getattr(msg.video, "duration", None)
-            clean_filename = fname.rsplit(".", 1)[0] if "." in fname else fname
-            cap = (
-                caption_template
-                .replace("{filename}", html.escape(str(clean_filename)))
-                .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
-                .replace("{duration}", html.escape(str(format_duration(duration))))
-                .replace("{quality}", html.escape(str(extract_quality(fname) or "")))
-                .replace("{season}", html.escape(str(extract_season(fname) or "")))
-                .replace("{episode}", html.escape(str(extract_episode(fname) or "")))
-            )
+        for msg in sorted_msgs:
+            # Photo rule: always retain original caption (no template injection)
+            if msg.photo:
+                cap = msg.caption or ""
+            else:
+                filename = filesize = duration = None
+                if msg.document:
+                    filename = msg.document.file_name
+                    filesize = msg.document.file_size
+                elif msg.video:
+                    filename = msg.video.file_name or "Video"
+                    filesize = msg.video.file_size
+                    duration = msg.video.duration
+
+                if not filename:
+                    cap = msg.caption or ""
+                else:
+                    clean_filename = filename.rsplit(".", 1)[0] if "." in filename else filename
+                    cap = (
+                        caption_template
+                        .replace("{filename}", html.escape(str(clean_filename)))
+                        .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
+                        .replace("{duration}", html.escape(str(format_duration(duration))))
+                        .replace("{quality}", html.escape(str(extract_quality(filename) or "")))
+                        .replace("{season}", html.escape(str(extract_season(filename) or "")))
+                        .replace("{episode}", html.escape(str(extract_episode(filename) or "")))
+                    )
 
             sent_success = False
             try:
-                await send_or_forward_media(
+                sent = await copy_media_preserving_cover(
                     client=client,
-                    source_chat_id=int_chat_id,
-                    dest_chat_id=int_chat_id,
+                    target_chat_id=int_chat_id,
                     msg=msg,
                     caption=cap,
-                    is_source_protected=True,
-                    no_caption_mode=False,
                 )
-                sent_success = True
+                if sent is not None:
+                    sent_success = True
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 1)
                 try:
-                    await send_or_forward_media(
+                    sent = await copy_media_preserving_cover(
                         client=client,
-                        source_chat_id=int_chat_id,
-                        dest_chat_id=int_chat_id,
+                        target_chat_id=int_chat_id,
                         msg=msg,
                         caption=cap,
-                        is_source_protected=True,
-                        no_caption_mode=False,
                     )
-                    sent_success = True
+                    if sent is not None:
+                        sent_success = True
                 except Exception as inner_e:
                     print(f"[bulk] Retry copy failed mid={msg.id}: {inner_e}")
             except Exception as e:
                 print(f"[bulk] Media transmission failed mid={msg.id}: {e}")
 
-            # Instant delete original right after successful send
+            # Instantly delete original message right after successful post
             if sent_success:
                 try:
                     await client.delete_messages(chat_id=int_chat_id, message_ids=msg.id)
@@ -1335,7 +1432,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             except Exception as e:
                 print(f"[bulk] Failed to send sticker: {e}")
 
-    # 4. Final cleanup: delete non-media messages (text titles / stickers / etc.) in batches
+    # 4. Final cleanup: delete non-media leftover messages (text titles, stickers, etc.) in batches of 100
     non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
     if non_media_ids:
         try:
