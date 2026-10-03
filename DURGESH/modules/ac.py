@@ -1275,23 +1275,26 @@ def _nearest_title_for_media(messages: list[Message], media_message: Message) ->
 async def _flush_bulk(client, chat_id: str, delay: int):
     """
     Process queued channel messages:
-    - Group by episode and quality
-    - Send headers, auto-captioned media, and separator stickers
-    - Instantly delete original messages to eliminate duplicate posts
+    - Waits for debounce delay to let all forwarded files in a batch arrive
+    - Groups by episode + quality using media_filename()/_int_episode()
+    - Sends episode headers, auto-captioned media, and separator stickers
+    - Instantly deletes original messages to eliminate duplicate posts
     """
+    # 1. Debounce wait: allow all messages of the forwarded batch to arrive and settle
+    await asyncio.sleep(delay)
+
     int_chat_id = int(chat_id)
 
     try:
-        # 1. Acquire lock and extract buffered messages
-        async with _bulk_locks[chat_id]:
-            messages = list(_bulk_buffers[chat_id].values())
-            _bulk_buffers[chat_id].clear()
-            _bulk_tasks.pop(chat_id, None)
+        # 2. Drain the bucket safely under the global LOCK
+        async with LOCK:
+            messages = list(bulk_bucket.pop(chat_id, []) or [])
+            bulk_tasks.pop(chat_id, None)
 
         if not messages:
             return
 
-        # Check if channel is authorized
+        # Auth check
         if not await is_channel_authed(chat_id):
             return
 
@@ -1299,7 +1302,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         sticker_id = await load_sticker(chat_id) or DEFAULT_STICKER
         episode_header_enabled = await load_episode_header_setting(chat_id)
 
-        # 2. Extract Titles (from text messages AND photo captions)
+        # 3. Extract titles from BOTH text bodies and photo captions
         title_map = await load_episode_titles(chat_id) or {}
         new_titles = False
         for msg in messages:
@@ -1313,7 +1316,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         if new_titles:
             await save_episode_titles(chat_id, title_map)
 
-        # 3. Group strictly Videos and Documents (Photos are NOT treated as video files)
+        # 4. Group strictly videos & documents (photos are title cards, not playable media)
         episodes = defaultdict(list)
         media_msg_ids = set()
 
@@ -1329,17 +1332,24 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
         if not episodes:
             print(f"[bulk] No media files (video/document) found in {len(messages)} buffered messages.")
+            # Clean up leftover non-media messages anyway
+            all_ids = [m.id for m in messages if m]
+            if all_ids:
+                try:
+                    for i in range(0, len(all_ids), 100):
+                        await client.delete_messages(chat_id=int_chat_id, message_ids=all_ids[i:i+100])
+                except Exception as e:
+                    print(f"[bulk] Cleanup error for non-media: {e}")
             return
 
-        # 4. Dispatch Formatted Media by Episode & Quality
+        # 5. Dispatch formatted media by episode + quality
         sorted_ep_keys = sorted(episodes.keys())
 
         for ep_num in sorted_ep_keys:
             items_in_ep = episodes[ep_num]
-            # Sort by quality: _quality_val takes the filename string
             sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
 
-            # Episode Header
+            # Episode header
             if episode_header_enabled:
                 header_text = format_episode_title_message(title_map, ep_num)
                 try:
@@ -1350,15 +1360,18 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                     )
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
-                    await client.send_message(
-                        chat_id=int_chat_id,
-                        text=header_text,
-                        parse_mode=ParseMode.HTML
-                    )
+                    try:
+                        await client.send_message(
+                            chat_id=int_chat_id,
+                            text=header_text,
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception as e2:
+                        print(f"[bulk] Failed to send header for ep {ep_num} after FloodWait: {e2}")
                 except Exception as e:
                     print(f"[bulk] Failed to send header for ep {ep_num}: {e}")
 
-            # Dispatch Media in Episode
+            # Media items
             for fname, msg in sorted_items:
                 filesize = getattr(msg.document or msg.video, "file_size", None)
                 duration = getattr(msg.video, "duration", None)
@@ -1401,7 +1414,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                     import traceback
                     traceback.print_exc()
 
-                # Instant Delete: Delete original message immediately upon success
+                # Instant delete right after successful copy
                 if sent_success:
                     try:
                         await client.delete_messages(
@@ -1426,23 +1439,20 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
                 await asyncio.sleep(3)
 
-            # Episode Separator Sticker
+            # Episode separator sticker
             if sticker_id:
                 try:
-                    await client.send_sticker(
-                        chat_id=int_chat_id,
-                        sticker=sticker_id
-                    )
+                    await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
-                    await client.send_sticker(
-                        chat_id=int_chat_id,
-                        sticker=sticker_id
-                    )
+                    try:
+                        await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
+                    except Exception as e2:
+                        print(f"[bulk] Sticker send failed after FloodWait: {e2}")
                 except Exception as e:
                     print(f"[bulk] Failed to send sticker: {e}")
 
-        # 5. Cleanup extra messages (text title cards, photo posters)
+        # 6. Final cleanup: remove non-media leftovers (text titles, photo posters, etc.)
         non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
         if non_media_ids:
             try:
