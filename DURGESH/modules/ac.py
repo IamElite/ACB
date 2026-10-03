@@ -1125,21 +1125,22 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 filename = msg.audio.file_name or "Audio"
                 filesize = msg.audio.file_size
                 duration = msg.audio.duration
-            elif msg.photo:
-                filename = "Photo"
 
-            if not filename:
-                continue
-
-            cap = (
-                caption_template
-                .replace("{filename}", html.escape(filename.rsplit('.', 1)[0]))
-                .replace("{filesize}", html.escape(get_readable_file_size(filesize)))
-                .replace("{duration}", html.escape(format_duration(duration)))
-                .replace("{quality}", html.escape(extract_quality(filename)))
-                .replace("{season}", html.escape(extract_season(filename)))
-                .replace("{episode}", html.escape(extract_episode(filename)))
-            )
+            if msg.photo:
+                cap = msg.caption or ""
+            elif filename:
+                clean_filename = filename.rsplit('.', 1)[0] if '.' in filename else filename
+                cap = (
+                    caption_template
+                    .replace("{filename}", html.escape(str(clean_filename)))
+                    .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
+                    .replace("{duration}", html.escape(str(format_duration(duration))))
+                    .replace("{quality}", html.escape(str(extract_quality(filename) or "")))
+                    .replace("{season}", html.escape(str(extract_season(filename) or "")))
+                    .replace("{episode}", html.escape(str(extract_episode(filename) or "")))
+                )
+            else:
+                cap = msg.caption or ""
 
             try:
                 await copy_media_preserving_cover(client, int_chat_id, msg, cap)
