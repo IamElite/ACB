@@ -143,7 +143,7 @@ async def copy_media_preserving_cover(
     Used by in-channel _flush_bulk because Telegram does NOT allow editing
     captions on forwarded messages. Handles FloodWait with fw.value+1 backoff
     and falls back to msg.copy() when send_video() raises unsupported kwargs
-    or any API error. Returns the sent Message on success, None on fatal error.
+    or any API error. Returns the sent Message on success; raises on fatal error.
     """
     if msg.video:
         kwargs = {
@@ -213,7 +213,7 @@ async def copy_media_preserving_cover(
             continue
         except Exception as e:
             print(f"[ac] msg.copy fatal error mid={msg.id}: {e}")
-            return None
+            raise
 
 
 async def send_or_forward_media(
@@ -1275,172 +1275,187 @@ def _nearest_title_for_media(messages: list[Message], media_message: Message) ->
 async def _flush_bulk(client, chat_id: str, delay: int):
     """
     Process queued channel messages:
-    - Group by episode (using media_filename + _int_episode)
-    - Auto-caption videos/documents via copy_media_preserving_cover (re-upload, no forward tag)
-    - Photos keep their original caption
-    - Instantly delete original messages right after successful copy
-    - Preserve 3-second inter-media delay for Telegram rate limits
+    - Group by episode and quality
+    - Send headers, auto-captioned media, and separator stickers
+    - Instantly delete original messages to eliminate duplicate posts
     """
     int_chat_id = int(chat_id)
 
-    async with _bulk_locks[chat_id]:
-        messages = list(_bulk_buffers[chat_id].values())
-        _bulk_buffers[chat_id].clear()
-        _bulk_tasks.pop(chat_id, None)
+    try:
+        # 1. Acquire lock and extract buffered messages
+        async with _bulk_locks[chat_id]:
+            messages = list(_bulk_buffers[chat_id].values())
+            _bulk_buffers[chat_id].clear()
+            _bulk_tasks.pop(chat_id, None)
 
-    if not messages:
-        return
+        if not messages:
+            return
 
-    if not await is_channel_authed(chat_id):
-        return
+        # Check if channel is authorized
+        if not await is_channel_authed(chat_id):
+            return
 
-    caption_template = await load_caption(chat_id) or DEFAULT_CAPTION
-    sticker_id = await load_sticker(chat_id) or DEFAULT_STICKER
-    episode_header_enabled = await load_episode_header_setting(chat_id)
+        caption_template = await load_caption(chat_id) or DEFAULT_CAPTION
+        sticker_id = await load_sticker(chat_id) or DEFAULT_STICKER
+        episode_header_enabled = await load_episode_header_setting(chat_id)
 
-    # 1. Title extraction (text + captions)
-    title_map = await load_episode_titles(chat_id) or {}
-    new_titles = False
-    for msg in messages:
-        text_content = msg.text or msg.caption
-        if text_content:
-            parsed = parse_episode_title_lines(text_content)
-            if parsed:
-                title_map.update(parsed)
-                new_titles = True
+        # 2. Extract Titles (from text messages AND photo captions)
+        title_map = await load_episode_titles(chat_id) or {}
+        new_titles = False
+        for msg in messages:
+            text_content = msg.text or msg.caption
+            if text_content:
+                parsed = parse_episode_title_lines(text_content)
+                if parsed:
+                    title_map.update(parsed)
+                    new_titles = True
 
-    if new_titles:
-        await save_episode_titles(chat_id, title_map)
+        if new_titles:
+            await save_episode_titles(chat_id, title_map)
 
-    # 2. Group media using existing helpers: media_filename(msg) + _int_episode(fname)
-    episodes = defaultdict(list)
-    media_msg_ids = set()
+        # 3. Group strictly Videos and Documents (Photos are NOT treated as video files)
+        episodes = defaultdict(list)
+        media_msg_ids = set()
 
-    for msg in messages:
-        fname = media_filename(msg)
-        if not fname or not (msg.video or msg.document or msg.photo):
-            continue
-        episodes[_int_episode(fname)].append(msg)
-        media_msg_ids.add(msg.id)
+        for msg in messages:
+            if not (msg.video or msg.document):
+                continue
+            fname = media_filename(msg)
+            if not fname:
+                continue
+            ep_num = _int_episode(fname)
+            episodes[ep_num].append((fname, msg))
+            media_msg_ids.add(msg.id)
 
-    sorted_ep_keys = sorted(episodes.keys())
+        if not episodes:
+            print(f"[bulk] No media files (video/document) found in {len(messages)} buffered messages.")
+            return
 
-    # 3. Dispatch headers + media + instant delete
-    for ep_num in sorted_ep_keys:
-        msgs_in_ep = episodes[ep_num]
-        sorted_msgs = sorted(msgs_in_ep, key=_episode_media_sort_key)
+        # 4. Dispatch Formatted Media by Episode & Quality
+        sorted_ep_keys = sorted(episodes.keys())
 
-        if episode_header_enabled and ep_num != 9999:
-            header_text = format_episode_title_message(title_map, ep_num)
-            try:
-                await client.send_message(
-                    chat_id=int_chat_id,
-                    text=header_text,
-                    parse_mode=ParseMode.HTML
-                )
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 1)
+        for ep_num in sorted_ep_keys:
+            items_in_ep = episodes[ep_num]
+            # Sort by quality: _quality_val takes the filename string
+            sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
+
+            # Episode Header
+            if episode_header_enabled:
+                header_text = format_episode_title_message(title_map, ep_num)
                 try:
                     await client.send_message(
                         chat_id=int_chat_id,
                         text=header_text,
                         parse_mode=ParseMode.HTML
                     )
-                except Exception as e2:
-                    print(f"[bulk] Failed to send header for ep {ep_num} after FloodWait: {e2}")
-            except Exception as e:
-                print(f"[bulk] Failed to send header for ep {ep_num}: {e}")
-
-        for msg in sorted_msgs:
-            # Photo rule: always retain original caption (no template injection)
-            if msg.photo:
-                cap = msg.caption or ""
-            else:
-                filename = filesize = duration = None
-                if msg.document:
-                    filename = msg.document.file_name
-                    filesize = msg.document.file_size
-                elif msg.video:
-                    filename = msg.video.file_name or "Video"
-                    filesize = msg.video.file_size
-                    duration = msg.video.duration
-
-                if not filename:
-                    cap = msg.caption or ""
-                else:
-                    clean_filename = filename.rsplit(".", 1)[0] if "." in filename else filename
-                    cap = (
-                        caption_template
-                        .replace("{filename}", html.escape(str(clean_filename)))
-                        .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
-                        .replace("{duration}", html.escape(str(format_duration(duration))))
-                        .replace("{quality}", html.escape(str(extract_quality(filename) or "")))
-                        .replace("{season}", html.escape(str(extract_season(filename) or "")))
-                        .replace("{episode}", html.escape(str(extract_episode(filename) or "")))
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                    await client.send_message(
+                        chat_id=int_chat_id,
+                        text=header_text,
+                        parse_mode=ParseMode.HTML
                     )
+                except Exception as e:
+                    print(f"[bulk] Failed to send header for ep {ep_num}: {e}")
 
-            sent_success = False
-            try:
-                sent = await copy_media_preserving_cover(
-                    client=client,
-                    target_chat_id=int_chat_id,
-                    msg=msg,
-                    caption=cap,
+            # Dispatch Media in Episode
+            for fname, msg in sorted_items:
+                filesize = getattr(msg.document or msg.video, "file_size", None)
+                duration = getattr(msg.video, "duration", None)
+                clean_filename = fname.rsplit(".", 1)[0] if "." in fname else fname
+                cap = (
+                    caption_template
+                    .replace("{filename}", html.escape(str(clean_filename)))
+                    .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
+                    .replace("{duration}", html.escape(str(format_duration(duration))))
+                    .replace("{quality}", html.escape(str(extract_quality(fname) or "")))
+                    .replace("{season}", html.escape(str(extract_season(fname) or "")))
+                    .replace("{episode}", html.escape(str(extract_episode(fname) or "")))
                 )
-                if sent is not None:
-                    sent_success = True
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 1)
+
+                sent_success = False
                 try:
-                    sent = await copy_media_preserving_cover(
+                    await copy_media_preserving_cover(
                         client=client,
                         target_chat_id=int_chat_id,
                         msg=msg,
-                        caption=cap,
+                        caption=cap
                     )
-                    if sent is not None:
-                        sent_success = True
-                except Exception as inner_e:
-                    print(f"[bulk] Retry copy failed mid={msg.id}: {inner_e}")
-            except Exception as e:
-                print(f"[bulk] Media transmission failed mid={msg.id}: {e}")
-
-            # Instantly delete original message right after successful post
-            if sent_success:
-                try:
-                    await client.delete_messages(chat_id=int_chat_id, message_ids=msg.id)
+                    sent_success = True
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
                     try:
-                        await client.delete_messages(chat_id=int_chat_id, message_ids=msg.id)
-                    except Exception as de2:
-                        print(f"[bulk] Delete after FloodWait failed mid={msg.id}: {de2}")
-                except Exception as del_err:
-                    print(f"[bulk] ⚠️ Cannot delete original message {msg.id}: {del_err}. Check if bot has 'Delete Messages' admin permission!")
+                        await copy_media_preserving_cover(
+                            client=client,
+                            target_chat_id=int_chat_id,
+                            msg=msg,
+                            caption=cap
+                        )
+                        sent_success = True
+                    except Exception as inner_e:
+                        print(f"[bulk] Retry copy failed for msg {msg.id}: {inner_e}")
+                        import traceback
+                        traceback.print_exc()
+                except Exception as e:
+                    print(f"[bulk] Media transmission failed for msg {msg.id}: {e}")
+                    import traceback
+                    traceback.print_exc()
 
-            await asyncio.sleep(3)
+                # Instant Delete: Delete original message immediately upon success
+                if sent_success:
+                    try:
+                        await client.delete_messages(
+                            chat_id=int_chat_id,
+                            message_ids=msg.id
+                        )
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 1)
+                        try:
+                            await client.delete_messages(
+                                chat_id=int_chat_id,
+                                message_ids=msg.id
+                            )
+                        except Exception as de2:
+                            print(f"[bulk] Delete after FloodWait failed for msg {msg.id}: {de2}")
+                            import traceback
+                            traceback.print_exc()
+                    except Exception as del_err:
+                        print(f"[bulk] Cannot delete message {msg.id}: {del_err}. Ensure bot has 'Delete Messages' permission.")
+                        import traceback
+                        traceback.print_exc()
 
-        if sticker_id:
-            try:
-                await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 1)
+                await asyncio.sleep(3)
+
+            # Episode Separator Sticker
+            if sticker_id:
                 try:
-                    await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
-                except Exception as e2:
-                    print(f"[bulk] Sticker send failed after FloodWait: {e2}")
-            except Exception as e:
-                print(f"[bulk] Failed to send sticker: {e}")
+                    await client.send_sticker(
+                        chat_id=int_chat_id,
+                        sticker=sticker_id
+                    )
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                    await client.send_sticker(
+                        chat_id=int_chat_id,
+                        sticker=sticker_id
+                    )
+                except Exception as e:
+                    print(f"[bulk] Failed to send sticker: {e}")
 
-    # 4. Final cleanup: delete non-media leftover messages (text titles, stickers, etc.) in batches of 100
-    non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
-    if non_media_ids:
-        try:
-            for i in range(0, len(non_media_ids), 100):
-                batch = non_media_ids[i:i + 100]
-                await client.delete_messages(chat_id=int_chat_id, message_ids=batch)
-        except Exception as e:
-            print(f"[bulk] Cleanup error for extra messages: {e}")
+        # 5. Cleanup extra messages (text title cards, photo posters)
+        non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
+        if non_media_ids:
+            try:
+                for i in range(0, len(non_media_ids), 100):
+                    batch = non_media_ids[i:i + 100]
+                    await client.delete_messages(chat_id=int_chat_id, message_ids=batch)
+            except Exception as e:
+                print(f"[bulk] Cleanup error for extra messages: {e}")
+
+    except Exception as fatal_e:
+        print(f"[bulk] FATAL crash in _flush_bulk for chat {chat_id}: {fatal_e}")
+        import traceback
+        traceback.print_exc()
 
 
 async def auto_cap_cmd(client, message: Message):
