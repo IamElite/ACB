@@ -1188,126 +1188,97 @@ def _nearest_title_for_media(messages: list[Message], media_message: Message) ->
 
 
 async def _flush_bulk(client, chat_id: str, delay: int):
-    try:
-        await asyncio.sleep(delay)
-    except asyncio.CancelledError:
-        return
+    """
+    Process queued channel messages:
+    - Group by episode and quality
+    - Send headers, auto-captioned media, and separator stickers
+    - Instantly delete original messages to eliminate duplicate posts
+    """
+    int_chat_id = int(chat_id)
 
-    async with LOCK:
-        messages = bulk_bucket.pop(chat_id, [])
+    async with _bulk_locks[chat_id]:
+        messages = list(_bulk_buffers[chat_id].values())
+        _bulk_buffers[chat_id].clear()
+        _bulk_tasks.pop(chat_id, None)
 
     if not messages:
         return
 
-    caption_template = await load_caption(chat_id)
-    sticker_id = await load_sticker(chat_id)
-    episode_header_enabled = await load_episode_header_setting(chat_id)
-
-    if not caption_template:
+    if not await is_channel_authed(chat_id):
         return
 
-    title_map = await load_episode_titles(chat_id)
-    for source_msg in messages:
-        text = (source_msg.text or source_msg.caption or "").strip()
-        if text:
-            title_map.update(parse_episode_title_lines(text))
+    caption_template = await load_caption(chat_id) or DEFAULT_CAPTION
+    sticker_id = await load_sticker(chat_id) or DEFAULT_STICKER
+    episode_header_enabled = await load_episode_header_setting(chat_id)
 
-    await save_episode_titles(chat_id, title_map)
-
-    episodes = defaultdict(list)
+    # 1. Title extraction (text + captions)
+    title_map = await load_episode_titles(chat_id) or {}
+    new_titles = False
     for msg in messages:
-        fname = media_filename(msg)
-        if fname:
-            ep_num = _int_episode(fname)
-            episodes[ep_num].append(msg)
+        text_content = msg.text or msg.caption
+        if text_content:
+            parsed = parse_episode_title_lines(text_content)
+            if parsed:
+                title_map.update(parsed)
+                new_titles = True
 
-    sorted_episodes = sorted(episodes.items())
-    int_chat_id = int(chat_id)
+    if new_titles:
+        await save_episode_titles(chat_id, title_map)
 
-    for ep_num, msgs_in_episode in sorted_episodes:
-        sorted_msgs = sorted(
-            msgs_in_episode,
-            key=_episode_media_sort_key
-        )
+    # 2. Group media (videos/documents only) and track their IDs for instant deletion
+    episodes = defaultdict(list)
+    media_msg_ids = set()
 
-        episode_title = None
-        for media_msg in sorted_msgs:
-            fname = media_filename(media_msg) or ""
-            episode_title = title_for_filename(fname, title_map)
-            if episode_title:
-                break
-            episode_title = _nearest_title_for_media(messages, media_msg)
-            if episode_title:
-                break
+    for msg in messages:
+        fname, ep_num = get_media_name_and_ep(msg)
+        if not fname or not (msg.video or msg.document):
+            continue
+        episodes[ep_num].append((fname, msg))
+        media_msg_ids.add(msg.id)
 
-        if episode_title and episode_header_enabled and ep_num != 9999:
+    # 3. Dispatch formatted media + real-time delete
+    sorted_ep_keys = sorted(episodes.keys())
+
+    for ep_num in sorted_ep_keys:
+        items_in_ep = episodes[ep_num]
+        sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
+
+        if episode_header_enabled:
+            header_text = format_episode_title_message(title_map, ep_num)
             try:
-                display_key = None
-                for media_msg in sorted_msgs:
-                    fname = media_filename(media_msg) or ""
-                    for candidate in title_keys_for_filename(fname):
-                        if candidate in title_map:
-                            display_key = candidate
-                            break
-                    if display_key:
-                        break
-                title_text = display_title_for_key(display_key, episode_title) if display_key else episode_title
                 await client.send_message(
-                    int_chat_id,
-                    format_episode_title_message(title_text),
+                    chat_id=int_chat_id,
+                    text=header_text,
                     parse_mode=ParseMode.HTML
                 )
-                await asyncio.sleep(1)
             except FloodWait as fw:
-                await asyncio.sleep(fw.value)
+                await asyncio.sleep(fw.value + 1)
+                try:
+                    await client.send_message(
+                        chat_id=int_chat_id,
+                        text=header_text,
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e2:
+                    print(f"[bulk] Failed to send header for ep {ep_num} after FloodWait: {e2}")
             except Exception as e:
-                print(f"Title message error: {e}")
-        elif episode_header_enabled and ep_num != 9999:
-            try:
-                # Fallback numeric header — still render full line in bold (HTML)
-                header_line = f"━━━ Episode {ep_num:02d} ━━━"
-                await client.send_message(
-                    int_chat_id,
-                    format_episode_title_message(header_line),
-                    parse_mode=ParseMode.HTML
-                )
-                await asyncio.sleep(1)
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value)
-            except Exception as e:
-                print(f"Header error: {e}")
+                print(f"[bulk] Failed to send header for ep {ep_num}: {e}")
 
-        for msg in sorted_msgs:
-            filename = filesize = duration = None
+        for fname, msg in sorted_items:
+            filesize = getattr(msg.document or msg.video, "file_size", None)
+            duration = getattr(msg.video, "duration", None)
+            clean_filename = fname.rsplit(".", 1)[0] if "." in fname else fname
+            cap = (
+                caption_template
+                .replace("{filename}", html.escape(str(clean_filename)))
+                .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
+                .replace("{duration}", html.escape(str(format_duration(duration))))
+                .replace("{quality}", html.escape(str(extract_quality(fname) or "")))
+                .replace("{season}", html.escape(str(extract_season(fname) or "")))
+                .replace("{episode}", html.escape(str(extract_episode(fname) or "")))
+            )
 
-            if msg.document:
-                filename = msg.document.file_name
-                filesize = msg.document.file_size
-            elif msg.video:
-                filename = msg.video.file_name or "Video"
-                filesize = msg.video.file_size
-                duration = msg.video.duration
-            elif msg.audio:
-                filename = msg.audio.file_name or "Audio"
-                filesize = msg.audio.file_size
-                duration = msg.audio.duration
-
-            if msg.photo:
-                cap = msg.caption or ""
-            elif filename:
-                clean_filename = filename.rsplit('.', 1)[0] if '.' in filename else filename
-                cap = (
-                    caption_template
-                    .replace("{filename}", html.escape(str(clean_filename)))
-                    .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
-                    .replace("{duration}", html.escape(str(format_duration(duration))))
-                    .replace("{quality}", html.escape(str(extract_quality(filename) or "")))
-                    .replace("{season}", html.escape(str(extract_season(filename) or "")))
-                    .replace("{episode}", html.escape(str(extract_episode(filename) or "")))
-                )
-            else:
-                cap = msg.caption or ""
-
+            sent_success = False
             try:
                 await send_or_forward_media(
                     client=client,
@@ -1316,11 +1287,9 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                     msg=msg,
                     caption=cap,
                     is_source_protected=True,
-                    no_caption_mode=True,
+                    no_caption_mode=False,
                 )
-                await asyncio.sleep(0.5)
-                await msg.delete()
-                await asyncio.sleep(0.5)
+                sent_success = True
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 1)
                 try:
@@ -1331,48 +1300,52 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                         msg=msg,
                         caption=cap,
                         is_source_protected=True,
-                        no_caption_mode=True,
+                        no_caption_mode=False,
                     )
-                    await msg.delete()
-                except Exception as e:
-                    print(f"[ac] flush_bulk retry error mid={msg.id}: {e}")
+                    sent_success = True
+                except Exception as inner_e:
+                    print(f"[bulk] Retry copy failed mid={msg.id}: {inner_e}")
             except Exception as e:
-                print(f"[ac] flush_bulk copy error mid={msg.id}: {e}")
+                print(f"[bulk] Media transmission failed mid={msg.id}: {e}")
 
-        if ep_num != 9999:
+            # Instant delete original right after successful send
+            if sent_success:
+                try:
+                    await client.delete_messages(chat_id=int_chat_id, message_ids=msg.id)
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                    try:
+                        await client.delete_messages(chat_id=int_chat_id, message_ids=msg.id)
+                    except Exception as de2:
+                        print(f"[bulk] Delete after FloodWait failed mid={msg.id}: {de2}")
+                except Exception as del_err:
+                    print(f"[bulk] ⚠️ Cannot delete original message {msg.id}: {del_err}. Check if bot has 'Delete Messages' admin permission!")
+
+            await asyncio.sleep(3)
+
+        if sticker_id:
             try:
-                await client.send_sticker(int_chat_id, sticker_id)
-                await asyncio.sleep(1)
+                await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
             except FloodWait as fw:
-                await asyncio.sleep(fw.value)
+                await asyncio.sleep(fw.value + 1)
+                try:
+                    await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
+                except Exception as e2:
+                    print(f"[bulk] Sticker send failed after FloodWait: {e2}")
             except Exception as e:
-                print(f"Sticker error: {e}")
+                print(f"[bulk] Failed to send sticker: {e}")
 
-    # Clean up source text/title-list messages from the channel after they've
-    # been parsed, matching how the original video source messages are deleted
-    # right after being re-posted with caption. Only text messages (not photos,
-    # stickers, or other media that the user may not want auto-removed) are
-    # cleaned so the channel feed stays tidy.
-    for msg in messages:
-        if not (msg.text and not msg.media):
-            # Media items are already deleted individually after copy() above.
-            # Skip non-text items (photos / stickers / service msgs etc.) to
-            # avoid deleting anything the user didn't intend as a title/prompt.
-            continue
+    # 4. Final cleanup: delete non-media messages (text titles / stickers / etc.) in batches
+    non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
+    if non_media_ids:
         try:
-            await msg.delete()
-            await asyncio.sleep(0.3)
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value)
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-        except Exception:
-            pass
+            for i in range(0, len(non_media_ids), 100):
+                batch = non_media_ids[i:i + 100]
+                await client.delete_messages(chat_id=int_chat_id, message_ids=batch)
+        except Exception as e:
+            print(f"[bulk] Cleanup error for extra messages: {e}")
 
 
-@app.on_message(filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
     """
     Auto-caption command supporting:
