@@ -138,7 +138,7 @@ async def copy_media_preserving_cover(
     caption: str,
     message_thread_id: Optional[int] = None
 ):
-    """Copy media preserving thumbnails, video metadata, and topic thread ID."""
+    """Copy media preserving thumbnails, video metadata, and topic thread ID with bulletproof fallback."""
     if msg.video:
         kwargs = {
             "chat_id": target_chat_id,
@@ -150,15 +150,43 @@ async def copy_media_preserving_cover(
             "height": msg.video.height,
             "file_name": msg.video.file_name,
             "supports_streaming": msg.video.supports_streaming or True,
-            "has_spoiler": msg.has_media_spoiler or False,
+            "has_spoiler": getattr(msg.video, "has_spoiler", False) or getattr(msg, "has_media_spoiler", False),
         }
         if message_thread_id is not None:
             kwargs["message_thread_id"] = message_thread_id
 
-        if getattr(msg.video, "thumbs", None):
-            kwargs["thumb"] = msg.video.thumbs[0].file_id
+        cover_obj = getattr(msg.video, "video_cover", None)
+        if cover_obj and hasattr(cover_obj, "file_id"):
+            kwargs["video_cover"] = cover_obj.file_id
+        elif getattr(msg.video, "thumbs", None):
+            thumb_obj = msg.video.thumbs[0]
+            if hasattr(thumb_obj, "file_id"):
+                kwargs["thumb"] = thumb_obj.file_id
 
-        return await client.send_video(**kwargs)
+        video_start = getattr(msg.video, "video_start_timestamp", None)
+        if video_start is not None:
+            kwargs["video_start_timestamp"] = video_start
+
+        try:
+            return await client.send_video(**kwargs)
+        except TypeError:
+            kwargs.pop("video_cover", None)
+            kwargs.pop("video_start_timestamp", None)
+            try:
+                return await client.send_video(**kwargs)
+            except Exception as e:
+                print(f"[ac] send_video retry failed: {e}, falling back to msg.copy")
+        except Exception as e:
+            print(f"[ac] send_video failed: {e}, falling back to msg.copy")
+
+        copy_kwargs = {
+            "chat_id": target_chat_id,
+            "caption": caption,
+            "parse_mode": ParseMode.HTML,
+        }
+        if message_thread_id is not None:
+            copy_kwargs["message_thread_id"] = message_thread_id
+        return await msg.copy(**copy_kwargs)
 
     copy_kwargs = {
         "chat_id": target_chat_id,
@@ -944,6 +972,13 @@ def _quality_val(fname: str) -> int:
     return 9999
 
 
+def _episode_media_sort_key(m: Message):
+    if m.photo:
+        return (-1, 0)
+    fname = media_filename(m) or ""
+    return (0, _quality_val(fname))
+
+
 def _int_episode(fname: str) -> int:
     try:
         raw = extract_episode(fname)
@@ -1042,7 +1077,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
     title_map = await load_episode_titles(chat_id)
     for source_msg in messages:
-        text = (source_msg.text or "").strip()
+        text = (source_msg.text or source_msg.caption or "").strip()
         if text:
             title_map.update(parse_episode_title_lines(text))
 
@@ -1061,7 +1096,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
     for ep_num, msgs_in_episode in sorted_episodes:
         sorted_msgs = sorted(
             msgs_in_episode,
-            key=lambda m: _quality_val(media_filename(m) or "")
+            key=_episode_media_sort_key
         )
 
         episode_title = None
@@ -1194,17 +1229,15 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 async def auto_cap_cmd(client, message: Message):
     """
     Auto-caption command supporting:
-    1. Explicit Mode: /ac <start_link> <end_link> <target_chat> [dest_topic_id] [-noac]
-    2. Reply Mode:    /ac <start_link> <end_link> [dest_topic_id] [-noac]
-    Flags:
-      -noac : Only auto-arrange files without altering original captions.
+    1. Explicit Mode: /ac <start_link> <end_link> <target_chat> [dest_topic_id] [-noac / -no-ca]
+    2. Reply Mode:    /ac <start_link> <end_link> [dest_topic_id] [-noac / -no-ca]
     """
     raw_args = list(message.command[1:])
 
     no_caption_mode = False
     clean_args = []
     for arg in raw_args:
-        if arg.lower() == "-noac":
+        if arg.lower() in ("-noac", "-no-ca", "-noca", "--no-caption", "-no_caption"):
             no_caption_mode = True
         else:
             clean_args.append(arg)
@@ -1220,12 +1253,7 @@ async def auto_cap_cmd(client, message: Message):
     if reply and arg_count in (2, 3):
         start_arg = clean_args[0]
         end_arg = clean_args[1]
-
-        if reply.forward_from_chat:
-            dest_arg = reply.forward_from_chat.id
-        else:
-            dest_arg = reply.chat.id
-
+        dest_arg = reply.forward_from_chat.id if reply.forward_from_chat else reply.chat.id
         if arg_count == 3:
             try:
                 dest_topic_id = int(clean_args[2])
@@ -1238,13 +1266,11 @@ async def auto_cap_cmd(client, message: Message):
         start_arg = clean_args[0]
         end_arg = clean_args[1]
         dest_arg = clean_args[2]
-
         if arg_count == 4:
             try:
                 dest_topic_id = int(clean_args[3])
             except ValueError:
                 return await message.reply_text("❌ <b>Topic ID must be an integer.</b>", parse_mode=ParseMode.HTML)
-
     else:
         usage_text = (
             "<b>Usage Instructions:</b>\n\n"
@@ -1253,8 +1279,7 @@ async def auto_cap_cmd(client, message: Message):
             "2. <b>To a Forum Topic:</b>\n"
             "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; &lt;topic_id&gt; [-noac]</code>\n\n"
             "3. <b>Via Reply:</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id] [-noac]</code>\n\n"
-            "<i>Note: Source links from forum topics (3-part links) are parsed automatically. Use -noac for auto-arrange only.</i>"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [topic_id] [-noac]</code>"
         )
         return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
 
@@ -1262,9 +1287,7 @@ async def auto_cap_cmd(client, message: Message):
         m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', arg)
         if not m:
             return None, None
-        chat_internal = m.group(1)
-        msg_id = int(m.group(3))
-        return chat_internal, msg_id
+        return m.group(1), int(m.group(3))
 
     src1_internal, start_id = parse_link(start_arg)
     src2_internal, end_id = parse_link(end_arg)
@@ -1305,7 +1328,7 @@ async def auto_cap_cmd(client, message: Message):
         return await message.reply_text(f"❌ Cannot access source chat: {e}", parse_mode=ParseMode.HTML)
 
     mode_label = "Auto-Arrange Only (-noac)" if no_caption_mode else "Auto-Caption"
-    status_msg = await message.reply_text(f"⏳ <i>Processing task ({mode_label})...</i>", parse_mode=ParseMode.HTML)
+    status_msg = await message.reply_text(f"⏳ <i>Scanning messages ({mode_label})...</i>", parse_mode=ParseMode.HTML)
 
     msg_ids = list(range(start_id, end_id + 1))
     CHUNK = 200
@@ -1328,14 +1351,18 @@ async def auto_cap_cmd(client, message: Message):
 
     all_messages = sorted({m.id: m for m in all_messages}.values(), key=lambda m: m.id)
 
-    title_map = {}
+    title_map = await load_episode_titles(real_dest_id) or {}
+    new_titles_found = False
+
     for msg in all_messages:
-        if msg.text:
-            parsed = parse_episode_title_lines(msg.text)
+        text_content = msg.text or msg.caption
+        if text_content:
+            parsed = parse_episode_title_lines(text_content)
             if parsed:
                 title_map.update(parsed)
+                new_titles_found = True
 
-    if title_map:
+    if new_titles_found:
         await save_episode_titles(real_dest_id, title_map)
 
     episodes = defaultdict(list)
@@ -1348,9 +1375,25 @@ async def auto_cap_cmd(client, message: Message):
     if not episodes:
         return await status_msg.edit_text("❌ No supported media found to process.", parse_mode=ParseMode.HTML)
 
-    for ep_num in sorted(episodes.keys()):
-        sorted_msgs = episodes[ep_num]
-        sorted_msgs = sorted(sorted_msgs, key=lambda m: _quality_val(media_filename(m) or ""))
+    total_eps = len(episodes)
+    total_files = sum(len(v) for v in episodes.values())
+    sorted_ep_keys = sorted(episodes.keys())
+
+    breakdown_str = " ".join(str(len(episodes[ep])) for ep in sorted_ep_keys)
+
+    await status_msg.edit_text(
+        f"⏳ <b>Processing Task ({mode_label})</b>\n\n"
+        f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
+        f"<b>Total Media:</b> <code>{total_files}</code>\n"
+        f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
+        parse_mode=ParseMode.HTML
+    )
+
+    processed_eps = 0
+
+    for ep_num in sorted_ep_keys:
+        msgs_in_ep = episodes[ep_num]
+        sorted_msgs = sorted(msgs_in_ep, key=_episode_media_sort_key)
 
         if episode_header_enabled:
             header_text = format_episode_title_message(title_map, ep_num)
@@ -1363,8 +1406,8 @@ async def auto_cap_cmd(client, message: Message):
                 if dest_topic_id is not None:
                     send_kwargs["message_thread_id"] = dest_topic_id
                 await client.send_message(**send_kwargs)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[ac] Failed to send episode header for ep {ep_num}: {e}")
 
         for msg in sorted_msgs:
             if no_caption_mode:
@@ -1415,10 +1458,10 @@ async def auto_cap_cmd(client, message: Message):
                         caption=cap,
                         message_thread_id=dest_topic_id,
                     )
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except Exception as e:
+                    print(f"[ac] Error copying media after FloodWait mid={msg.id}: {e}")
+            except Exception as e:
+                print(f"[ac] Error copying media mid={msg.id}: {e}")
 
             await asyncio.sleep(0.5)
 
@@ -1428,10 +1471,29 @@ async def auto_cap_cmd(client, message: Message):
                 if dest_topic_id is not None:
                     stick_kwargs["message_thread_id"] = dest_topic_id
                 await client.send_sticker(**stick_kwargs)
+            except Exception as e:
+                print(f"[ac] Failed to send separator sticker: {e}")
+
+        processed_eps += 1
+
+        if processed_eps % 5 == 0 or processed_eps == total_eps:
+            try:
+                await status_msg.edit_text(
+                    f"⏳ <b>Processing Task ({mode_label})</b>\n\n"
+                    f"<b>Progress:</b> <b>{processed_eps}/{total_eps}</b> episodes done\n"
+                    f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
+                    parse_mode=ParseMode.HTML
+                )
             except Exception:
                 pass
 
-    await status_msg.edit_text("✅ <b>Task completed successfully!</b>", parse_mode=ParseMode.HTML)
+    completion_text = (
+        f"✅ <b>Task completed successfully!</b>\n\n"
+        f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
+        f"<b>Total Media Sent:</b> <code>{total_files}</code>\n"
+        f"<b>Breakdown:</b> <code>{breakdown_str}</code>"
+    )
+    await status_msg.edit_text(completion_text, parse_mode=ParseMode.HTML)
 
 
 @app.on_message(filters.private & filters.command(["sept"]))
