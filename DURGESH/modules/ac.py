@@ -485,14 +485,36 @@ async def save_caption(
     )
 
 
-async def load_sticker(chat_id: str) -> str:
-    data = await captiondb.find_one({"chat_id": str(chat_id)})
-    return data.get("sticker_id", DEFAULT_STICKER) if data else DEFAULT_STICKER
+async def load_sticker(chat_id: Union[int, str]) -> Optional[str]:
+    """
+    Load custom sticker for chat. Checks both 'sticker_id' and legacy 'sticker' keys,
+    falling back to DEFAULT_STICKER.
+    """
+    try:
+        data = await captiondb.find_one({"chat_id": str(chat_id)})
+        if not data:
+            return DEFAULT_STICKER
+        return data.get("sticker_id") or data.get("sticker") or DEFAULT_STICKER
+    except Exception as e:
+        print(f"[captiondb] Error loading sticker for {chat_id}: {e}")
+        return DEFAULT_STICKER
 
 
-async def load_episode_header_setting(chat_id: str) -> bool:
-    data = await captiondb.find_one({"chat_id": str(chat_id)})
-    return data.get("episode_header", True) if data else True
+async def load_episode_header_setting(chat_id: Union[int, str]) -> bool:
+    """
+    Load EPT (Episode Title Header) setting.
+    Checks 'ept' override first, then 'episode_header', defaulting to True.
+    """
+    try:
+        data = await captiondb.find_one({"chat_id": str(chat_id)})
+        if not data:
+            return True
+        if "ept" in data:
+            return bool(data["ept"])
+        return bool(data.get("episode_header", True))
+    except Exception as e:
+        print(f"[captiondb] Error loading EPT setting for {chat_id}: {e}")
+        return True
 
 
 async def remove_episode_titles(chat_id: str):
@@ -1222,17 +1244,19 @@ def _nearest_title_for_media(messages: list[Message], media_message: Message) ->
 
 async def _flush_bulk(client, chat_id: str, delay: int):
     """
-    Process buffered channel posts:
-    - Respects EPT (Episode Title/Header) ON/OFF setting.
-    - Arranges files strictly by episode & quality.
-    - Guarantees immediate real-time deletion of original forwarded messages.
+    Process buffered in-channel posts:
+    - Custom Captions: Always applied to videos and documents.
+    - EPT (Episode Header Title): Sent only when episode_header_enabled is True.
+    - Separator Sticker: ALWAYS sent per episode if sticker_id exists (INDEPENDENT of EPT).
+    - Auto-Delete: Instantly deletes original forwarded posts right after the captioned post succeeds.
+    - Final Sweep: Cleans up orphan text title-cards and posters.
     """
     await asyncio.sleep(delay)
 
     int_chat_id = int(chat_id)
 
     try:
-        # Drain the bucket safely using the repository's actual globals
+        # Safe buffer retrieval using the repository's real globals under LOCK
         async with LOCK:
             raw_buf = bulk_bucket.pop(chat_id, None)
             bulk_tasks.pop(chat_id, None)
@@ -1250,22 +1274,16 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         if not messages:
             return
 
+        # Target channel authorization check
         if not await is_channel_authed(chat_id):
             return
 
+        # Load channel configurations with resilient schema checks
         caption_template = await load_caption(chat_id) or DEFAULT_CAPTION
         sticker_id = await load_sticker(chat_id) or DEFAULT_STICKER
         episode_header_enabled = await load_episode_header_setting(chat_id)
 
-        # Honor legacy 'ept' key if present in DB (overrides)
-        try:
-            caption_doc = await captiondb.find_one({"chat_id": str(chat_id)}) or {}
-            if "ept" in caption_doc:
-                episode_header_enabled = bool(caption_doc["ept"])
-        except Exception:
-            pass
-
-        # Extract episode titles only when EPT is enabled
+        # Parse & save episode titles only when EPT is enabled
         title_map = {}
         if episode_header_enabled:
             title_map = await load_episode_titles(chat_id) or {}
@@ -1280,7 +1298,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             if new_titles:
                 await save_episode_titles(chat_id, title_map)
 
-        # Filter strictly videos and documents
+        # Group strictly Videos and Documents (Photos are treated as title cards only)
         episodes = defaultdict(list)
         media_msg_ids = set()
 
@@ -1294,7 +1312,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             episodes[ep_num].append((fname, msg))
             media_msg_ids.add(msg.id)
 
-        # If no playable media found, delete non-media messages
+        # If no playable media found, cleanup batch messages
         if not episodes:
             all_ids = [m.id for m in messages if m]
             if all_ids:
@@ -1307,12 +1325,12 @@ async def _flush_bulk(client, chat_id: str, delay: int):
 
         sorted_ep_keys = sorted(episodes.keys())
 
-        # Dispatch media per episode
+        # Dispatch media grouped by episode
         for ep_num in sorted_ep_keys:
             items_in_ep = episodes[ep_num]
             sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
 
-            # Episode header only when EPT is enabled
+            # 1. Episode Header (ONLY when EPT is enabled)
             if episode_header_enabled:
                 header_text = format_episode_title_message(title_map, ep_num)
                 try:
@@ -1330,11 +1348,11 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                             parse_mode=ParseMode.HTML
                         )
                     except Exception as e2:
-                        print(f"[bulk] Failed to send header after FloodWait for ep {ep_num}: {e2}")
+                        print(f"[bulk] Header retry after FloodWait failed for ep {ep_num}: {e2}")
                 except Exception as e:
                     print(f"[bulk] Failed to send episode header for ep {ep_num}: {e}")
 
-            # Send media items
+            # 2. Episode Media Items (Custom caption applied)
             for fname, msg in sorted_items:
                 filesize = getattr(msg.document or msg.video, "file_size", None)
                 duration = getattr(msg.video, "duration", None)
@@ -1369,15 +1387,11 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                         )
                         sent_success = True
                     except Exception as inner_e:
-                        print(f"[bulk] Copy retry failed for msg {msg.id}: {inner_e}")
-                        import traceback
-                        traceback.print_exc()
+                        print(f"[bulk] Retry copy failed for msg {msg.id}: {inner_e}")
                 except Exception as e:
-                    print(f"[bulk] Media send failed for msg {msg.id}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"[bulk] Media transmission failed for msg {msg.id}: {e}")
 
-                # Guaranteed auto-delete: ALWAYS pass a LIST to delete_messages
+                # 3. Guaranteed Instant Auto-Delete (always pass a LIST)
                 if sent_success:
                     try:
                         await client.delete_messages(
@@ -1393,29 +1407,31 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                             )
                         except Exception as de2:
                             print(f"[bulk] Delete after FloodWait failed for msg {msg.id}: {de2}")
-                            import traceback
-                            traceback.print_exc()
                     except Exception as del_err:
-                        print(f"[bulk] Cannot delete message {msg.id}: {del_err}. Verify 'Delete Messages' permission.")
-                        import traceback
-                        traceback.print_exc()
+                        print(f"[bulk] Failed to auto-delete original msg {msg.id}: {del_err}. Ensure 'Delete Messages' permission.")
 
                 await asyncio.sleep(3)
 
-            # Separator sticker only when EPT is enabled
-            if sticker_id and episode_header_enabled:
+            # 4. Episode Separator Sticker (ALWAYS sent per-episode, INDEPENDENT of EPT)
+            if sticker_id:
                 try:
-                    await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
+                    await client.send_sticker(
+                        chat_id=int_chat_id,
+                        sticker=sticker_id
+                    )
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
                     try:
-                        await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
+                        await client.send_sticker(
+                            chat_id=int_chat_id,
+                            sticker=sticker_id
+                        )
                     except Exception as e2:
-                        print(f"[bulk] Sticker send failed after FloodWait: {e2}")
+                        print(f"[bulk] Sticker retry after FloodWait failed for ep {ep_num}: {e2}")
                 except Exception as e:
-                    print(f"[bulk] Failed to send sticker: {e}")
+                    print(f"[bulk] Failed to send separator sticker for ep {ep_num}: {e}")
 
-        # Final sweep: delete title cards, text posters, standalone photos
+        # 5. Final Sweep: Cleanup orphan text title cards and photo posters (batches of 100)
         non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
         if non_media_ids:
             try:
@@ -1431,7 +1447,6 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         traceback.print_exc()
 
 
-@app.on_message(filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
     """
     Robust /ac command supporting:
