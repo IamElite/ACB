@@ -8,7 +8,7 @@ from typing import Union, Tuple, Optional
 from pyrogram import filters, raw
 from pyrogram.file_id import FileId
 from pyrogram.types import Message, Chat, LinkPreviewOptions
-from pyrogram.enums import ParseMode, ChatType
+from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
 
 from DURGESH import app
@@ -336,83 +336,31 @@ async def send_or_forward_media(
             return None
 
 
-def parse_telegram_link(arg: str):
-    """Parse t.me/c/<chatid>[/<topic>]/<msgid> or t.me/<username>/<msgid>.
-    Returns (chat_identifier, topic_id_or_None, msg_id_or_None).
-    chat_identifier is internal numeric id (str) for private links, or @username for public.
+def parse_telegram_link(link: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
     """
-    if not arg:
+    Parse Telegram message links supporting both 2-part and 3-part topic URLs:
+    - https://t.me/c/3951520904/33        -> chat: 3951520904, topic: None, msg_id: 33
+    - https://t.me/c/3951520904/31/33     -> chat: 3951520904, topic: 31, msg_id: 33
+    Public username links:
+    - https://t.me/username/33            -> chat: "@username", topic: None, msg_id: 33
+    """
+    if not link:
         return None, None, None
-    m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', arg)
+    s = link.strip()
+    m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', s)
     if m:
-        chat_part = m.group(1)
-        topic_part = int(m.group(2)) if m.group(2) else None
-        msg_part = int(m.group(3))
-        return chat_part, topic_part, msg_part
-    m2 = re.search(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)/(\d+)', arg)
+        chat_internal = m.group(1)
+        if m.group(2) is not None:
+            topic_id = int(m.group(2))
+            msg_id = int(m.group(3))
+        else:
+            topic_id = None
+            msg_id = int(m.group(3))
+        return chat_internal, topic_id, msg_id
+    m2 = re.search(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)/(\d+)', s)
     if m2:
         return "@" + m2.group(1), None, int(m2.group(2))
     return None, None, None
-
-
-def parse_destination_target(arg: str):
-    """Parse destination target (channel id, @username, or t.me link) + optional topic id.
-    Returns (peer, topic_or_None).
-    """
-    if not arg:
-        return None, None
-    s = str(arg).strip()
-    # t.me/c/<chatid>[/<topic>]/<msgid> -> peer = -100<chatid>, topic = <topic> if present
-    m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?(?:/\d+)?/?$', s)
-    if m:
-        peer = int(f"-100{m.group(1)}")
-        topic = int(m.group(2)) if m.group(2) else None
-        return peer, topic
-    # t.me/<username>[/...]
-    m2 = re.search(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)', s)
-    if m2:
-        peer = "@" + m2.group(1)
-        return peer, None
-    # Numeric id
-    if s.lstrip("-").isdigit():
-        return int(s), None
-    if s.startswith("@"):
-        return s, None
-    return s, None
-
-
-def extract_chat_from_reply(reply: Message) -> int:
-    """Extract destination chat ID safely from reply, supporting forward_origin."""
-    if not reply:
-        return 0
-    origin = getattr(reply, "forward_origin", None)
-    if origin:
-        chat_obj = getattr(origin, "chat", None) or getattr(origin, "sender_chat", None)
-        if chat_obj and hasattr(chat_obj, "id"):
-            return chat_obj.id
-    if getattr(reply, "forward_from_chat", None):
-        return reply.forward_from_chat.id
-    return reply.chat.id
-
-
-def get_media_name_and_ep(msg: Message):
-    """Return (filename, episode_int) for a video/document message; (None,9999) otherwise."""
-    fname = None
-    if msg.video:
-        fname = msg.video.file_name or "Video"
-    elif msg.document:
-        fname = msg.document.file_name
-    if not fname:
-        return None, 9999
-    try:
-        raw = extract_episode(fname)
-        m = re.search(r'(\d+)', raw)
-        if m:
-            return fname, int(m.group(1))
-    except Exception:
-        pass
-    return fname, 9999
-
 
 
 def normalize_channel_peer(val: Union[str, int]) -> Union[int, str]:
@@ -1274,27 +1222,34 @@ def _nearest_title_for_media(messages: list[Message], media_message: Message) ->
 
 async def _flush_bulk(client, chat_id: str, delay: int):
     """
-    Process queued channel messages:
-    - Waits for debounce delay to let all forwarded files in a batch arrive
-    - Groups by episode + quality using media_filename()/_int_episode()
-    - Sends episode headers, auto-captioned media, and separator stickers
-    - Instantly deletes original messages to eliminate duplicate posts
+    Process buffered channel posts:
+    - Respects EPT (Episode Title/Header) ON/OFF setting.
+    - Arranges files strictly by episode & quality.
+    - Guarantees immediate real-time deletion of original forwarded messages.
     """
-    # 1. Debounce wait: allow all messages of the forwarded batch to arrive and settle
     await asyncio.sleep(delay)
 
     int_chat_id = int(chat_id)
 
     try:
-        # 2. Drain the bucket safely under the global LOCK
+        # Drain the bucket safely using the repository's actual globals
         async with LOCK:
-            messages = list(bulk_bucket.pop(chat_id, []) or [])
+            raw_buf = bulk_bucket.pop(chat_id, None)
             bulk_tasks.pop(chat_id, None)
+
+        if not raw_buf:
+            return
+
+        if isinstance(raw_buf, dict):
+            messages = list(raw_buf.values())
+        elif isinstance(raw_buf, list):
+            messages = list(raw_buf)
+        else:
+            messages = []
 
         if not messages:
             return
 
-        # Auth check
         if not await is_channel_authed(chat_id):
             return
 
@@ -1302,21 +1257,30 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         sticker_id = await load_sticker(chat_id) or DEFAULT_STICKER
         episode_header_enabled = await load_episode_header_setting(chat_id)
 
-        # 3. Extract titles from BOTH text bodies and photo captions
-        title_map = await load_episode_titles(chat_id) or {}
-        new_titles = False
-        for msg in messages:
-            text_content = msg.text or msg.caption
-            if text_content:
-                parsed = parse_episode_title_lines(text_content)
-                if parsed:
-                    title_map.update(parsed)
-                    new_titles = True
+        # Honor legacy 'ept' key if present in DB (overrides)
+        try:
+            caption_doc = await captiondb.find_one({"chat_id": str(chat_id)}) or {}
+            if "ept" in caption_doc:
+                episode_header_enabled = bool(caption_doc["ept"])
+        except Exception:
+            pass
 
-        if new_titles:
-            await save_episode_titles(chat_id, title_map)
+        # Extract episode titles only when EPT is enabled
+        title_map = {}
+        if episode_header_enabled:
+            title_map = await load_episode_titles(chat_id) or {}
+            new_titles = False
+            for msg in messages:
+                text_content = msg.text or msg.caption
+                if text_content:
+                    parsed = parse_episode_title_lines(text_content)
+                    if parsed:
+                        title_map.update(parsed)
+                        new_titles = True
+            if new_titles:
+                await save_episode_titles(chat_id, title_map)
 
-        # 4. Group strictly videos & documents (photos are title cards, not playable media)
+        # Filter strictly videos and documents
         episodes = defaultdict(list)
         media_msg_ids = set()
 
@@ -1330,26 +1294,25 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             episodes[ep_num].append((fname, msg))
             media_msg_ids.add(msg.id)
 
+        # If no playable media found, delete non-media messages
         if not episodes:
-            print(f"[bulk] No media files (video/document) found in {len(messages)} buffered messages.")
-            # Clean up leftover non-media messages anyway
             all_ids = [m.id for m in messages if m]
             if all_ids:
                 try:
                     for i in range(0, len(all_ids), 100):
                         await client.delete_messages(chat_id=int_chat_id, message_ids=all_ids[i:i+100])
                 except Exception as e:
-                    print(f"[bulk] Cleanup error for non-media: {e}")
+                    print(f"[bulk] Error cleaning non-media batch: {e}")
             return
 
-        # 5. Dispatch formatted media by episode + quality
         sorted_ep_keys = sorted(episodes.keys())
 
+        # Dispatch media per episode
         for ep_num in sorted_ep_keys:
             items_in_ep = episodes[ep_num]
             sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
 
-            # Episode header
+            # Episode header only when EPT is enabled
             if episode_header_enabled:
                 header_text = format_episode_title_message(title_map, ep_num)
                 try:
@@ -1367,11 +1330,11 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                             parse_mode=ParseMode.HTML
                         )
                     except Exception as e2:
-                        print(f"[bulk] Failed to send header for ep {ep_num} after FloodWait: {e2}")
+                        print(f"[bulk] Failed to send header after FloodWait for ep {ep_num}: {e2}")
                 except Exception as e:
-                    print(f"[bulk] Failed to send header for ep {ep_num}: {e}")
+                    print(f"[bulk] Failed to send episode header for ep {ep_num}: {e}")
 
-            # Media items
+            # Send media items
             for fname, msg in sorted_items:
                 filesize = getattr(msg.document or msg.video, "file_size", None)
                 duration = getattr(msg.video, "duration", None)
@@ -1406,41 +1369,41 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                         )
                         sent_success = True
                     except Exception as inner_e:
-                        print(f"[bulk] Retry copy failed for msg {msg.id}: {inner_e}")
+                        print(f"[bulk] Copy retry failed for msg {msg.id}: {inner_e}")
                         import traceback
                         traceback.print_exc()
                 except Exception as e:
-                    print(f"[bulk] Media transmission failed for msg {msg.id}: {e}")
+                    print(f"[bulk] Media send failed for msg {msg.id}: {e}")
                     import traceback
                     traceback.print_exc()
 
-                # Instant delete right after successful copy
+                # Guaranteed auto-delete: ALWAYS pass a LIST to delete_messages
                 if sent_success:
                     try:
                         await client.delete_messages(
                             chat_id=int_chat_id,
-                            message_ids=msg.id
+                            message_ids=[msg.id]
                         )
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 1)
                         try:
                             await client.delete_messages(
                                 chat_id=int_chat_id,
-                                message_ids=msg.id
+                                message_ids=[msg.id]
                             )
                         except Exception as de2:
                             print(f"[bulk] Delete after FloodWait failed for msg {msg.id}: {de2}")
                             import traceback
                             traceback.print_exc()
                     except Exception as del_err:
-                        print(f"[bulk] Cannot delete message {msg.id}: {del_err}. Ensure bot has 'Delete Messages' permission.")
+                        print(f"[bulk] Cannot delete message {msg.id}: {del_err}. Verify 'Delete Messages' permission.")
                         import traceback
                         traceback.print_exc()
 
                 await asyncio.sleep(3)
 
-            # Episode separator sticker
-            if sticker_id:
+            # Separator sticker only when EPT is enabled
+            if sticker_id and episode_header_enabled:
                 try:
                     await client.send_sticker(chat_id=int_chat_id, sticker=sticker_id)
                 except FloodWait as fw:
@@ -1452,7 +1415,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 except Exception as e:
                     print(f"[bulk] Failed to send sticker: {e}")
 
-        # 6. Final cleanup: remove non-media leftovers (text titles, photo posters, etc.)
+        # Final sweep: delete title cards, text posters, standalone photos
         non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
         if non_media_ids:
             try:
@@ -1460,7 +1423,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                     batch = non_media_ids[i:i + 100]
                     await client.delete_messages(chat_id=int_chat_id, message_ids=batch)
             except Exception as e:
-                print(f"[bulk] Cleanup error for extra messages: {e}")
+                print(f"[bulk] Final sweep deletion error: {e}")
 
     except Exception as fatal_e:
         print(f"[bulk] FATAL crash in _flush_bulk for chat {chat_id}: {fatal_e}")
@@ -1468,19 +1431,20 @@ async def _flush_bulk(client, chat_id: str, delay: int):
         traceback.print_exc()
 
 
+@app.on_message(filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
     """
-    Auto-caption command supporting:
-    1. Direct in Topic/Channel: /ac <start_link> <end_link> [-noac]
-    2. Reply Mode:          /ac <start_link> <end_link> [dest_topic_id] [-noac]
-    3. Explicit Mode:       /ac <start_link> <end_link> <target_chat_or_link> [dest_topic_id] [-noac]
+    Robust /ac command supporting:
+    - Direct execution inside Channel or Forum Topic: /ac <start_link> <end_link> [-noac]
+    - Reply Mode: /ac <start_link> <end_link> [-noac]
+    - Explicit Mode: /ac <start_link> <end_link> <target_chat> [dest_topic_id] [-noac]
     """
     raw_args = list(message.command[1:])
 
     no_caption_mode = False
     clean_args = []
     for arg in raw_args:
-        if arg.lower() in ("-noac", "-no-ca", "-noca", "--no-caption", "-no_caption"):
+        if arg.lower() in ("-noac", "-noca", "-no-ca", "--no-caption", "-no_caption"):
             no_caption_mode = True
         else:
             clean_args.append(arg)
@@ -1493,52 +1457,69 @@ async def auto_cap_cmd(client, message: Message):
     dest_peer = None
     dest_topic_id = None
 
+    if arg_count >= 2:
+        start_arg = clean_args[0]
+        end_arg = clean_args[1]
+
     if arg_count == 2:
-        start_arg = clean_args[0]
-        end_arg = clean_args[1]
         if reply:
-            dest_peer = extract_chat_from_reply(reply)
+            dest_peer = reply.chat.id
             dest_topic_id = getattr(reply, "message_thread_id", None) or getattr(message, "message_thread_id", None)
-        elif message.chat.type in (ChatType.SUPERGROUP, ChatType.GROUP, ChatType.CHANNEL):
-            dest_peer = message.chat.id
-            dest_topic_id = getattr(message, "message_thread_id", None)
         else:
-            return await message.reply_text(
-                "❌ <b>Destination chat required in private DM!</b>\n\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat_or_topic_link&gt;</code>",
-                parse_mode=ParseMode.HTML
-            )
+            chat_type_name = getattr(getattr(message.chat, "type", None), "name", None) or str(message.chat.type)
+            if chat_type_name in ("SUPERGROUP", "GROUP", "CHANNEL", "ChatType.CHANNEL"):
+                dest_peer = message.chat.id
+                dest_topic_id = getattr(message, "message_thread_id", None)
+            else:
+                return await message.reply_text(
+                    "❌ <b>Target destination required in private DM!</b>\n\n"
+                    "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat_or_link&gt; [-noac]</code>",
+                    parse_mode=ParseMode.HTML
+                )
+
     elif arg_count == 3:
-        start_arg = clean_args[0]
-        end_arg = clean_args[1]
-        if reply and clean_args[2].lstrip("-").isdigit() and not re.match(r'(?:https?://)?t\.me/', clean_args[2]):
-            dest_peer = extract_chat_from_reply(reply)
+        # 3rd arg is topic id if numeric & replying; else destination
+        if clean_args[2].lstrip("-").isdigit() and reply:
+            dest_peer = reply.chat.id
             dest_topic_id = int(clean_args[2])
         else:
-            parsed_peer, parsed_topic = parse_destination_target(clean_args[2])
-            dest_peer = parsed_peer
-            dest_topic_id = parsed_topic or getattr(message, "message_thread_id", None)
-    elif arg_count == 4:
-        start_arg = clean_args[0]
-        end_arg = clean_args[1]
-        parsed_peer, parsed_topic = parse_destination_target(clean_args[2])
-        dest_peer = parsed_peer
+            target_chat_internal, target_topic, _ = parse_telegram_link(clean_args[2])
+            if target_chat_internal:
+                if isinstance(target_chat_internal, str) and target_chat_internal.startswith("@"):
+                    dest_peer = target_chat_internal
+                else:
+                    dest_peer = int(f"-100{target_chat_internal}")
+                dest_topic_id = target_topic
+            else:
+                dest_peer = normalize_channel_peer(clean_args[2])
+                dest_topic_id = getattr(message, "message_thread_id", None)
+
+    elif arg_count >= 4:
+        target_chat_internal, target_topic, _ = parse_telegram_link(clean_args[2])
+        if target_chat_internal:
+            if isinstance(target_chat_internal, str) and target_chat_internal.startswith("@"):
+                dest_peer = target_chat_internal
+            else:
+                dest_peer = int(f"-100{target_chat_internal}")
+        else:
+            dest_peer = normalize_channel_peer(clean_args[2])
         try:
             dest_topic_id = int(clean_args[3])
         except ValueError:
-            dest_topic_id = parsed_topic
+            dest_topic_id = target_topic
     else:
         usage_text = (
             "<b>Usage Instructions:</b>\n\n"
-            "1. <b>Directly inside Target Topic / Channel:</b>\n"
+            "1. <b>Inside Target Channel or Forum Topic:</b>\n"
             "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>\n\n"
-            "2. <b>Via Reply to Target Message / Topic:</b>\n"
+            "2. <b>Via Reply to Message in Target Chat:</b>\n"
             "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>\n\n"
-            "3. <b>With Destination Link (Topic auto-detected from link):</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_topic_link&gt; [-noac]</code>"
+            "3. <b>With Target Chat and Optional Topic:</b>\n"
+            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [topic_id] [-noac]</code>"
         )
         return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
 
+    # Parse source links
     src1_chat, _, start_id = parse_telegram_link(start_arg)
     src2_chat, _, end_id = parse_telegram_link(end_arg)
 
@@ -1548,15 +1529,14 @@ async def auto_cap_cmd(client, message: Message):
     if src1_chat != src2_chat:
         return await message.reply_text("❌ Start and end links must be from the same source chat.", parse_mode=ParseMode.HTML)
 
-    # Resolve source chat id (private numeric link -> -100 prefix; public @username stays)
-    if isinstance(src1_chat, str) and src1_chat.lstrip("-").isdigit() and not src1_chat.startswith("@"):
-        from_channel = int(f"-100{src1_chat}")
-    else:
+    # Resolve source chat id
+    if isinstance(src1_chat, str) and src1_chat.startswith("@"):
         from_channel = src1_chat
+    else:
+        from_channel = int(f"-100{src1_chat}")
 
-    # Resolve destination peer (normalize numeric IDs)
-    dest_peer_resolved = normalize_channel_peer(dest_peer) if not isinstance(dest_peer, int) else dest_peer
-
+    # Resolve destination chat
+    dest_peer_resolved = dest_peer if isinstance(dest_peer, int) else normalize_channel_peer(dest_peer)
     try:
         dest_chat = await client.get_chat(dest_peer_resolved)
         real_dest_id = str(dest_chat.id)
@@ -1574,20 +1554,19 @@ async def auto_cap_cmd(client, message: Message):
     if start_id > end_id:
         start_id, end_id = end_id, start_id
 
-    try:
-        source_chat = await client.get_chat(from_channel)
-        is_source_protected = bool(getattr(source_chat, "has_protected_content", False) or getattr(source_chat, "noforwards", False))
-    except Exception as e:
-        return await message.reply_text(f"❌ Cannot access source chat: {e}", parse_mode=ParseMode.HTML)
-
+    # Load caption & settings (no channel-auth gating)
     caption_template = await load_caption(real_dest_id) or DEFAULT_CAPTION
     sticker_id = await load_sticker(real_dest_id) or DEFAULT_STICKER
     episode_header_enabled = await load_episode_header_setting(real_dest_id)
 
+    try:
+        await client.get_chat(from_channel)
+    except Exception as e:
+        return await message.reply_text(f"❌ Cannot access source chat: {e}", parse_mode=ParseMode.HTML)
+
     mode_label = "Auto-Arrange Only (-noac)" if no_caption_mode else "Auto-Caption"
-    transfer_mode = "Copy (Protected)" if is_source_protected else "Forward (Without Tag)"
     status_msg = await message.reply_text(
-        f"⏳ <i>Scanning messages ({mode_label} | {transfer_mode})...</i>",
+        f"⏳ <i>Scanning messages ({mode_label})...</i>",
         parse_mode=ParseMode.HTML
     )
 
@@ -1611,6 +1590,7 @@ async def auto_cap_cmd(client, message: Message):
     if not all_messages:
         return await status_msg.edit_text("❌ No messages found in the given range.", parse_mode=ParseMode.HTML)
 
+    # Episode titles (text + photo captions)
     title_map = await load_episode_titles(real_dest_id) or {}
     new_titles_found = False
 
@@ -1625,12 +1605,15 @@ async def auto_cap_cmd(client, message: Message):
     if new_titles_found:
         await save_episode_titles(real_dest_id, title_map)
 
-    # STRICTLY videos & documents only (skip photos/audios from grouping)
+    # Media grouping: STRICTLY videos & documents
     episodes = defaultdict(list)
     for msg in all_messages:
-        fname, ep_num = get_media_name_and_ep(msg)
-        if not fname or not (msg.video or msg.document):
+        if not (msg.video or msg.document):
             continue
+        fname = media_filename(msg)
+        if not fname:
+            continue
+        ep_num = _int_episode(fname)
         episodes[ep_num].append((fname, msg))
 
     if not episodes:
@@ -1644,7 +1627,6 @@ async def auto_cap_cmd(client, message: Message):
 
     await status_msg.edit_text(
         f"⏳ <b>Processing Task ({mode_label})</b>\n\n"
-        f"<b>Transfer Mode:</b> <code>{transfer_mode}</code>\n"
         f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
         f"<b>Total Media:</b> <code>{total_files}</code>\n"
         f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
@@ -1657,33 +1639,34 @@ async def auto_cap_cmd(client, message: Message):
         items_in_ep = episodes[ep_num]
         sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
 
+        # Episode header
         if episode_header_enabled:
             header_text = format_episode_title_message(title_map, ep_num)
             try:
-                send_kwargs = dict(
+                h_kwargs = dict(
                     chat_id=dest_int_id,
                     text=header_text,
                     parse_mode=ParseMode.HTML,
                 )
                 if dest_topic_id is not None:
-                    send_kwargs["message_thread_id"] = dest_topic_id
-                await client.send_message(**send_kwargs)
+                    h_kwargs["message_thread_id"] = dest_topic_id
+                await client.send_message(**h_kwargs)
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 1)
                 try:
-                    await client.send_message(**send_kwargs)
-                except Exception as e:
-                    print(f"[ac] Failed to send episode header for ep {ep_num} after FloodWait: {e}")
+                    await client.send_message(**h_kwargs)
+                except Exception as e2:
+                    print(f"[ac] Header retry after FloodWait failed for ep {ep_num}: {e2}")
             except Exception as e:
-                print(f"[ac] Failed to send episode header for ep {ep_num}: {e}")
+                print(f"[ac] Failed to send header for ep {ep_num}: {e}")
 
+        # Media items
         for fname, msg in sorted_items:
             if no_caption_mode:
                 cap = msg.caption or ""
             else:
-                media_obj = msg.document or msg.video
-                filesize = getattr(media_obj, "file_size", None)
-                duration = getattr(msg.video, "duration", None) if msg.video else None
+                filesize = getattr(msg.document or msg.video, "file_size", None)
+                duration = getattr(msg.video, "duration", None)
                 clean_filename = fname.rsplit(".", 1)[0] if "." in fname else fname
                 cap = (
                     caption_template
@@ -1695,33 +1678,50 @@ async def auto_cap_cmd(client, message: Message):
                     .replace("{episode}", html.escape(str(extract_episode(fname) or "")))
                 )
 
-            await send_or_forward_media(
-                client=client,
-                source_chat_id=from_channel,
-                dest_chat_id=dest_int_id,
-                msg=msg,
-                caption=cap,
-                message_thread_id=dest_topic_id,
-                is_source_protected=is_source_protected,
-                no_caption_mode=no_caption_mode,
-            )
-
-            await asyncio.sleep(3)
-
-        if sticker_id:
             try:
-                stick_kwargs = dict(chat_id=dest_int_id, sticker=sticker_id)
-                if dest_topic_id is not None:
-                    stick_kwargs["message_thread_id"] = dest_topic_id
-                await client.send_sticker(**stick_kwargs)
+                await copy_media_preserving_cover(
+                    client=client,
+                    target_chat_id=dest_int_id,
+                    msg=msg,
+                    caption=cap,
+                    message_thread_id=dest_topic_id
+                )
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 1)
                 try:
-                    await client.send_sticker(**stick_kwargs)
-                except Exception as e:
-                    print(f"[ac] Failed to send separator sticker after FloodWait: {e}")
+                    await copy_media_preserving_cover(
+                        client=client,
+                        target_chat_id=dest_int_id,
+                        msg=msg,
+                        caption=cap,
+                        message_thread_id=dest_topic_id
+                    )
+                except Exception as inner_e:
+                    print(f"[ac] Retry failed for msg {msg.id}: {inner_e}")
+                    import traceback
+                    traceback.print_exc()
             except Exception as e:
-                print(f"[ac] Failed to send separator sticker: {e}")
+                print(f"[ac] Media dispatch error for msg {msg.id}: {e}")
+                import traceback
+                traceback.print_exc()
+
+            await asyncio.sleep(3)
+
+        # Episode separator sticker
+        if sticker_id:
+            try:
+                s_kwargs = dict(chat_id=dest_int_id, sticker=sticker_id)
+                if dest_topic_id is not None:
+                    s_kwargs["message_thread_id"] = dest_topic_id
+                await client.send_sticker(**s_kwargs)
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value + 1)
+                try:
+                    await client.send_sticker(**s_kwargs)
+                except Exception as e2:
+                    print(f"[ac] Sticker retry after FloodWait failed: {e2}")
+            except Exception as e:
+                print(f"[ac] Failed to send sticker: {e}")
 
         processed_eps += 1
 
@@ -1736,13 +1736,13 @@ async def auto_cap_cmd(client, message: Message):
             except Exception:
                 pass
 
-    completion_text = (
+    await status_msg.edit_text(
         f"✅ <b>Task completed successfully!</b>\n\n"
         f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
         f"<b>Total Media Sent:</b> <code>{total_files}</code>\n"
-        f"<b>Breakdown:</b> <code>{breakdown_str}</code>"
+        f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
+        parse_mode=ParseMode.HTML
     )
-    await status_msg.edit_text(completion_text, parse_mode=ParseMode.HTML)
 
 
 @app.on_message(filters.private & filters.command(["sept"]))
