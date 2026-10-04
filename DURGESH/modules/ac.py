@@ -2,13 +2,14 @@ import html
 import re
 import os
 import asyncio
+import traceback
 from collections import defaultdict
 from typing import Union, Tuple, Optional
 
 from pyrogram import filters, raw
 from pyrogram.file_id import FileId
 from pyrogram.types import Message, Chat, LinkPreviewOptions
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatType
 from pyrogram.errors import FloodWait
 
 from DURGESH import app
@@ -1485,262 +1486,265 @@ async def _flush_bulk(client, chat_id: str, messages: list):
         traceback.print_exc()
 
 
+def parse_ac_telegram_link(link: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+    """
+    Universally parse Telegram links:
+    - 2-Part (Channel/Chat): https://t.me/c/3951520904/33      -> ('3951520904', None, 33)
+    - 3-Part (Forum Topic):  https://t.me/c/3951520904/31/33   -> ('3951520904', 31, 33)
+    """
+    if not link:
+        return None, None, None
+    m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', link.strip())
+    if not m:
+        return None, None, None
+    chat_internal = m.group(1)
+    if m.group(2) is not None:
+        topic_id = int(m.group(2))
+        msg_id = int(m.group(3))
+    else:
+        topic_id = None
+        msg_id = int(m.group(3))
+    return chat_internal, topic_id, msg_id
+
+
+def resolve_ac_destination(target_str: str) -> Tuple[Union[int, str], Optional[int]]:
+    """Resolve destination chat and optional topic from a string (ID, username, or topic link)."""
+    target = target_str.strip()
+    chat_int, topic_id, _ = parse_ac_telegram_link(target)
+    if chat_int:
+        return int(f"-100{chat_int}"), topic_id
+    return normalize_channel_peer(target), None
+
+
+@app.on_message(filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
     """
-    Robust /ac command supporting:
-    - Direct execution inside Channel or Forum Topic: /ac <start_link> <end_link> [-noac]
-    - Reply Mode: /ac <start_link> <end_link> [-noac]
-    - Explicit Mode: /ac <start_link> <end_link> <target_chat> [dest_topic_id] [-noac]
+    Universal /ac command supporting:
+    1. Direct execution in Channel or Topic:
+       /ac <start_link> <end_link> [-noac]
+    2. Reply Mode (reply to any message in destination chat/topic):
+       /ac <start_link> <end_link> [-noac]
+    3. Explicit Mode:
+       /ac <start_link> <end_link> <target_chat_or_link> [dest_topic_id] [-noac]
     """
-    raw_args = list(message.command[1:])
+    try:
+        raw_args = list(message.command[1:])
 
-    no_caption_mode = False
-    clean_args = []
-    for arg in raw_args:
-        if arg.lower() in ("-noac", "-noca", "-no-ca", "--no-caption", "-no_caption"):
-            no_caption_mode = True
-        else:
-            clean_args.append(arg)
-
-    arg_count = len(clean_args)
-    reply = message.reply_to_message
-
-    start_arg = None
-    end_arg = None
-    dest_peer = None
-    dest_topic_id = None
-
-    if arg_count >= 2:
-        start_arg = clean_args[0]
-        end_arg = clean_args[1]
-
-    if arg_count == 2:
-        if reply:
-            dest_peer = reply.chat.id
-            dest_topic_id = getattr(reply, "message_thread_id", None) or getattr(message, "message_thread_id", None)
-        else:
-            chat_type_name = getattr(getattr(message.chat, "type", None), "name", None) or str(message.chat.type)
-            if chat_type_name in ("SUPERGROUP", "GROUP", "CHANNEL", "ChatType.CHANNEL"):
-                dest_peer = message.chat.id
-                dest_topic_id = getattr(message, "message_thread_id", None)
+        no_caption_mode = False
+        clean_args = []
+        for arg in raw_args:
+            if arg.lower() in ("-noac", "-noca", "-no-ca", "--no-caption", "-no_caption"):
+                no_caption_mode = True
             else:
-                return await message.reply_text(
-                    "❌ <b>Target destination required in private DM!</b>\n\n"
-                    "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat_or_link&gt; [-noac]</code>",
-                    parse_mode=ParseMode.HTML
-                )
+                clean_args.append(arg)
 
-    elif arg_count == 3:
-        # 3rd arg is topic id if numeric & replying; else destination
-        if clean_args[2].lstrip("-").isdigit() and reply:
-            dest_peer = reply.chat.id
-            dest_topic_id = int(clean_args[2])
-        else:
-            target_chat_internal, target_topic, _ = parse_telegram_link(clean_args[2])
-            if target_chat_internal:
-                if isinstance(target_chat_internal, str) and target_chat_internal.startswith("@"):
-                    dest_peer = target_chat_internal
+        arg_count = len(clean_args)
+        reply = message.reply_to_message
+
+        start_arg = None
+        end_arg = None
+        dest_peer = None
+        dest_topic_id = None
+
+        if arg_count >= 2:
+            start_arg = clean_args[0]
+            end_arg = clean_args[1]
+
+        if arg_count == 2:
+            if reply:
+                dest_peer = reply.chat.id
+                dest_topic_id = getattr(reply, "message_thread_id", None) or getattr(message, "message_thread_id", None)
+            else:
+                chat_type_str = str(message.chat.type).upper()
+                if chat_type_str in ("SUPERGROUP", "GROUP", "CHANNEL", "CHATTYPE.SUPERGROUP", "CHATTYPE.CHANNEL", "CHATTYPE.GROUP"):
+                    dest_peer = message.chat.id
+                    dest_topic_id = getattr(message, "message_thread_id", None)
                 else:
-                    dest_peer = int(f"-100{target_chat_internal}")
-                dest_topic_id = target_topic
-            else:
-                dest_peer = normalize_channel_peer(clean_args[2])
-                dest_topic_id = getattr(message, "message_thread_id", None)
+                    usage_msg = (
+                        "<b>❌ Destination required in private DM!</b>\n\n"
+                        "<b>Usage:</b>\n"
+                        "1. <code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [-noac]</code>\n"
+                        "2. <code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;topic_link&gt; [-noac]</code>\n"
+                        "3. Reply to any message in destination with: <code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>"
+                    )
+                    return await message.reply_text(usage_msg, parse_mode=ParseMode.HTML)
 
-    elif arg_count >= 4:
-        target_chat_internal, target_topic, _ = parse_telegram_link(clean_args[2])
-        if target_chat_internal:
-            if isinstance(target_chat_internal, str) and target_chat_internal.startswith("@"):
-                dest_peer = target_chat_internal
+        elif arg_count == 3:
+            if clean_args[2].lstrip("-").isdigit() and reply:
+                dest_peer = reply.chat.id
+                dest_topic_id = int(clean_args[2])
             else:
-                dest_peer = int(f"-100{target_chat_internal}")
+                parsed_peer, parsed_topic = resolve_ac_destination(clean_args[2])
+                dest_peer = parsed_peer
+                dest_topic_id = parsed_topic or getattr(message, "message_thread_id", None)
+
+        elif arg_count >= 4:
+            parsed_peer, parsed_topic = resolve_ac_destination(clean_args[2])
+            dest_peer = parsed_peer
+            try:
+                dest_topic_id = int(clean_args[3])
+            except ValueError:
+                dest_topic_id = parsed_topic
         else:
-            dest_peer = normalize_channel_peer(clean_args[2])
-        try:
-            dest_topic_id = int(clean_args[3])
-        except ValueError:
-            dest_topic_id = target_topic
-    else:
-        usage_text = (
-            "<b>Usage Instructions:</b>\n\n"
-            "1. <b>Inside Target Channel or Forum Topic:</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>\n\n"
-            "2. <b>Via Reply to Message in Target Chat:</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>\n\n"
-            "3. <b>With Target Chat and Optional Topic:</b>\n"
-            "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [topic_id] [-noac]</code>"
-        )
-        return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
+            usage_text = (
+                "<b>Usage Instructions:</b>\n\n"
+                "1. <b>Inside Destination Channel or Topic:</b>\n"
+                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>\n\n"
+                "2. <b>With Destination Chat / Topic Link:</b>\n"
+                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat_or_topic_link&gt; [-noac]</code>\n\n"
+                "3. <b>Via Reply in Target Chat:</b>\n"
+                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>"
+            )
+            return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
 
-    # Parse source links
-    src1_chat, _, start_id = parse_telegram_link(start_arg)
-    src2_chat, _, end_id = parse_telegram_link(end_arg)
+        src1_chat, _, start_id = parse_ac_telegram_link(start_arg)
+        src2_chat, _, end_id = parse_ac_telegram_link(end_arg)
 
-    if not src1_chat or not src2_chat or not start_id or not end_id:
-        return await message.reply_text("❌ Please provide valid <code>t.me/c/...</code> links.", parse_mode=ParseMode.HTML)
+        if not src1_chat or not src2_chat or not start_id or not end_id:
+            return await message.reply_text("❌ <b>Invalid links!</b> Please provide valid <code>t.me/c/...</code> links.", parse_mode=ParseMode.HTML)
 
-    if src1_chat != src2_chat:
-        return await message.reply_text("❌ Start and end links must be from the same source chat.", parse_mode=ParseMode.HTML)
+        if src1_chat != src2_chat:
+            return await message.reply_text("❌ <b>Mismatch:</b> Start and end links must be from the same source chat.", parse_mode=ParseMode.HTML)
 
-    # Resolve source chat id
-    if isinstance(src1_chat, str) and src1_chat.startswith("@"):
-        from_channel = src1_chat
-    else:
         from_channel = int(f"-100{src1_chat}")
 
-    # Resolve destination chat
-    dest_peer_resolved = dest_peer if isinstance(dest_peer, int) else normalize_channel_peer(dest_peer)
-    try:
-        dest_chat = await client.get_chat(dest_peer_resolved)
-        real_dest_id = str(dest_chat.id)
-        dest_int_id = dest_chat.id
-    except Exception as e:
-        return await message.reply_text(f"❌ Cannot access destination chat: {e}", parse_mode=ParseMode.HTML)
-
-    try:
-        member = await client.get_chat_member(dest_int_id, "me")
-        if not (member.privileges and member.privileges.can_post_messages):
-            return await message.reply_text("❌ <b>Bot lacks posting permissions in destination chat!</b>", parse_mode=ParseMode.HTML)
-    except Exception as e:
-        return await message.reply_text(f"❌ Unable to verify bot permissions: {e}", parse_mode=ParseMode.HTML)
-
-    if start_id > end_id:
-        start_id, end_id = end_id, start_id
-
-    # Load caption & settings (no channel-auth gating)
-    caption_template = await load_caption(real_dest_id) or DEFAULT_CAPTION
-    sticker_id = await load_sticker(real_dest_id) or DEFAULT_STICKER
-    episode_header_enabled = await load_episode_header_setting(real_dest_id)
-
-    try:
-        await client.get_chat(from_channel)
-    except Exception as e:
-        return await message.reply_text(f"❌ Cannot access source chat: {e}", parse_mode=ParseMode.HTML)
-
-    mode_label = "Auto-Arrange Only (-noac)" if no_caption_mode else "Auto-Caption"
-    status_msg = await message.reply_text(
-        f"⏳ <i>Scanning messages ({mode_label})...</i>",
-        parse_mode=ParseMode.HTML
-    )
-
-    msg_ids = list(range(start_id, end_id + 1))
-    CHUNK = 200
-    all_messages = []
-
-    for i in range(0, len(msg_ids), CHUNK):
-        chunk_ids = msg_ids[i:i + CHUNK]
         try:
-            msgs = await client.get_messages(from_channel, chunk_ids)
-            all_messages.extend([m for m in msgs if m and not getattr(m, "empty", False)])
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value + 1)
-            msgs = await client.get_messages(from_channel, chunk_ids)
-            all_messages.extend([m for m in msgs if m and not getattr(m, "empty", False)])
+            dest_peer_resolved = dest_peer if isinstance(dest_peer, int) else normalize_channel_peer(dest_peer)
+            dest_chat = await client.get_chat(dest_peer_resolved)
+            real_dest_id = str(dest_chat.id)
+            dest_int_id = dest_chat.id
         except Exception as e:
-            print(f"[ac] Error fetching chunk: {e}")
-            continue
+            return await message.reply_text(f"❌ <b>Cannot access destination chat:</b> <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
-    if not all_messages:
-        return await status_msg.edit_text("❌ No messages found in the given range.", parse_mode=ParseMode.HTML)
+        try:
+            member = await client.get_chat_member(dest_int_id, "me")
+            if not (member.privileges and member.privileges.can_post_messages):
+                return await message.reply_text("❌ <b>Bot lacks posting permissions in destination chat!</b>", parse_mode=ParseMode.HTML)
+        except Exception as e:
+            return await message.reply_text(f"❌ <b>Unable to verify bot permissions:</b> <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
-    # Episode titles (text + photo captions)
-    title_map = await load_episode_titles(real_dest_id) or {}
-    new_titles_found = False
+        if start_id > end_id:
+            start_id, end_id = end_id, start_id
 
-    for msg in all_messages:
-        text_content = msg.text or msg.caption
-        if text_content:
-            parsed = parse_episode_title_lines(text_content)
-            if parsed:
-                title_map.update(parsed)
-                new_titles_found = True
+        caption_template = await load_caption(real_dest_id) or DEFAULT_CAPTION
+        sticker_id = await load_sticker(real_dest_id)
+        episode_header_enabled = await load_episode_header_setting(real_dest_id)
 
-    if new_titles_found:
-        await save_episode_titles(real_dest_id, title_map)
+        try:
+            await client.get_chat(from_channel)
+        except Exception as e:
+            return await message.reply_text(f"❌ <b>Cannot access source chat:</b> <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
-    # Media grouping: STRICTLY videos & documents
-    episodes = defaultdict(list)
-    for msg in all_messages:
-        if not (msg.video or msg.document):
-            continue
-        fname = media_filename(msg)
-        if not fname:
-            continue
-        ep_num = _int_episode(fname)
-        episodes[ep_num].append((fname, msg))
+        mode_label = "Auto-Arrange Only (-noac)" if no_caption_mode else "Auto-Caption"
+        status_msg = await message.reply_text(
+            f"⏳ <i>Scanning messages ({mode_label})...</i>",
+            parse_mode=ParseMode.HTML
+        )
 
-    if not episodes:
-        return await status_msg.edit_text("❌ No supported media (videos/documents) found to process.", parse_mode=ParseMode.HTML)
+        msg_ids = list(range(start_id, end_id + 1))
+        CHUNK = 200
+        all_messages = []
 
-    total_eps = len(episodes)
-    total_files = sum(len(v) for v in episodes.values())
-    sorted_ep_keys = sorted(episodes.keys())
-
-    breakdown_str = " ".join(str(len(episodes[ep])) for ep in sorted_ep_keys)
-
-    await status_msg.edit_text(
-        f"⏳ <b>Processing Task ({mode_label})</b>\n\n"
-        f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
-        f"<b>Total Media:</b> <code>{total_files}</code>\n"
-        f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
-        parse_mode=ParseMode.HTML
-    )
-
-    processed_eps = 0
-
-    for ep_num in sorted_ep_keys:
-        items_in_ep = episodes[ep_num]
-        sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
-
-        # Episode header
-        if episode_header_enabled:
-            header_text = format_episode_title_message(title_map, ep_num)
+        for i in range(0, len(msg_ids), CHUNK):
+            chunk_ids = msg_ids[i:i + CHUNK]
             try:
-                h_kwargs = dict(
-                    chat_id=dest_int_id,
-                    text=header_text,
-                    parse_mode=ParseMode.HTML,
-                )
-                if dest_topic_id is not None:
-                    h_kwargs["message_thread_id"] = dest_topic_id
-                await client.send_message(**h_kwargs)
+                msgs = await client.get_messages(from_channel, chunk_ids)
+                all_messages.extend([m for m in msgs if m and not getattr(m, "empty", False)])
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 1)
-                try:
-                    await client.send_message(**h_kwargs)
-                except Exception as e2:
-                    print(f"[ac] Header retry after FloodWait failed for ep {ep_num}: {e2}")
+                msgs = await client.get_messages(from_channel, chunk_ids)
+                all_messages.extend([m for m in msgs if m and not getattr(m, "empty", False)])
             except Exception as e:
-                print(f"[ac] Failed to send header for ep {ep_num}: {e}")
+                print(f"[ac] Error fetching chunk {chunk_ids[0]}-{chunk_ids[-1]}: {e}")
+                continue
 
-        # Media items
-        for fname, msg in sorted_items:
-            if no_caption_mode:
-                cap = msg.caption or ""
-            else:
-                filesize = getattr(msg.document or msg.video, "file_size", None)
-                duration = getattr(msg.video, "duration", None)
-                clean_filename = fname.rsplit(".", 1)[0] if "." in fname else fname
-                cap = (
-                    caption_template
-                    .replace("{filename}", html.escape(str(clean_filename)))
-                    .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
-                    .replace("{duration}", html.escape(str(format_duration(duration))))
-                    .replace("{quality}", html.escape(str(extract_quality(fname) or "")))
-                    .replace("{season}", html.escape(str(extract_season(fname) or "")))
-                    .replace("{episode}", html.escape(str(extract_episode(fname) or "")))
-                )
+        if not all_messages:
+            return await status_msg.edit_text("❌ <b>No messages found in the specified range.</b>", parse_mode=ParseMode.HTML)
 
-            try:
-                await copy_media_preserving_cover(
-                    client=client,
-                    target_chat_id=dest_int_id,
-                    msg=msg,
-                    caption=cap,
-                    message_thread_id=dest_topic_id
-                )
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 1)
+        title_map = await load_episode_titles(real_dest_id) or {}
+        new_titles_found = False
+
+        for msg in all_messages:
+            text_content = msg.text or msg.caption
+            if text_content:
+                parsed = parse_episode_title_lines(text_content)
+                if parsed:
+                    title_map.update(parsed)
+                    new_titles_found = True
+
+        if new_titles_found:
+            await save_episode_titles(real_dest_id, title_map)
+
+        episodes = defaultdict(list)
+        for msg in all_messages:
+            if not (msg.video or msg.document):
+                continue
+            fname = media_filename(msg)
+            if not fname:
+                continue
+            ep_num = _int_episode(fname)
+            episodes[ep_num].append((fname, msg))
+
+        if not episodes:
+            return await status_msg.edit_text("❌ <b>No playable media (videos/documents) found to process.</b>", parse_mode=ParseMode.HTML)
+
+        total_eps = len(episodes)
+        total_files = sum(len(v) for v in episodes.values())
+        sorted_ep_keys = sorted(episodes.keys())
+
+        breakdown_str = " ".join(str(len(episodes[ep])) for ep in sorted_ep_keys)
+
+        await status_msg.edit_text(
+            f"⏳ <b>Processing Task ({mode_label})</b>\n\n"
+            f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
+            f"<b>Total Media:</b> <code>{total_files}</code>\n"
+            f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
+            parse_mode=ParseMode.HTML
+        )
+
+        processed_eps = 0
+
+        for ep_num in sorted_ep_keys:
+            items_in_ep = episodes[ep_num]
+            sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
+
+            if episode_header_enabled:
+                header_text = format_episode_title_message(title_map, ep_num)
+                try:
+                    h_kwargs = dict(
+                        chat_id=dest_int_id,
+                        text=header_text,
+                        parse_mode=ParseMode.HTML,
+                    )
+                    if dest_topic_id is not None:
+                        h_kwargs["message_thread_id"] = dest_topic_id
+                    await client.send_message(**h_kwargs)
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                    try:
+                        await client.send_message(**h_kwargs)
+                    except Exception as e2:
+                        print(f"[ac] Header retry after FloodWait failed for ep {ep_num}: {e2}")
+                except Exception as e:
+                    print(f"[ac] Failed to send header for ep {ep_num}: {e}")
+
+            for fname, msg in sorted_items:
+                if no_caption_mode:
+                    cap = msg.caption or ""
+                else:
+                    filesize = getattr(msg.document or msg.video, "file_size", None)
+                    duration = getattr(msg.video, "duration", None)
+                    clean_filename = fname.rsplit(".", 1)[0] if "." in fname else fname
+                    cap = (
+                        caption_template
+                        .replace("{filename}", html.escape(str(clean_filename)))
+                        .replace("{filesize}", html.escape(str(get_readable_file_size(filesize))))
+                        .replace("{duration}", html.escape(str(format_duration(duration))))
+                        .replace("{quality}", html.escape(str(extract_quality(fname) or "")))
+                        .replace("{season}", html.escape(str(extract_season(fname) or "")))
+                        .replace("{episode}", html.escape(str(extract_episode(fname) or "")))
+                    )
+
                 try:
                     await copy_media_preserving_cover(
                         client=client,
@@ -1749,53 +1753,71 @@ async def auto_cap_cmd(client, message: Message):
                         caption=cap,
                         message_thread_id=dest_topic_id
                     )
-                except Exception as inner_e:
-                    print(f"[ac] Retry failed for msg {msg.id}: {inner_e}")
-                    import traceback
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                    try:
+                        await copy_media_preserving_cover(
+                            client=client,
+                            target_chat_id=dest_int_id,
+                            msg=msg,
+                            caption=cap,
+                            message_thread_id=dest_topic_id
+                        )
+                    except Exception as inner_e:
+                        print(f"[ac] Retry copy failed for msg {msg.id}: {inner_e}")
+                        traceback.print_exc()
+                except Exception as e:
+                    print(f"[ac] Media transmission error for msg {msg.id}: {e}")
                     traceback.print_exc()
-            except Exception as e:
-                print(f"[ac] Media dispatch error for msg {msg.id}: {e}")
-                import traceback
-                traceback.print_exc()
 
-            await asyncio.sleep(3)
+                await asyncio.sleep(3)
 
-        # Episode separator sticker
-        if sticker_id:
-            try:
-                s_kwargs = dict(chat_id=dest_int_id, sticker=sticker_id)
-                if dest_topic_id is not None:
-                    s_kwargs["message_thread_id"] = dest_topic_id
-                await client.send_sticker(**s_kwargs)
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 1)
+            if sticker_id:
                 try:
+                    s_kwargs = dict(chat_id=dest_int_id, sticker=sticker_id)
+                    if dest_topic_id is not None:
+                        s_kwargs["message_thread_id"] = dest_topic_id
                     await client.send_sticker(**s_kwargs)
-                except Exception as e2:
-                    print(f"[ac] Sticker retry after FloodWait failed: {e2}")
-            except Exception as e:
-                print(f"[ac] Failed to send sticker: {e}")
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 1)
+                    try:
+                        await client.send_sticker(**s_kwargs)
+                    except Exception as e2:
+                        print(f"[ac] Sticker retry after FloodWait failed for ep {ep_num}: {e2}")
+                except Exception as e:
+                    print(f"[ac] Failed to send separator sticker for ep {ep_num}: {e}")
 
-        processed_eps += 1
+            processed_eps += 1
 
-        if processed_eps % 5 == 0 or processed_eps == total_eps:
-            try:
-                await status_msg.edit_text(
-                    f"⏳ <b>Processing Task ({mode_label})</b>\n\n"
-                    f"<b>Progress:</b> <b>{processed_eps}/{total_eps}</b> episodes done\n"
-                    f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception:
-                pass
+            if processed_eps % 5 == 0 or processed_eps == total_eps:
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ <b>Processing Task ({mode_label})</b>\n\n"
+                        f"<b>Progress:</b> <b>{processed_eps}/{total_eps}</b> episodes done\n"
+                        f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
 
-    await status_msg.edit_text(
-        f"✅ <b>Task completed successfully!</b>\n\n"
-        f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
-        f"<b>Total Media Sent:</b> <code>{total_files}</code>\n"
-        f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
-        parse_mode=ParseMode.HTML
-    )
+        await status_msg.edit_text(
+            f"✅ <b>Task completed successfully!</b>\n\n"
+            f"<b>Total Episodes:</b> <code>{total_eps}</code>\n"
+            f"<b>Total Media Sent:</b> <code>{total_files}</code>\n"
+            f"<b>Breakdown:</b> <code>{breakdown_str}</code>",
+            parse_mode=ParseMode.HTML
+        )
+
+    except Exception as fatal_ac_err:
+        print(f"[ac] FATAL ERROR in auto_cap_cmd: {fatal_ac_err}")
+        traceback.print_exc()
+        try:
+            await message.reply_text(
+                f"❌ <b>Command Execution Failed:</b>\n<code>{html.escape(str(fatal_ac_err))}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
 
 
 @app.on_message(filters.private & filters.command(["sept"]))
