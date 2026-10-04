@@ -1100,8 +1100,9 @@ async def apply_title_to_captionless_output(client, chat_id: int, message_id: in
 
 bulk_bucket: dict[str, list[Message]] = defaultdict(list)
 bulk_tasks: dict[str, asyncio.Task] = {}
-BULK_WAIT = 3
-LOCK = asyncio.Lock()
+bulk_channel_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+BULK_IDLE_SECONDS = 4
+POLL_INTERVAL = 1
 _CLEANUP_RAN = False
 
 
@@ -1205,18 +1206,73 @@ async def handle_bulk_channel(client, message: Message):
         if not (message.text or message.document or message.video or message.audio or message.photo):
             return
 
-        async with LOCK:
-            bulk_bucket[chat_id].append(message)
+        # Append the new message into the bucket under a brief lock.
+        # If a flush is currently RUNNING (channel lock held), just append and return —
+        # the new message will be picked up by the next scheduler pass.
+        if chat_id not in bulk_bucket:
+            bulk_bucket[chat_id] = []
+        bulk_bucket[chat_id].append(message)
 
-            if chat_id in bulk_tasks and not bulk_tasks[chat_id].done():
-                bulk_tasks[chat_id].cancel()
-
+        # Only schedule/restart the debounce watcher.
+        # NEVER cancel a running flush task (that was the mid-batch cancellation trap).
+        existing = bulk_tasks.get(chat_id)
+        if existing is None or existing.done():
             bulk_tasks[chat_id] = asyncio.create_task(
-                _flush_bulk(client, chat_id, BULK_WAIT)
+                _bulk_idle_watcher(client, chat_id)
             )
 
     except Exception as e:
         print(f"Bulk handler error: {e}")
+
+
+async def _bulk_idle_watcher(client, chat_id: str):
+    """Wait-until-idle debounce: poll bucket size until it stays unchanged for
+    BULK_IDLE_SECONDS (all forwarded files have landed), then perform the flush
+    under a per-channel lock so concurrent arrivals cannot cancel an in-progress batch.
+    """
+    try:
+        last_size = -1
+        idle_for = 0
+        while True:
+            await asyncio.sleep(POLL_INTERVAL)
+            cur_size = len(bulk_bucket.get(chat_id, []))
+            if cur_size == last_size and cur_size > 0:
+                idle_for += POLL_INTERVAL
+            else:
+                idle_for = 0
+                last_size = cur_size
+            if cur_size > 0 and idle_for >= BULK_IDLE_SECONDS:
+                break
+            if cur_size == 0 and idle_for >= BULK_IDLE_SECONDS:
+                bulk_tasks.pop(chat_id, None)
+                return
+
+        # Acquire per-channel lock so no new handler invocation can interrupt us.
+        chan_lock = bulk_channel_locks[chat_id]
+        async with chan_lock:
+            # Drain the bucket
+            messages = list(bulk_bucket.pop(chat_id, []))
+            bulk_tasks.pop(chat_id, None)
+            if messages:
+                await _flush_bulk(client, chat_id, messages)
+
+        # After flush, if new messages arrived while we were processing,
+        # immediately re-schedule a new watcher for them.
+        if chat_id in bulk_bucket and bulk_bucket[chat_id]:
+            existing = bulk_tasks.get(chat_id)
+            if existing is None or existing.done():
+                bulk_tasks[chat_id] = asyncio.create_task(
+                    _bulk_idle_watcher(client, chat_id)
+                )
+    except asyncio.CancelledError:
+        # Watcher can be cancelled by the next message arriving — that's fine,
+        # a new watcher will be scheduled. Never propagate during active flush.
+        pass
+    except Exception as e:
+        print(f"[bulk] Idle watcher fatal for chat {chat_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        bulk_tasks.pop(chat_id, None)
 
 
 def _nearest_title_for_media(messages: list[Message], media_message: Message) -> Optional[str]:
@@ -1242,48 +1298,30 @@ def _nearest_title_for_media(messages: list[Message], media_message: Message) ->
     return None
 
 
-async def _flush_bulk(client, chat_id: str, delay: int):
+async def _flush_bulk(client, chat_id: str, messages: list):
     """
-    Process buffered in-channel posts:
-    - Custom Captions: Always applied to videos and documents.
-    - EPT (Episode Header Title): Sent only when episode_header_enabled is True.
-    - Separator Sticker: ALWAYS sent per episode if sticker_id exists (INDEPENDENT of EPT).
-    - Auto-Delete: Instantly deletes original forwarded posts right after the captioned post succeeds.
-    - Final Sweep: Cleans up orphan text title-cards and posters.
+    Process a ready batch of in-channel posts (called by _bulk_idle_watcher after
+    the idle debounce and under the per-channel lock so runs cannot be cancelled mid-batch):
+    - Custom Captions applied to videos/documents.
+    - EPT header sent only when episode_header_enabled is True.
+    - Separator sticker ALWAYS sent per-episode (INDEPENDENT of EPT).
+    - Strict media isolation: ONLY msg.video / msg.document enter episode groups;
+      photos & text are treated as title cards and cleaned up at the end.
+    - Instant auto-delete of the original forwarded post right after a successful
+      captioned re-upload (message_ids as list for cross-version safety).
+    - 3-second inter-media spacing; FloodWait sleep+retry at every call site.
     """
-    await asyncio.sleep(delay)
-
     int_chat_id = int(chat_id)
 
     try:
-        # Safe buffer retrieval using the repository's real globals under LOCK
-        async with LOCK:
-            raw_buf = bulk_bucket.pop(chat_id, None)
-            bulk_tasks.pop(chat_id, None)
-
-        if not raw_buf:
-            return
-
-        if isinstance(raw_buf, dict):
-            messages = list(raw_buf.values())
-        elif isinstance(raw_buf, list):
-            messages = list(raw_buf)
-        else:
-            messages = []
-
         if not messages:
             return
 
-        # Target channel authorization check
-        if not await is_channel_authed(chat_id):
-            return
-
-        # Load channel configurations with resilient schema checks
         caption_template = await load_caption(chat_id) or DEFAULT_CAPTION
         sticker_id = await load_sticker(chat_id) or DEFAULT_STICKER
         episode_header_enabled = await load_episode_header_setting(chat_id)
 
-        # Parse & save episode titles only when EPT is enabled
+        # Episode titles: extract text/captions only when EPT is ON
         title_map = {}
         if episode_header_enabled:
             title_map = await load_episode_titles(chat_id) or {}
@@ -1298,7 +1336,8 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             if new_titles:
                 await save_episode_titles(chat_id, title_map)
 
-        # Group strictly Videos and Documents (Photos are treated as title cards only)
+        # STRICT media isolation: only video / document become playable media.
+        # Photos (title posters) and text are excluded from episode groups.
         episodes = defaultdict(list)
         media_msg_ids = set()
 
@@ -1312,25 +1351,25 @@ async def _flush_bulk(client, chat_id: str, delay: int):
             episodes[ep_num].append((fname, msg))
             media_msg_ids.add(msg.id)
 
-        # If no playable media found, cleanup batch messages
         if not episodes:
             all_ids = [m.id for m in messages if m]
             if all_ids:
                 try:
                     for i in range(0, len(all_ids), 100):
-                        await client.delete_messages(chat_id=int_chat_id, message_ids=all_ids[i:i+100])
+                        await client.delete_messages(
+                            chat_id=int_chat_id, message_ids=all_ids[i:i+100]
+                        )
                 except Exception as e:
                     print(f"[bulk] Error cleaning non-media batch: {e}")
             return
 
         sorted_ep_keys = sorted(episodes.keys())
 
-        # Dispatch media grouped by episode
         for ep_num in sorted_ep_keys:
             items_in_ep = episodes[ep_num]
             sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
 
-            # 1. Episode Header (ONLY when EPT is enabled)
+            # 1. Episode header (only when EPT ON)
             if episode_header_enabled:
                 header_text = format_episode_title_message(title_map, ep_num)
                 try:
@@ -1352,7 +1391,7 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 except Exception as e:
                     print(f"[bulk] Failed to send episode header for ep {ep_num}: {e}")
 
-            # 2. Episode Media Items (Custom caption applied)
+            # 2. Media items (caption + copy + instant delete)
             for fname, msg in sorted_items:
                 filesize = getattr(msg.document or msg.video, "file_size", None)
                 duration = getattr(msg.video, "duration", None)
@@ -1391,47 +1430,46 @@ async def _flush_bulk(client, chat_id: str, delay: int):
                 except Exception as e:
                     print(f"[bulk] Media transmission failed for msg {msg.id}: {e}")
 
-                # 3. Guaranteed Instant Auto-Delete (always pass a LIST)
+                # Instant delete (LIST form for Kurigram cross-version safety)
                 if sent_success:
                     try:
                         await client.delete_messages(
-                            chat_id=int_chat_id,
-                            message_ids=[msg.id]
+                            chat_id=int_chat_id, message_ids=[msg.id]
                         )
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 1)
                         try:
                             await client.delete_messages(
-                                chat_id=int_chat_id,
-                                message_ids=[msg.id]
+                                chat_id=int_chat_id, message_ids=[msg.id]
                             )
                         except Exception as de2:
                             print(f"[bulk] Delete after FloodWait failed for msg {msg.id}: {de2}")
                     except Exception as del_err:
-                        print(f"[bulk] Failed to auto-delete original msg {msg.id}: {del_err}. Ensure 'Delete Messages' permission.")
+                        print(
+                            f"[bulk] Failed to auto-delete original msg {msg.id}: {del_err}. "
+                            f"Ensure 'Delete Messages' permission."
+                        )
 
                 await asyncio.sleep(3)
 
-            # 4. Episode Separator Sticker (ALWAYS sent per-episode, INDEPENDENT of EPT)
+            # 3. Separator sticker — ALWAYS per-episode, independent of EPT
             if sticker_id:
                 try:
                     await client.send_sticker(
-                        chat_id=int_chat_id,
-                        sticker=sticker_id
+                        chat_id=int_chat_id, sticker=sticker_id
                     )
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
                     try:
                         await client.send_sticker(
-                            chat_id=int_chat_id,
-                            sticker=sticker_id
+                            chat_id=int_chat_id, sticker=sticker_id
                         )
                     except Exception as e2:
                         print(f"[bulk] Sticker retry after FloodWait failed for ep {ep_num}: {e2}")
                 except Exception as e:
                     print(f"[bulk] Failed to send separator sticker for ep {ep_num}: {e}")
 
-        # 5. Final Sweep: Cleanup orphan text title cards and photo posters (batches of 100)
+        # 4. Final sweep: delete orphan non-media (text titles, photo posters, etc.)
         non_media_ids = [m.id for m in messages if m.id not in media_msg_ids]
         if non_media_ids:
             try:
