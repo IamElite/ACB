@@ -879,12 +879,24 @@ def parse_episode_title_lines(text: str) -> dict[str, str]:
 
 
 def media_filename(message: Message) -> Optional[str]:
+    """
+    Extract filename with caption & type fallback.
+    Ensures videos sent from mobile without file_name metadata are NEVER dropped.
+    """
+    if not message:
+        return None
     if message.document:
-        return message.document.file_name
+        return message.document.file_name or "Document"
     if message.video:
-        return message.video.file_name or "Video"
+        if message.video.file_name:
+            return message.video.file_name
+        if message.caption:
+            first_line = message.caption.strip().split("\n")[0]
+            if first_line:
+                return first_line
+        return f"Video_{message.id}.mp4"
     if message.audio:
-        return message.audio.file_name or "Audio"
+        return message.audio.file_name or f"Audio_{message.id}.mp3"
     if message.photo:
         return (message.caption or "").strip() or "Image"
     return None
@@ -1519,13 +1531,10 @@ def resolve_ac_destination(target_str: str) -> Tuple[Union[int, str], Optional[i
 @app.on_message(filters.command(["autocap", "ac"]))
 async def auto_cap_cmd(client, message: Message):
     """
-    Universal /ac command supporting:
-    1. Direct execution in Channel or Topic:
-       /ac <start_link> <end_link> [-noac]
-    2. Reply Mode (reply to any message in destination chat/topic):
-       /ac <start_link> <end_link> [-noac]
-    3. Explicit Mode:
-       /ac <start_link> <end_link> <target_chat_or_link> [dest_topic_id] [-noac]
+    Universal /ac command:
+    - DM forward-reply mode (auto-extract target channel)
+    - Direct channel/topic execution
+    - Explicit target chat / topic link argument
     """
     try:
         raw_args = list(message.command[1:])
@@ -1546,41 +1555,60 @@ async def auto_cap_cmd(client, message: Message):
         dest_peer = None
         dest_topic_id = None
 
+        is_dm = "PRIVATE" in str(message.chat.type).upper()
+
+        # 2. Destination Resolution
         if arg_count >= 2:
             start_arg = clean_args[0]
             end_arg = clean_args[1]
 
-        # 2. Flexible Destination Resolution (Forward-Reply Support)
         if arg_count == 2:
-            # Check if user replied to a forwarded message from the target channel
-            if reply:
+            if reply and is_dm:
+                # User replied in Bot DM: Extract target from forwarded message
+                forward_chat_id = None
                 origin = getattr(reply, "forward_origin", None)
                 if origin:
                     chat_obj = getattr(origin, "chat", None) or getattr(origin, "sender_chat", None)
-                    if chat_obj and hasattr(chat_obj, "id"):
-                        dest_peer = chat_obj.id
+                    if chat_obj and getattr(chat_obj, "id", None):
+                        forward_chat_id = chat_obj.id
                 elif getattr(reply, "forward_from_chat", None):
-                    dest_peer = reply.forward_from_chat.id
+                    forward_chat_id = reply.forward_from_chat.id
 
-                # If reply was inside a group/channel directly (not a DM forward)
-                if not dest_peer and str(reply.chat.type).upper() not in ("PRIVATE", "CHATTYPE.PRIVATE"):
-                    dest_peer = reply.chat.id
+                # Strict Guard: Only negative IDs starting with -100 are valid channels/supergroups
+                if forward_chat_id and str(forward_chat_id).startswith("-100"):
+                    dest_peer = forward_chat_id
+                    dest_topic_id = getattr(reply, "message_thread_id", None)
+                else:
+                    return await message.reply_text(
+                        "❌ <b>Target channel required in DM!</b>\n\n"
+                        "The message you replied to does not have a channel forward tag.\n\n"
+                        "<b>How to use:</b>\n"
+                        "1. Forward a post from your channel to DM (with forward tag) and reply.\n"
+                        "2. Or add target channel link/ID: <code>/ac &lt;start&gt; &lt;end&gt; &lt;target_chat&gt;</code>",
+                        parse_mode=ParseMode.HTML
+                    )
 
+            elif reply:
+                # Reply inside a Channel or Group/Topic directly
+                dest_peer = reply.chat.id
                 dest_topic_id = getattr(reply, "message_thread_id", None) or getattr(message, "message_thread_id", None)
 
-            elif str(message.chat.type).upper() not in ("PRIVATE", "CHATTYPE.PRIVATE"):
+            elif not is_dm:
+                # Command executed directly inside target channel or forum topic
                 dest_peer = message.chat.id
                 dest_topic_id = getattr(message, "message_thread_id", None)
 
-            if not dest_peer:
+            else:
                 return await message.reply_text(
-                    "❌ <b>Target channel not found!</b>\n\n"
-                    "Please reply to a message <b>FORWARDED from your target channel</b> (with forward tag).",
+                    "❌ <b>Destination required in private DM!</b>\n\n"
+                    "<b>Usage:</b>\n"
+                    "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat_or_link&gt; [-noac]</code>\n"
+                    "Or reply to a forwarded post from the channel with:\n"
+                    "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>",
                     parse_mode=ParseMode.HTML
                 )
 
         elif arg_count == 3:
-            # 3rd argument provided as target chat/link
             parsed_peer, parsed_topic = resolve_ac_destination(clean_args[2])
             dest_peer = parsed_peer
             dest_topic_id = parsed_topic or getattr(message, "message_thread_id", None)
@@ -1593,17 +1621,12 @@ async def auto_cap_cmd(client, message: Message):
             except ValueError:
                 dest_topic_id = parsed_topic
         else:
-            usage_text = (
-                "<b>Usage Instructions:</b>\n\n"
-                "1. <b>Inside Destination Channel or Topic:</b>\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>\n\n"
-                "2. <b>With Destination Chat / Topic Link:</b>\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat_or_topic_link&gt; [-noac]</code>\n\n"
-                "3. <b>Via Reply in Target Chat:</b>\n"
-                "<code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>"
+            return await message.reply_text(
+                "<b>Usage:</b> <code>/ac &lt;start_link&gt; &lt;end_link&gt; [target_chat] [-noac]</code>",
+                parse_mode=ParseMode.HTML
             )
-            return await message.reply_text(usage_text, parse_mode=ParseMode.HTML)
 
+        # 3. Parse Source Links
         src1_chat, _, start_id = parse_ac_telegram_link(start_arg)
         src2_chat, _, end_id = parse_ac_telegram_link(end_arg)
 
@@ -1615,14 +1638,15 @@ async def auto_cap_cmd(client, message: Message):
 
         from_channel = int(f"-100{src1_chat}")
 
+        # 4. Resolve & Verify Destination Chat
         try:
-            dest_peer_resolved = dest_peer if isinstance(dest_peer, int) else normalize_channel_peer(dest_peer)
-            dest_chat = await client.get_chat(dest_peer_resolved)
+            dest_chat = await client.get_chat(dest_peer)
             real_dest_id = str(dest_chat.id)
             dest_int_id = dest_chat.id
         except Exception as e:
             return await message.reply_text(f"❌ <b>Cannot access destination chat:</b> <code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
+        # 5. Check Bot Posting Permissions
         try:
             member = await client.get_chat_member(dest_int_id, "me")
             if not (member.privileges and member.privileges.can_post_messages):
@@ -1633,10 +1657,12 @@ async def auto_cap_cmd(client, message: Message):
         if start_id > end_id:
             start_id, end_id = end_id, start_id
 
+        # 6. Load Channel Configuration
         caption_template = await load_caption(real_dest_id) or DEFAULT_CAPTION
         sticker_id = await load_sticker(real_dest_id)
         episode_header_enabled = await load_episode_header_setting(real_dest_id)
 
+        # Source chat reachability
         try:
             await client.get_chat(from_channel)
         except Exception as e:
@@ -1648,6 +1674,7 @@ async def auto_cap_cmd(client, message: Message):
             parse_mode=ParseMode.HTML
         )
 
+        # 7. Fetch Messages in Range
         msg_ids = list(range(start_id, end_id + 1))
         CHUNK = 200
         all_messages = []
@@ -1666,8 +1693,13 @@ async def auto_cap_cmd(client, message: Message):
                 continue
 
         if not all_messages:
-            return await status_msg.edit_text("❌ <b>No messages found in the specified range.</b>", parse_mode=ParseMode.HTML)
+            return await status_msg.edit_text(
+                f"❌ <b>No messages found in range {start_id}–{end_id}!</b>\n"
+                f"Make sure bot is added to source channel (<code>{from_channel}</code>).",
+                parse_mode=ParseMode.HTML
+            )
 
+        # 8. Parse Episode Titles (from text and photo captions)
         title_map = await load_episode_titles(real_dest_id) or {}
         new_titles_found = False
 
@@ -1682,18 +1714,43 @@ async def auto_cap_cmd(client, message: Message):
         if new_titles_found:
             await save_episode_titles(real_dest_id, title_map)
 
+        # 9. Group strictly Videos and Documents (with diagnostic counters)
         episodes = defaultdict(list)
+        v_count = 0
+        d_count = 0
+        p_count = 0
+        t_count = 0
+
         for msg in all_messages:
+            if msg.video:
+                v_count += 1
+            elif msg.document:
+                d_count += 1
+            elif msg.photo:
+                p_count += 1
+            elif msg.text:
+                t_count += 1
+
             if not (msg.video or msg.document):
                 continue
+
             fname = media_filename(msg)
             if not fname:
                 continue
+
             ep_num = _int_episode(fname)
             episodes[ep_num].append((fname, msg))
 
         if not episodes:
-            return await status_msg.edit_text("❌ <b>No playable media (videos/documents) found to process.</b>", parse_mode=ParseMode.HTML)
+            return await status_msg.edit_text(
+                f"❌ <b>No playable media found in range {start_id}–{end_id}!</b>\n\n"
+                f"<b>Scanned:</b> {len(all_messages)} messages\n"
+                f"• Videos: <code>{v_count}</code>\n"
+                f"• Documents: <code>{d_count}</code>\n"
+                f"• Photos: <code>{p_count}</code>\n"
+                f"• Text msgs: <code>{t_count}</code>",
+                parse_mode=ParseMode.HTML
+            )
 
         total_eps = len(episodes)
         total_files = sum(len(v) for v in episodes.values())
@@ -1711,6 +1768,7 @@ async def auto_cap_cmd(client, message: Message):
 
         processed_eps = 0
 
+        # 10. Dispatch Media per Episode
         for ep_num in sorted_ep_keys:
             items_in_ep = episodes[ep_num]
             sorted_items = sorted(items_in_ep, key=lambda item: _quality_val(item[0]))
