@@ -1550,33 +1550,40 @@ async def auto_cap_cmd(client, message: Message):
             start_arg = clean_args[0]
             end_arg = clean_args[1]
 
+        # 2. Flexible Destination Resolution (Forward-Reply Support)
         if arg_count == 2:
+            # Check if user replied to a forwarded message from the target channel
             if reply:
-                dest_peer = reply.chat.id
+                origin = getattr(reply, "forward_origin", None)
+                if origin:
+                    chat_obj = getattr(origin, "chat", None) or getattr(origin, "sender_chat", None)
+                    if chat_obj and hasattr(chat_obj, "id"):
+                        dest_peer = chat_obj.id
+                elif getattr(reply, "forward_from_chat", None):
+                    dest_peer = reply.forward_from_chat.id
+
+                # If reply was inside a group/channel directly (not a DM forward)
+                if not dest_peer and str(reply.chat.type).upper() not in ("PRIVATE", "CHATTYPE.PRIVATE"):
+                    dest_peer = reply.chat.id
+
                 dest_topic_id = getattr(reply, "message_thread_id", None) or getattr(message, "message_thread_id", None)
-            else:
-                chat_type_str = str(message.chat.type).upper()
-                if chat_type_str in ("SUPERGROUP", "GROUP", "CHANNEL", "CHATTYPE.SUPERGROUP", "CHATTYPE.CHANNEL", "CHATTYPE.GROUP"):
-                    dest_peer = message.chat.id
-                    dest_topic_id = getattr(message, "message_thread_id", None)
-                else:
-                    usage_msg = (
-                        "<b>❌ Destination required in private DM!</b>\n\n"
-                        "<b>Usage:</b>\n"
-                        "1. <code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;target_chat&gt; [-noac]</code>\n"
-                        "2. <code>/ac &lt;start_link&gt; &lt;end_link&gt; &lt;topic_link&gt; [-noac]</code>\n"
-                        "3. Reply to any message in destination with: <code>/ac &lt;start_link&gt; &lt;end_link&gt; [-noac]</code>"
-                    )
-                    return await message.reply_text(usage_msg, parse_mode=ParseMode.HTML)
+
+            elif str(message.chat.type).upper() not in ("PRIVATE", "CHATTYPE.PRIVATE"):
+                dest_peer = message.chat.id
+                dest_topic_id = getattr(message, "message_thread_id", None)
+
+            if not dest_peer:
+                return await message.reply_text(
+                    "❌ <b>Target channel not found!</b>\n\n"
+                    "Please reply to a message <b>FORWARDED from your target channel</b> (with forward tag).",
+                    parse_mode=ParseMode.HTML
+                )
 
         elif arg_count == 3:
-            if clean_args[2].lstrip("-").isdigit() and reply:
-                dest_peer = reply.chat.id
-                dest_topic_id = int(clean_args[2])
-            else:
-                parsed_peer, parsed_topic = resolve_ac_destination(clean_args[2])
-                dest_peer = parsed_peer
-                dest_topic_id = parsed_topic or getattr(message, "message_thread_id", None)
+            # 3rd argument provided as target chat/link
+            parsed_peer, parsed_topic = resolve_ac_destination(clean_args[2])
+            dest_peer = parsed_peer
+            dest_topic_id = parsed_topic or getattr(message, "message_thread_id", None)
 
         elif arg_count >= 4:
             parsed_peer, parsed_topic = resolve_ac_destination(clean_args[2])
