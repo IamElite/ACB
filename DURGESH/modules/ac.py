@@ -897,8 +897,6 @@ def media_filename(message: Message) -> Optional[str]:
         return f"Video_{message.id}.mp4"
     if message.audio:
         return message.audio.file_name or f"Audio_{message.id}.mp3"
-    if message.photo:
-        return (message.caption or "").strip() or "Image"
     return None
 
 
@@ -1506,7 +1504,7 @@ def parse_ac_telegram_link(link: str) -> Tuple[Optional[str], Optional[int], Opt
     """
     if not link:
         return None, None, None
-    m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', link.strip())
+    m = re.search(r'(?:https?://)?t\.me/c/(\d+)(?:/(\d+))?/(\d+)', link.strip(), re.IGNORECASE)
     if not m:
         return None, None, None
     chat_internal = m.group(1)
@@ -1670,53 +1668,59 @@ async def auto_cap_cmd(client, message: Message):
 
         mode_label = "Auto-Arrange Only (-noac)" if no_caption_mode else "Auto-Caption"
         status_msg = await message.reply_text(
-            f"⏳ <i>Scanning messages in batches ({mode_label})...</i>",
+            f"⏳ <i>Scanning messages in range {start_id}–{end_id} ({mode_label})...</i>",
             parse_mode=ParseMode.HTML
         )
 
-        # 7. Safe Fetch in 50-Message Chunks (stays under Telegram MTProto limits)
+        # 7. Resilient Parallel Message Fetcher (bypasses Kurigram batch-list crashes/drops)
         msg_ids = list(range(start_id, end_id + 1))
-        CHUNK = 50
         all_messages = []
 
-        for i in range(0, len(msg_ids), CHUNK):
-            chunk_ids = msg_ids[i:i + CHUNK]
+        async def _fetch_single(mid: int):
             try:
-                msgs = await client.get_messages(from_channel, chunk_ids)
-                if msgs:
-                    valid_msgs = [m for m in msgs if m and not getattr(m, "empty", False)]
-                    all_messages.extend(valid_msgs)
+                m = await client.get_messages(from_channel, mid)
+                if m and not getattr(m, "empty", False):
+                    return m
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 1)
                 try:
-                    msgs = await client.get_messages(from_channel, chunk_ids)
-                    if msgs:
-                        valid_msgs = [m for m in msgs if m and not getattr(m, "empty", False)]
-                        all_messages.extend(valid_msgs)
-                except Exception as inner_e:
-                    print(f"[ac] FloodWait-retry fetch failed for chunk {chunk_ids[0]}-{chunk_ids[-1]}: {inner_e}")
-            except Exception as e:
-                print(f"[ac] Error fetching chunk {chunk_ids[0]}-{chunk_ids[-1]}: {e}")
-                continue
+                    m = await client.get_messages(from_channel, mid)
+                    if m and not getattr(m, "empty", False):
+                        return m
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            return None
 
-        # Fallback: direct single fetch of the end boundary to catch dropped tail
-        if len(all_messages) <= 1:
+        CONCURRENT_BATCH = 25
+        for b_start in range(0, len(msg_ids), CONCURRENT_BATCH):
+            batch = msg_ids[b_start:b_start + CONCURRENT_BATCH]
+            # Fast path: try batch get first; if it returns >=70% valid, use it
+            batch_worked = False
             try:
-                single_end = await client.get_messages(from_channel, end_id)
-                if single_end and not getattr(single_end, "empty", False):
-                    if not any(m.id == single_end.id for m in all_messages):
-                        all_messages.append(single_end)
-            except Exception as e:
-                print(f"[ac] End-boundary fallback fetch failed: {e}")
+                batch_res = await client.get_messages(from_channel, batch)
+                if batch_res and isinstance(batch_res, list):
+                    valid_batch = [m for m in batch_res if m and not getattr(m, "empty", False)]
+                    if len(valid_batch) >= int(len(batch) * 0.7):
+                        all_messages.extend(valid_batch)
+                        batch_worked = True
+            except Exception:
+                batch_worked = False
+
+            # Fallback: parallel single fetches (deleted IDs can't kill other messages)
+            if not batch_worked:
+                results = await asyncio.gather(*[_fetch_single(mid) for mid in batch])
+                all_messages.extend([m for m in results if m is not None])
 
         if not all_messages:
             return await status_msg.edit_text(
                 f"❌ <b>No messages found in range {start_id}–{end_id}!</b>\n"
-                f"Make sure bot is added to source channel (<code>{from_channel}</code>).",
+                f"Make sure bot is an Admin in the source chat (<code>{from_channel}</code>).",
                 parse_mode=ParseMode.HTML
             )
 
-        # 8. Parse Episode Titles (from text and photo captions)
+        # 8. Parse Episode Titles (text + photo captions contribute; photos themselves are NOT posted)
         title_map = await load_episode_titles(real_dest_id) or {}
         new_titles_found = False
 
@@ -1731,7 +1735,8 @@ async def auto_cap_cmd(client, message: Message):
         if new_titles_found:
             await save_episode_titles(real_dest_id, title_map)
 
-        # 9. Group strictly Videos and Documents (with diagnostic counters)
+        # 9. STRICT media isolation: only videos/documents are playable.
+        #    Photos are title cards (captions parsed above, cleaned at end in _flush_bulk; in /ac we ignore them).
         episodes = defaultdict(list)
         v_count = 0
         d_count = 0
@@ -1759,15 +1764,13 @@ async def auto_cap_cmd(client, message: Message):
             episodes[ep_num].append((fname, msg))
 
         if not episodes:
-            found_ids = [str(m.id) for m in all_messages]
-            id_preview = ", ".join(found_ids[:5])
             return await status_msg.edit_text(
                 f"❌ <b>No playable media found in range {start_id}–{end_id}!</b>\n\n"
-                f"<b>Scanned Messages:</b> <code>{len(all_messages)}</code> (IDs: <code>{id_preview}</code>)\n"
+                f"<b>Scanned Messages:</b> <code>{len(all_messages)}</code>\n"
                 f"• Videos: <code>{v_count}</code>\n"
                 f"• Documents: <code>{d_count}</code>\n"
-                f"• Photos: <code>{p_count}</code>\n"
-                f"• Text msgs: <code>{t_count}</code>",
+                f"• Photos (Title cards): <code>{p_count}</code>\n"
+                f"• Text messages: <code>{t_count}</code>",
                 parse_mode=ParseMode.HTML
             )
 
